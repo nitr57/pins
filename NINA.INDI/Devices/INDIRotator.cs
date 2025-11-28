@@ -83,17 +83,18 @@ namespace NINA.INDI.Devices {
         public float Position => (float)(GetNumberPropertyValue("ABS_ROTATOR_ANGLE", "ANGLE") ?? 0.0);
 
         public bool Reverse {
-            get => GetSwitchPropertyValue("ROTATOR_REVERSE", "ENABLED") ?? false;
+            get => GetSwitchPropertyValue("ROTATOR_REVERSE", "INDI_ENABLED") ?? false;
             set {
-                if (!Connected) {
-                    Logger.Warning("Cannot set rotator reverse: not connected");
-                    return;
-                }
-                try {
-                    SetSwitchValue("ROTATOR_REVERSE", "ENABLED", value);
-                    Logger.Info($"Set rotator reverse to {value}");
-                } catch (ArgumentException) {
-                    throw new NotImplementedException("Rotator does not support reverse");
+                if (Connected) {
+                    try {
+                        if (value) {
+                            SetSwitchValue("ROTATOR_REVERSE", "INDI_ENABLED", true);
+                        } else {
+                            SetSwitchValue("ROTATOR_REVERSE", "INDI_DISABLED", true);
+                        }
+                    } catch (ArgumentException) {
+                        throw new NotImplementedException("Rotator does not support reverse");
+                    }
                 }
             }
         }

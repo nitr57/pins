@@ -166,37 +166,16 @@ namespace NINA.INDI.Devices {
 
             // Handle switch rules
             if (prop.Rule == SwitchRule.OneOfMany) {
+                // For OneOfMany, only allow setting one switch to true at a time
+                // First, turn off all switches
+                foreach (var sw in prop.Switches) {
+                    sw.Value = false;
+                }
+                // Then turn on only the requested one (if value is true)
                 if (value) {
-                    // Setting a switch to ON - turn off all others
-                    foreach (var sw in prop.Switches) {
-                        sw.Value = sw.Name == elementName;
-                    }
-                } else {
-                    // Setting a switch to OFF in OneOfMany - need to turn on another one
-                    // For CONNECTION property, if turning off CONNECT, turn on DISCONNECT and vice versa
-                    string oppositeSwitch = null;
-                    if (elementName == "CONNECT")
-                        oppositeSwitch = "DISCONNECT";
-                    else if (elementName == "DISCONNECT")
-                        oppositeSwitch = "CONNECT";
-
-                    if (oppositeSwitch != null) {
-                        foreach (var sw in prop.Switches) {
-                            sw.Value = sw.Name == oppositeSwitch;
-                        }
-                    } else {
-                        // Generic case: turn on the first switch that isn't this one
-                        foreach (var sw in prop.Switches) {
-                            if (sw.Name != elementName) {
-                                sw.Value = true;
-                                break;
-                            }
-                        }
-                        // Turn off the specified switch
-                        var targetSw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
-                        if (targetSw != null) {
-                            targetSw.Value = false;
-                        }
+                    var targetSw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
+                    if (targetSw != null) {
+                        targetSw.Value = true;
                     }
                 }
             } else if (prop.Rule == SwitchRule.AtMostOne) {

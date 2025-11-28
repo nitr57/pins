@@ -94,12 +94,18 @@ namespace NINA.INDI.Devices {
 
 
         public bool Reverse {
-            get => GetSwitchPropertyValue("FOCUS_REVERSE_MOTION", "ENABLED") ?? false;
+            get => GetSwitchPropertyValue("FOCUS_REVERSE_MOTION", "INDI_ENABLED") ?? false;
             set {
-                try {
-                    SetSwitchValue("FOCUS_REVERSE_MOTION", "ENABLED", value);
-                } catch (ArgumentException) {
-                    throw new NotImplementedException();
+                if (Connected) {
+                    try {
+                        if (value) {
+                            SetSwitchValue("FOCUS_REVERSE_MOTION", "INDI_ENABLED", true);
+                        } else {
+                            SetSwitchValue("FOCUS_REVERSE_MOTION", "INDI_DISABLED", true);
+                        }
+                    } catch (ArgumentException) {
+                        throw new NotImplementedException();
+                    }
                 }
             }
         }
