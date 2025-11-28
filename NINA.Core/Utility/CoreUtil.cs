@@ -76,6 +76,10 @@ namespace NINA.Core.Utility {
         public static string UserAgent => $"N.I.N.A./{Version} ({Environment.OSVersion}; {(Environment.Is64BitOperatingSystem ? "Win64" : "Win32")}; {(Environment.Is64BitProcess ? "x64" : "x86")})";
         public static bool DebugMode { get; set; } = false;
 
+        public static bool IsLinux() {
+            return Environment.OSVersion.ToString().ToLower().Contains("unix");
+        }
+
         public static string GetUniqueFilePath(string fullPath) {
             return GetUniqueFilePath(fullPath, "{0}({1})");
         }
