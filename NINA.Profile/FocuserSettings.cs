@@ -51,6 +51,10 @@ namespace NINA.Profile {
             backlashCompensationModel = BacklashCompensationModel.OVERSHOOT;
             autoFocusTimeoutSeconds = 600;
             rSquaredThreshold = 0.7;
+            reverse = false;
+            connectionMode = "SERIAL";
+            devicePort = "/dev/ttyUSB0";
+            baudRate = 9600;
         }
 
         private string id;
@@ -352,6 +356,55 @@ namespace NINA.Profile {
 
                 if (rSquaredThreshold != value) {
                     rSquaredThreshold = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private bool reverse;
+        [DataMember]
+        public bool Reverse {
+            get => reverse;
+            set {
+                if (reverse != value) {
+                    reverse = value;
+                    RaisePropertyChanged();
+                    RaisePropertyChanged(nameof(Reverse));
+                }
+            }
+        }
+
+        private string connectionMode;
+        [DataMember]
+        public string ConnectionMode {
+            get => connectionMode;
+            set {
+                if(connectionMode != value) {
+                    connectionMode = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string devicePort;
+        [DataMember]
+        public string DevicePort {
+            get => devicePort;
+            set {
+                if(devicePort != value) {
+                    devicePort = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private int baudRate;
+        [DataMember]
+        public int BaudRate {
+            get => baudRate;
+            set {
+                if(baudRate != value) {
+                    baudRate = value;
                     RaisePropertyChanged();
                 }
             }

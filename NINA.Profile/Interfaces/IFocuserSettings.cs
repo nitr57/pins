@@ -39,5 +39,9 @@ namespace NINA.Profile.Interfaces {
         BacklashCompensationModel BacklashCompensationModel { get; set; }
         int AutoFocusTimeoutSeconds { get; set; }
         double RSquaredThreshold { get; set; }
+        bool Reverse { get; set; }
+        string ConnectionMode { get; set; }
+        string DevicePort { get; set; }
+        int BaudRate { get; set; }
     }
 }
