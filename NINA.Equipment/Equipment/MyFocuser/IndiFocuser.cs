@@ -43,6 +43,24 @@ namespace NINA.Equipment.Equipment.MyFocuser {
             }
         }
 
+        public bool CanReverse => GetProperty(nameof(IINDIFocuser.CanReverse), false);
+        public bool Reverse
+        {
+            get
+            {
+                if (CanReverse) {
+                    return GetProperty(nameof(IINDIFocuser.Reverse), false);
+                }
+                return false;
+            }
+            set
+            {
+                if(CanReverse){
+                    SetProperty(nameof(IINDIFocuser.Reverse), value);
+                }
+            }
+        }
+
         private bool _isAbsolute = true;
 
         //Used for relative focusers
@@ -79,23 +97,6 @@ namespace NINA.Equipment.Equipment.MyFocuser {
         }
 
         public double Temperature => GetProperty(nameof(IINDIFocuser.Temperature), double.NaN);
-
-        private bool _canReverse = true;
-
-        [ObservableProperty]
-        private bool reversed = false;
-
-        partial void OnReversedChanged(bool value) {
-            if (ShouldBeConnected && _canReverse) {
-                try {
-                    device.Reverse = value;
-                } catch (NotImplementedException) {
-                    _canReverse = false;
-                } catch (Exception ex) {
-                    Logger.Error(ex);
-                }
-            }
-        }
 
         [RelayCommand]
         public void ResetPosition() {

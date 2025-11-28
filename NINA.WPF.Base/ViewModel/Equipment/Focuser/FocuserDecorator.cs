@@ -46,7 +46,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
 
         public int MaxIncrement => this.focuser.MaxIncrement;
 
-        public int MaxStep => this.focuser.MaxStep;
+        public int MaxStep { get => this.focuser.MaxStep; set => this.focuser.MaxStep = value; }
+
+        public bool CanReverse => this.focuser.CanReverse;
+
+        public bool Reverse { get => this.focuser.Reverse; set => this.focuser.Reverse = value; }
 
         public virtual int Position => this.focuser.Position;
 

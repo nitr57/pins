@@ -92,14 +92,27 @@ namespace NINA.INDI.Devices {
         public bool TempCompAvailable => false;
         public double Temperature => GetNumberPropertyValue("FOCUS_TEMPERATURE", "TEMPERATURE") ?? double.NaN;
 
+        public bool CanReverse {
+            get {
+                var prop = GetSwitchProperty("FOCUS_REVERSE_MOTION");
+                return prop != null;
+            }
+        }
 
         public bool Reverse {
-            get => GetSwitchPropertyValue("FOCUS_REVERSE_MOTION", "ENABLED") ?? false;
+            get => GetSwitchPropertyValue("FOCUS_REVERSE_MOTION", "INDI_ENABLED") ?? false;
             set {
-                try {
-                    SetSwitchValue("FOCUS_REVERSE_MOTION", "ENABLED", value);
-                } catch (ArgumentException) {
-                    throw new NotImplementedException();
+                if (CanReverse && Connected) {
+                    try {
+                        if (value) {
+                            SetSwitchValue("FOCUS_REVERSE_MOTION", "INDI_ENABLED", true);
+                        } else {
+                            SetSwitchValue("FOCUS_REVERSE_MOTION", "INDI_DISABLED", true);
+                        }
+                    } catch (ArgumentException ex) {
+                        Logger.Error($"Failed to set focuser reverse: {ex.Message}");
+                        throw new NotImplementedException("Focuser does not support reverse");
+                    }
                 }
             }
         }

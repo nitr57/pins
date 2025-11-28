@@ -77,6 +77,25 @@ namespace NINA.Equipment.Equipment.MyFocuser {
             }
         }
 
+
+        public bool CanReverse => true;
+        public bool Reverse {
+            get {
+                if (!Connected) {
+                    return false;
+                }
+                if (sdk.AAF(ToupTekAlikeAAF.AAF_GETDIRECTION, 0, out var reverse)) {
+                    return reverse == 1;
+                }
+                Logger.Error($"AAF error to get Reverse");
+                return false;
+            }
+            set {
+                _ = sdk.AAF(ToupTekAlikeAAF.AAF_SETDIRECTION, value ? 1 : 0, out var _);
+                RaisePropertyChanged(nameof(Reverse));
+            }
+        }
+
         public int Position {
             get {
                 if (sdk.AAF(ToupTekAlikeAAF.AAF_GETPOSITION, 0, out var position)) {
@@ -155,7 +174,7 @@ namespace NINA.Equipment.Equipment.MyFocuser {
         }
 
         public void OnReversedChanged(bool value) {
-            _ = sdk.AAF(ToupTekAlikeAAF.AAF_SETDIRECTION, value ? 1 : 0, out var _);
+            Reverse = value;
         }
 
         private int targetMaxStep;

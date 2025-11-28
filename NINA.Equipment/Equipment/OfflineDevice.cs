@@ -212,7 +212,7 @@ namespace NINA.Equipment.Equipment {
 
         public int MaxIncrement => throw new NotImplementedException();
 
-        public int MaxStep => throw new NotImplementedException();
+        public int MaxStep { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
 
         int IFocuser.Position => throw new NotImplementedException();
 
