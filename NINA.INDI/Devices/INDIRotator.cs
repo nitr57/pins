@@ -85,7 +85,7 @@ namespace NINA.INDI.Devices {
         public bool Reverse {
             get => GetSwitchPropertyValue("ROTATOR_REVERSE", "INDI_ENABLED") ?? false;
             set {
-                if (Connected) {
+                if (CanReverse && Connected) {
                     try {
                         if (value) {
                             SetSwitchValue("ROTATOR_REVERSE", "INDI_ENABLED", true);

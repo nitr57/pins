@@ -117,6 +117,14 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
             }
         }
 
+        public void SetReverse(bool reverse) {
+            if (FocuserInfo.Connected && FocuserInfo.CanReverse) {
+                Focuser.Reverse = reverse;
+                FocuserInfo.Reverse = reverse;
+                BroadcastFocuserInfo();
+            }
+        }
+
         private CancellationTokenSource moveCts;
 
         private Task<int> MoveFocuserInternal(int position) {
@@ -303,6 +311,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                         Focuser = newFocuser;
                         token.ThrowIfCancellationRequested();
 
+                        if (this.Focuser.CanReverse) {
+                            Logger.Info($"Restoring Focuser Reverse flag to {profileService.ActiveProfile.FocuserSettings.Reverse}");
+                            this.Focuser.Reverse = profileService.ActiveProfile.FocuserSettings.Reverse;
+                        }
+
                         FocuserInfo = new FocuserInfo {
                             Connected = true,
                             IsMoving = Focuser.IsMoving,
@@ -317,7 +330,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                             Description = Focuser.Description,
                             DriverInfo = Focuser.DriverInfo,
                             DriverVersion = Focuser.DriverVersion,
-                            DeviceId = Focuser.Id
+                            DeviceId = Focuser.Id,
+                            CanReverse = Focuser.CanReverse,
+                            Reverse = Focuser.Reverse
                         };
 
                         Notification.ShowSuccess(Loc.Instance["LblFocuserConnected"]);
@@ -328,6 +343,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                         TargetPosition = Position;
                         profileService.ActiveProfile.FocuserSettings.Id = Focuser.Id;
                         profileService.ActiveProfile.FocuserSettings.LastDeviceName = Focuser.DisplayName;
+                        profileService.ActiveProfile.FocuserSettings.Reverse = this.Focuser.Reverse;
 
                         await (Connected?.InvokeAsync(this, new EventArgs()) ?? Task.CompletedTask);
                         Logger.Info($"Successfully connected Focuser. Id: {Focuser.Id} Name: {Focuser.Name} DisplayName: {Focuser.DisplayName} Driver Version: {Focuser.DriverVersion}");
@@ -365,7 +381,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 {nameof(FocuserInfo.Position), Position},
                 {nameof(FocuserInfo.Temperature), focuser?.Temperature ?? double.NaN},
                 {nameof(FocuserInfo.IsMoving), focuser?.IsMoving ?? false},
-                {nameof(FocuserInfo.TempComp), focuser?.TempComp ?? false}
+                {nameof(FocuserInfo.TempComp), focuser?.TempComp ?? false},
+                {nameof(FocuserInfo.Reverse), focuser?.Reverse ?? false}
             };
             return focuserValues;
         }
@@ -385,6 +402,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
 
             focuserValues.TryGetValue(nameof(FocuserInfo.TempComp), out o);
             FocuserInfo.TempComp = (bool)(o ?? false);
+
+            focuserValues.TryGetValue(nameof(FocuserInfo.Reverse), out o);
+            FocuserInfo.Reverse = (bool)(o ?? false);
 
             BroadcastFocuserInfo();
         }

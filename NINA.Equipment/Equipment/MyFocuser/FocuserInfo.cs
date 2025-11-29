@@ -17,6 +17,20 @@ using System.Collections.Generic;
 namespace NINA.Equipment.Equipment.MyFocuser {
 
     public class FocuserInfo : DeviceInfo {
+        private bool canReverse;
+
+        public bool CanReverse {
+            get => canReverse;
+            set { if (canReverse != value) { canReverse = value; RaisePropertyChanged(); } }
+        }
+
+        private bool reverse;
+
+        public bool Reverse {
+            get => reverse;
+            set { if (reverse != value) { reverse = value; RaisePropertyChanged(); } }
+        }
+
         private int position;
 
         public int Position {

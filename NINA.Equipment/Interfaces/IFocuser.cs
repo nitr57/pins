@@ -18,9 +18,11 @@ using System.Threading.Tasks;
 namespace NINA.Equipment.Interfaces {
 
     public interface IFocuser : IDevice {
+        bool CanReverse { get; }
+        bool Reverse { get; set; }
         bool IsMoving { get; }
         int MaxIncrement { get; }
-        int MaxStep { get; }
+        int MaxStep { get; set; }
         int Position { get; }
         double StepSize { get; }
         bool TempCompAvailable { get; }

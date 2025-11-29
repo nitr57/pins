@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 namespace NINA.INDI.Interfaces {
     public interface IINDIFocuser : IINDIDevice {
         bool Absolute { get; }
+        bool CanReverse { get; }
         bool IsMoving { get; }
         int MaxIncrement { get; }
         int MaxStep { get; set; }
