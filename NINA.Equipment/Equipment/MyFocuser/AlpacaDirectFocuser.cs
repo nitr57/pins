@@ -100,9 +100,15 @@ namespace NINA.Equipment.Equipment.MyFocuser {
 
         public bool IsMoving => ((IFocuser)device).IsMoving;
 
+        public bool CanReverse => ((IFocuser)device).CanReverse;
+
+        public bool Reverse { get => ((IFocuser)device).Reverse; set => ((IFocuser)device).Reverse = value; }
+
         public int MaxIncrement => ((IFocuser)device).MaxIncrement;
 
-        public int MaxStep => ((IFocuser)device).MaxStep;
+        public bool CanSetMaxStep => ((IFocuser)device).CanSetMaxStep;
+
+        public int MaxStep { get => ((IFocuser)device).MaxStep; set => ((IFocuser)device).MaxStep = value; }
 
         public int Position => ((IFocuser)device).Position;
 

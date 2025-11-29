@@ -1,7 +1,7 @@
 #region "copyright"
 
 /*
-    Copyright © 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
+    Copyright ï¿½ 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
 
     This file is part of N.I.N.A. - Nighttime Imaging 'N' Astronomy.
 
@@ -29,6 +29,20 @@ namespace NINA.Equipment.Equipment.MyFocuser {
         public bool Reverse {
             get => reverse;
             set { if (reverse != value) { reverse = value; RaisePropertyChanged(); } }
+        }
+
+        private bool canSetMaxStep;
+
+        public bool CanSetMaxStep {
+            get => canSetMaxStep;
+            set { if (canSetMaxStep != value) { canSetMaxStep = value; RaisePropertyChanged(); } }
+        }
+
+        private int maxStep;
+
+        public int MaxStep {
+            get => maxStep;
+            set { if (maxStep != value) { maxStep = value; RaisePropertyChanged(); } }
         }
 
         private int position;

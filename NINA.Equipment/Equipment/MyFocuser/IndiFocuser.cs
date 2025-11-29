@@ -34,10 +34,16 @@ namespace NINA.Equipment.Equipment.MyFocuser {
 
         public int MaxIncrement => GetProperty(nameof(IINDIFocuser.MaxIncrement), -1);
 
+        public bool CanSetMaxStep => GetProperty(nameof(IINDIFocuser.CanSetMaxStep), false);
         public int MaxStep {
-            get => GetProperty(nameof(IINDIFocuser.MaxStep), -1);
+            get {
+                if (CanSetMaxStep) {
+                    return GetProperty(nameof(IINDIFocuser.MaxStep), -1);
+                }
+                return -1;
+            }
             set {
-                if (ShouldBeConnected) {
+                if (CanSetMaxStep && ShouldBeConnected) {
                     SetProperty(nameof(IINDIFocuser.MaxStep), value);
                 }
             }
@@ -55,7 +61,7 @@ namespace NINA.Equipment.Equipment.MyFocuser {
             }
             set
             {
-                if(CanReverse){
+                if (CanReverse && ShouldBeConnected) {
                     SetProperty(nameof(IINDIFocuser.Reverse), value);
                 }
             }

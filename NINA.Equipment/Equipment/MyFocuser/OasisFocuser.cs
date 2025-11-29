@@ -76,6 +76,7 @@ namespace NINA.Equipment.Equipment.MyFocuser {
 
         public int MaxIncrement => MaxStep;
 
+        public bool CanSetMaxStep => true;
         public int MaxStep {
             get {
                 if (!Connected) {

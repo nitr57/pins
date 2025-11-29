@@ -73,10 +73,23 @@ namespace NINA.INDI.Devices {
         public bool Absolute { get; private set; }
         public bool IsMoving { get; private set; }
         public int MaxIncrement => MaxStep;
-        public int MaxStep {
+
+        public bool CanSetMaxStep
+        {
+            get
+            {
+                var prop = GetNumberProperty("FOCUS_MAX");
+                return prop != null;
+            }
+        }
+
+        public int MaxStep
+        {
             get => (int)GetNumberPropertyValue("FOCUS_MAX", "FOCUS_MAX_VALUE");
-            set {
-                if (!Connected) {
+            set
+            {
+                if (!Connected)
+                {
                     Logger.Warning("Cannot set MaxStep: not connected");
                     return;
                 }

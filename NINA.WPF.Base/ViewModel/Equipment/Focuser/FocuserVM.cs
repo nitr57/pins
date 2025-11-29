@@ -96,6 +96,22 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
             });
         }
 
+        public void SetMaxStep(int position) {
+            if (FocuserInfo.Connected && FocuserInfo.CanSetMaxStep) {
+                Focuser.MaxStep = position;
+                FocuserInfo.MaxStep = position;
+                BroadcastFocuserInfo();
+            }
+        }
+
+        public void SetReverse(bool reverse) {
+            if (FocuserInfo.Connected && FocuserInfo.CanReverse) {
+                Focuser.Reverse = reverse;
+                FocuserInfo.Reverse = reverse;
+                BroadcastFocuserInfo();
+            }
+        }
+
         private void ToggleTempComp(object obj) {
             ToggleTempComp((bool)obj);
         }
@@ -114,14 +130,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 Focuser.Halt();
             } catch (Exception ex) {
                 Logger.Error(ex);
-            }
-        }
-
-        public void SetReverse(bool reverse) {
-            if (FocuserInfo.Connected && FocuserInfo.CanReverse) {
-                Focuser.Reverse = reverse;
-                FocuserInfo.Reverse = reverse;
-                BroadcastFocuserInfo();
             }
         }
 
@@ -332,7 +340,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                             DriverVersion = Focuser.DriverVersion,
                             DeviceId = Focuser.Id,
                             CanReverse = Focuser.CanReverse,
-                            Reverse = Focuser.Reverse
+                            Reverse = Focuser.Reverse,
+                            CanSetMaxStep = Focuser.CanSetMaxStep,
+                            MaxStep = Focuser.MaxStep
                         };
 
                         Notification.ShowSuccess(Loc.Instance["LblFocuserConnected"]);
@@ -382,7 +392,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 {nameof(FocuserInfo.Temperature), focuser?.Temperature ?? double.NaN},
                 {nameof(FocuserInfo.IsMoving), focuser?.IsMoving ?? false},
                 {nameof(FocuserInfo.TempComp), focuser?.TempComp ?? false},
-                {nameof(FocuserInfo.Reverse), focuser?.Reverse ?? false}
+                {nameof(FocuserInfo.Reverse), focuser?.Reverse ?? false},
+                {nameof(FocuserInfo.MaxStep), focuser?.MaxStep ?? -1}
             };
             return focuserValues;
         }
@@ -405,6 +416,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
 
             focuserValues.TryGetValue(nameof(FocuserInfo.Reverse), out o);
             FocuserInfo.Reverse = (bool)(o ?? false);
+
+            focuserValues.TryGetValue(nameof(FocuserInfo.MaxStep), out o);
+            FocuserInfo.MaxStep = (int)(o ?? -1);
 
             BroadcastFocuserInfo();
         }

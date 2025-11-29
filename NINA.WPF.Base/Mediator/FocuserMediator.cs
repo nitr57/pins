@@ -1,7 +1,7 @@
 #region "copyright"
 
 /*
-    Copyright © 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
+    Copyright ï¿½ 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
 
     This file is part of N.I.N.A. - Nighttime Imaging 'N' Astronomy.
 
@@ -25,6 +25,14 @@ using System.Threading.Tasks;
 namespace NINA.WPF.Base.Mediator {
 
     public class FocuserMediator : DeviceMediator<IFocuserVM, IFocuserConsumer, FocuserInfo>, IFocuserMediator {
+
+        public void SetMaxStep(int position) {
+            handler.SetMaxStep(position);
+        }
+
+        public void SetReverse(bool reverse) {
+            handler.SetReverse(reverse);
+        }
 
         public void ToggleTempComp(bool tempComp) {
             handler.ToggleTempComp(tempComp);

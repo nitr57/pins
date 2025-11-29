@@ -62,6 +62,7 @@ namespace NINA.Equipment.Equipment.MyFocuser {
 
         public int MaxIncrement => MaxStep;
 
+        public bool CanSetMaxStep => true;
         public int MaxStep {
             get {
                 if (sdk.AAF(ToupTekAlikeAAF.AAF_GETMAXSTEP, 0, out var maxStep)) {
