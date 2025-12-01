@@ -438,49 +438,59 @@ namespace System.Drawing {
                     Cv2.Resize(croppedSrc, resizedSrc, new OpenCvSharp.Size((int)destRect.Width, (int)destRect.Height));
                 }
 
+                // Ensure source has alpha channel if canvas does
+                Mat srcWithAlpha = resizedSrc;
+                bool needsAlphaCleanup = false;
+                if (_canvas.Channels() == 4 && resizedSrc.Channels() == 3) {
+                    srcWithAlpha = new Mat();
+                    Cv2.CvtColor(resizedSrc, srcWithAlpha, ColorConversionCodes.BGR2BGRA);
+                    needsAlphaCleanup = true;
+                }
+
                 try {
                     // Apply transformation if any
                     if (_hasTransform) {
-                        // Create a larger temporary canvas to accommodate rotation
-                        int maxDim = Math.Max(_canvas.Width, _canvas.Height) * 2;
-                        using (var temp = new Mat(maxDim, maxDim, _canvas.Type(), Scalar.All(0))) {
-                            // Calculate the position in the temp canvas
-                            int tempCenterX = maxDim / 2;
-                            int tempCenterY = maxDim / 2;
+                        // The transform should be applied to the source image coordinates (destRect)
+                        // Create points for the destination rectangle corners
+                        Point2f[] srcPoints = new Point2f[] {
+                            new Point2f(0, 0),
+                            new Point2f(srcWithAlpha.Width, 0),
+                            new Point2f(0, srcWithAlpha.Height)
+                        };
+                        
+                        // Transform the dest rect corners using the current transform matrix
+                        Point2f[] dstPoints = new Point2f[3];
+                        for (int i = 0; i < 3; i++) {
+                            double x = srcPoints[i].X + destRect.X;
+                            double y = srcPoints[i].Y + destRect.Y;
+                            dstPoints[i].X = (float)(_transform.At<double>(0, 0) * x + _transform.At<double>(0, 1) * y + _transform.At<double>(0, 2));
+                            dstPoints[i].Y = (float)(_transform.At<double>(1, 0) * x + _transform.At<double>(1, 1) * y + _transform.At<double>(1, 2));
+                        }
+                        
+                        // Get the affine transform from source to transformed destination
+                        Mat affineTransform = Cv2.GetAffineTransform(srcPoints, dstPoints);
+                        
+                        // Apply transformation directly to canvas
+                        using (var transformed = new Mat(_canvas.Size(), _canvas.Type(), Scalar.All(0))) {
+                            Cv2.WarpAffine(srcWithAlpha, transformed, affineTransform, _canvas.Size(), InterpolationFlags.Cubic, BorderTypes.Transparent);
 
-                            // Adjust transform to work in temp canvas space
-                            var adjustedTransform = _transform.Clone();
-                            double tx = adjustedTransform.At<double>(0, 2);
-                            double ty = adjustedTransform.At<double>(1, 2);
-                            adjustedTransform.Set(0, 2, tx + tempCenterX - destRect.Width / 2);
-                            adjustedTransform.Set(1, 2, ty + tempCenterY - destRect.Height / 2);
-
-                            // Apply transformation
-                            using (var transformed = new Mat()) {
-                                Cv2.WarpAffine(resizedSrc, transformed, adjustedTransform, temp.Size(), InterpolationFlags.Linear);
-
-                                // Copy back to canvas (blend or overlay)
-                                // For now, simple copy - may need alpha blending for BGRA
-                                int offsetX = (_canvas.Width - maxDim) / 2;
-                                int offsetY = (_canvas.Height - maxDim) / 2;
-
-                                // Calculate ROI to copy
-                                int copyX = Math.Max(0, tempCenterX - _canvas.Width / 2);
-                                int copyY = Math.Max(0, tempCenterY - _canvas.Height / 2);
-                                int copyW = Math.Min(maxDim - copyX, _canvas.Width);
-                                int copyH = Math.Min(maxDim - copyY, _canvas.Height);
-
-                                if (copyW > 0 && copyH > 0) {
-                                    var srcRoi = new OpenCvSharp.Rect(copyX, copyY, copyW, copyH);
-                                    var dstRoi = new OpenCvSharp.Rect(0, 0, copyW, copyH);
-
-                                    using (var srcRegion = new Mat(transformed, srcRoi))
-                                    using (var dstRegion = new Mat(_canvas, dstRoi)) {
-                                        // Blend if both have alpha channel
-                                        if (srcRegion.Channels() == 4 && dstRegion.Channels() == 4) {
-                                            AlphaBlend(srcRegion, dstRegion);
-                                        } else {
-                                            srcRegion.CopyTo(dstRegion);
+                            // Blend transformed image with canvas using proper alpha compositing
+                            if (transformed.Channels() == 4 && _canvas.Channels() == 4) {
+                                AlphaBlend(transformed, _canvas);
+                            } else {
+                                // For non-alpha channels, just copy non-zero pixels
+                                for (int y = 0; y < _canvas.Height; y++) {
+                                    for (int x = 0; x < _canvas.Width; x++) {
+                                        if (_canvas.Channels() == 4) {
+                                            var pixel = transformed.At<Vec4b>(y, x);
+                                            if (pixel[3] > 0) { // Check alpha
+                                                _canvas.Set(y, x, pixel);
+                                            }
+                                        } else if (_canvas.Channels() == 3) {
+                                            var pixel = transformed.At<Vec3b>(y, x);
+                                            if (pixel[0] > 0 || pixel[1] > 0 || pixel[2] > 0) {
+                                                _canvas.Set(y, x, pixel);
+                                            }
                                         }
                                     }
                                 }
@@ -497,17 +507,23 @@ namespace System.Drawing {
 
                         if (dstRoi.Width > 0 && dstRoi.Height > 0) {
                             using (var dstRegion = new Mat(_canvas, dstRoi)) {
-                                if (resizedSrc.Size() == dstRegion.Size()) {
-                                    if (resizedSrc.Channels() == 4 && dstRegion.Channels() == 4) {
-                                        AlphaBlend(resizedSrc, dstRegion);
+                                if (srcWithAlpha.Size() == dstRegion.Size()) {
+                                    if (srcWithAlpha.Channels() == 4 && dstRegion.Channels() == 4) {
+                                        AlphaBlend(srcWithAlpha, dstRegion);
                                     } else {
-                                        resizedSrc.CopyTo(dstRegion);
+                                        srcWithAlpha.CopyTo(dstRegion);
                                     }
                                 }
                             }
                         }
                     }
                 } finally {
+                    if (needsAlphaCleanup) {
+                        srcWithAlpha?.Dispose();
+                    }
+                    if (resizedSrc != croppedSrc) {
+                        resizedSrc?.Dispose();
+                    }
                     if (resizedSrc != croppedSrc) {
                         resizedSrc.Dispose();
                     }
@@ -539,20 +555,28 @@ namespace System.Drawing {
         }
 
         private void AlphaBlend(Mat src, Mat dst) {
-            // Simple alpha blending for BGRA images
-            for (int y = 0; y < src.Height && y < dst.Height; y++) {
-                for (int x = 0; x < src.Width && x < dst.Width; x++) {
-                    var srcPixel = src.At<Vec4b>(y, x);
-                    var dstPixel = dst.At<Vec4b>(y, x);
-
-                    double alpha = srcPixel[3] / 255.0;
-
-                    dstPixel[0] = (byte)(srcPixel[0] * alpha + dstPixel[0] * (1 - alpha));
-                    dstPixel[1] = (byte)(srcPixel[1] * alpha + dstPixel[1] * (1 - alpha));
-                    dstPixel[2] = (byte)(srcPixel[2] * alpha + dstPixel[2] * (1 - alpha));
-                    dstPixel[3] = (byte)Math.Min(255, srcPixel[3] + dstPixel[3] * (1 - alpha));
-
-                    dst.Set(y, x, dstPixel);
+            // Alpha blending for BGRA images using pointer-based approach
+            if (src.Channels() != 4 || dst.Channels() != 4) return;
+            if (src.Width != dst.Width || src.Height != dst.Height) return;
+            
+            unsafe {
+                byte* srcPtr = (byte*)src.DataPointer;
+                byte* dstPtr = (byte*)dst.DataPointer;
+                int totalPixels = src.Width * src.Height;
+                
+                for (int i = 0; i < totalPixels; i++) {
+                    int idx = i * 4;
+                    byte alpha = srcPtr[idx + 3];
+                    
+                    if (alpha > 0) {
+                        float a = alpha / 255.0f;
+                        float invA = 1.0f - a;
+                        
+                        dstPtr[idx + 0] = (byte)(srcPtr[idx + 0] * a + dstPtr[idx + 0] * invA);
+                        dstPtr[idx + 1] = (byte)(srcPtr[idx + 1] * a + dstPtr[idx + 1] * invA);
+                        dstPtr[idx + 2] = (byte)(srcPtr[idx + 2] * a + dstPtr[idx + 2] * invA);
+                        dstPtr[idx + 3] = (byte)Math.Min(255, alpha + dstPtr[idx + 3] * invA);
+                    }
                 }
             }
         }

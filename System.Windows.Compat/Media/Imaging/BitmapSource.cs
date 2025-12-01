@@ -174,7 +174,8 @@ namespace System.Windows.Media.Imaging {
                 }
             } else {
                 // Complex case: stride doesn't match, copy row by row
-                int rowBytes = (int)(pixelWidth * mat.ElemSize());
+                // The row size is the width * bytes per pixel (not the stride which includes padding)
+                int rowBytes = pixelWidth * mat.ElemSize();
                 for (int y = 0; y < pixelHeight; y++) {
                     IntPtr srcPtr = buffer + (y * stride);
                     IntPtr dstPtr = mat.Data + (y * (int)mat.Step());
