@@ -1,7 +1,7 @@
 #region "copyright"
 
 /*
-    Copyright © 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
+    Copyright ï¿½ 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
 
     This file is part of N.I.N.A. - Nighttime Imaging 'N' Astronomy.
 
@@ -22,6 +22,10 @@ using System.Threading.Tasks;
 namespace NINA.WPF.Base.Mediator {
 
     public class RotatorMediator : DeviceMediator<IRotatorVM, IRotatorConsumer, RotatorInfo>, IRotatorMediator {
+
+        public void SetReverse(bool reverse) {
+            handler.SetReverse(reverse);
+        }
 
         public void Sync(float skyAngle) {
             handler.Sync(skyAngle);

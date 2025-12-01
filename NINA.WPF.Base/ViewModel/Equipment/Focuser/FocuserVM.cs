@@ -108,6 +108,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
             if (FocuserInfo.Connected && FocuserInfo.CanReverse) {
                 Focuser.Reverse = reverse;
                 FocuserInfo.Reverse = reverse;
+                profileService.ActiveProfile.FocuserSettings.Reverse = reverse;
                 BroadcastFocuserInfo();
             }
         }
