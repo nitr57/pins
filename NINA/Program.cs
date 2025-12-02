@@ -37,6 +37,7 @@ builder.Services.AddCors(options => {
 });
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<SignalRNotificationBroadcaster>();
+builder.Services.AddSingleton<IDialogBroadcaster, DialogBroadcaster>();
 builder.Services.AddControllers().AddJsonOptions(options => {
     options.JsonSerializerOptions.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals;
 });
@@ -77,6 +78,9 @@ new IoCBindings(profileService, commandLineOptions).Load(builder.Services);
 
 var app = builder.Build();
 
+// Initialize DialogBroadcaster early so plugins can access it
+_ = app.Services.GetRequiredService<IDialogBroadcaster>();
+
 // Now that profile is ready, instantiate services and Controller
 _ = app.Services.GetService<IImageSaveController>();
 _ = app.Services.GetService<IImagingVM>();
@@ -106,6 +110,7 @@ app.UseCors("AllowAll");
 // Start web server to expose profile endpoints
 app.MapControllers();
 app.MapHub<NotificationHub>("/hubs/notifications");
+app.MapHub<DialogHub>("/hubs/dialogs");
 
 // Set up the notification broadcaster to use SignalR
 var signalRBroadcaster = app.Services.GetRequiredService<SignalRNotificationBroadcaster>();

@@ -76,32 +76,6 @@ namespace NINA.Core.Utility.WindowService {
         /// Show the window as a dialog
         /// </summary>
         public bool? ShowDialog() {
-            if (System.Windows.DialogService.IsHeadless()) {
-                return ShowViaDialogService();
-            }
-
-            // Try to use WPF window if available
-            try {
-                var windowType = Type.GetType("System.Windows.Window, PresentationFramework");
-                if (windowType != null) {
-                    var window = Activator.CreateInstance(windowType);
-
-                    // Set properties
-                    windowType.GetProperty("Title")?.SetValue(window, Title);
-                    windowType.GetProperty("Content")?.SetValue(window, Content);
-                    windowType.GetProperty("DataContext")?.SetValue(window, DataContext);
-
-                    // Show dialog
-                    var showDialogMethod = windowType.GetMethod("ShowDialog", Type.EmptyTypes);
-                    var result = showDialogMethod?.Invoke(window, null);
-
-                    return (bool?)result;
-                }
-            } catch (Exception ex) {
-                Console.WriteLine($"CustomWindow: Failed to use WPF Window, falling back to DialogService: {ex.Message}");
-            }
-
-            // Fallback to DialogService
             return ShowViaDialogService();
         }
 
@@ -128,8 +102,6 @@ namespace NINA.Core.Utility.WindowService {
 
             // Extract and register buttons
             ExtractAndRegisterButtons();
-
-            Console.WriteLine($"CustomWindow: Registered as DialogService #{_dialogServiceId}");
 
             // In headless mode, we don't block - return null to indicate dialog is open
             return null;
@@ -202,8 +174,7 @@ namespace NINA.Core.Utility.WindowService {
                         // Skip properties that throw exceptions
                     }
                 }
-            } catch (Exception ex) {
-                Console.WriteLine($"CustomWindow: Error extracting properties: {ex.Message}");
+            } catch {
             }
 
             return properties;

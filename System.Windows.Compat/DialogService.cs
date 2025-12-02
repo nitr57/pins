@@ -145,17 +145,45 @@ namespace System.Windows {
         /// Close a dialog with result
         /// </summary>
         public static bool CloseDialog(int dialogId, bool result = true) {
+            string contentType = null;
             lock (_lock) {
                 if (_activeDialogs.TryGetValue(dialogId, out var dialog)) {
+                    contentType = dialog.ContentType;
+                    
                     // Call the result callback if provided
                     dialog.ResultCallback?.Invoke(result);
 
                     _activeDialogs.Remove(dialogId);
-                    Console.WriteLine($"DialogService: Closed dialog #{dialogId} with result: {result}");
-                    return true;
                 }
-                return false;
             }
+            
+            // Broadcast close event via SignalR (outside lock to avoid deadlock)
+            if (contentType != null) {
+                _ = System.Threading.Tasks.Task.Run(async () => {
+                    try {
+                        // Try to use the DialogBroadcaster directly
+                        var broadcasterType = System.Type.GetType("NINA.Core.SignalR.DialogBroadcaster, NINA.Core");
+                        if (broadcasterType != null) {
+                            var instanceProp = broadcasterType.GetProperty("Instance", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
+                            var broadcaster = instanceProp?.GetValue(null);
+                            if (broadcaster != null) {
+                                var clearMethod = broadcasterType.GetMethod("ClearDialogAsync");
+                                if (clearMethod != null) {
+                                    var task = clearMethod.Invoke(broadcaster, new object[] { contentType }) as System.Threading.Tasks.Task;
+                                    if (task != null) {
+                                        await task;
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception ex) {
+                        // Silently fail - logging already handled by broadcaster
+                    }
+                });
+                return true;
+            }
+            
+            return false;
         }
 
         /// <summary>
@@ -169,7 +197,6 @@ namespace System.Windows {
                         b.Text.Equals(buttonName, StringComparison.OrdinalIgnoreCase));
 
                     if (button != null) {
-                        Console.WriteLine($"DialogService: Clicking button '{buttonName}' on dialog #{dialogId}");
                         button.OnClick?.Invoke();
 
                         // If it's a cancel button, close with false result
@@ -287,25 +314,13 @@ namespace System.Windows {
 
         /// <summary>
         /// Check if running in headless mode (no WPF UI)
+        /// Detects Unix/Linux environment for headless operation
         /// </summary>
         public static bool IsHeadless() {
-#if NET48
-            return false; // .NET Framework always has WPF available
-#else
-            try {
-                // Check if System.Windows.Application type exists and has a Current instance
-                var appType = Type.GetType("System.Windows.Application, PresentationFramework");
-                if (appType == null) {
-                    return true; // WPF not available
-                }
-
-                var currentProp = appType.GetProperty("Current", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static);
-                var current = currentProp?.GetValue(null);
-                return current == null; // No WPF application running
-            } catch {
-                return true; // Assume headless if we can't determine
-            }
-#endif
+            // On Linux, we're always in headless mode
+            var isUnix = Environment.OSVersion.Platform == PlatformID.Unix;
+            Console.WriteLine($"DialogService.IsHeadless(): Platform={Environment.OSVersion.Platform}, IsUnix={isUnix}");
+            return isUnix;
         }
     }
 }

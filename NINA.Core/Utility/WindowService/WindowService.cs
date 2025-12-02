@@ -1,7 +1,7 @@
 #region "copyright"
 
 /*
-    Copyright © 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
+    Copyright ï¿½ 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
 
     This file is part of N.I.N.A. - Nighttime Imaging 'N' Astronomy.
 
@@ -14,7 +14,9 @@
 
 using NINA.Core.Utility.Extensions;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Security;
 using System.Threading.Tasks;
@@ -33,6 +35,12 @@ namespace NINA.Core.Utility.WindowService {
         protected CustomWindow window;
 
         public void Show(object content, string title = "", ResizeMode resizeMode = ResizeMode.NoResize, WindowStyle windowStyle = WindowStyle.None) {
+            // Check if running in headless mode
+            if (System.Windows.DialogService.IsHeadless()) {
+                ShowViaDialogService(content, title);
+                return;
+            }
+
             dispatcher.Invoke(DispatcherPriority.Normal, new Action(() => {
                 try {
                     window = GenerateWindow(content, title, resizeMode, windowStyle, null);
@@ -120,6 +128,262 @@ namespace NINA.Core.Utility.WindowService {
         public event EventHandler OnDialogResultChanged;
 
         public event EventHandler OnClosed;
+
+        private void ShowViaDialogService(object content, string title) {
+            try {
+                var dialog = new DialogService.DialogInfo {
+                    Title = title ?? "Dialog",
+                    Message = ExtractMessage(content),
+                    ContentType = content?.GetType().FullName ?? "UnknownWindow",
+                    DataContext = content
+                };
+
+                // Extract content properties
+                if (content != null) {
+                    dialog.Content = ExtractProperties(content);
+                }
+
+                int dialogId = DialogService.RegisterDialog(dialog);
+                
+                // Subscribe to property changes for real-time updates
+                if (content is INotifyPropertyChanged notifyObj) {
+                    notifyObj.PropertyChanged += (sender, e) => {
+                        _ = Task.Run(async () => {
+                            try {
+                                var broadcaster = SignalR.DialogBroadcaster.Instance;
+                                if (broadcaster != null) {
+                                    var parameters = dialog.Content.ToDictionary(
+                                        kvp => kvp.Key,
+                                        kvp => kvp.Value?.ToString() ?? ""
+                                    );
+
+                                    var dialogData = new Model.DialogData {
+                                        Title = title ?? "Dialog",
+                                        ContentType = dialog.ContentType,
+                                        Active = true,
+                                        Status = ExtractMessage(content),
+                                        Parameters = parameters,
+                                        AvailableCommands = ["Cancel"]
+                                    };
+
+                                    // Special handling for PlateSolvingStatusVM
+                                    if (content?.GetType().FullName == "NINA.WPF.Base.ViewModel.PlateSolvingStatusVM") {
+                                        dialogData.SlewAndCenter = ExtractSlewAndCenterData(content);
+                                    }
+
+                                    await broadcaster.BroadcastDialogAsync(dialogData);
+                                }
+                            } catch (Exception ex) {
+                                Logger.Error($"Failed to broadcast dialog update via SignalR: {ex}");
+                            }
+                        });
+                    };
+                }
+                
+                // Subscribe to PlateSolveHistory collection changes for PlateSolvingStatusVM
+                if (content?.GetType().FullName == "NINA.WPF.Base.ViewModel.PlateSolvingStatusVM") {
+                    var historyProp = content.GetType().GetProperty("PlateSolveHistory");
+                    if (historyProp != null) {
+                        var historyCollection = historyProp.GetValue(content);
+                        if (historyCollection is System.Collections.Specialized.INotifyCollectionChanged collectionChanged) {
+                            collectionChanged.CollectionChanged += (sender, e) => {
+                                _ = Task.Run(async () => {
+                                    try {
+                                        var broadcaster = NINA.Core.SignalR.DialogBroadcaster.Instance;
+                                        if (broadcaster != null) {
+                                            var parameters = dialog.Content.ToDictionary(
+                                                kvp => kvp.Key,
+                                                kvp => kvp.Value?.ToString() ?? ""
+                                            );
+
+                                            var dialogData = new Model.DialogData {
+                                                Title = title ?? "Dialog",
+                                                ContentType = dialog.ContentType,
+                                                Active = true,
+                                                Status = ExtractMessage(content),
+                                                Parameters = parameters,
+                                                AvailableCommands = ["Cancel"],
+                                                SlewAndCenter = ExtractSlewAndCenterData(content)
+                                            };
+
+                                            await broadcaster.BroadcastDialogAsync(dialogData);
+                                        }
+                                    } catch (Exception ex) {
+                                        Logger.Error($"Failed to broadcast dialog update after collection change: {ex}");
+                                    }
+                                });
+                            };
+                        }
+                    }
+                }
+                
+                // Add a Cancel button (all dialogs should be cancellable)
+                DialogService.AddButton(dialogId, "Cancel", "Cancel", isDefault: false, isCancel: true, onClick: null);
+                
+                // Broadcast via SignalR immediately
+                _ = Task.Run(async () => {
+                    try {
+                        var broadcaster = SignalR.DialogBroadcaster.Instance;
+                        if (broadcaster != null) {
+                            // Convert object dictionary to string dictionary for Parameters
+                            var parameters = dialog.Content.ToDictionary(
+                                kvp => kvp.Key,
+                                kvp => kvp.Value?.ToString() ?? ""
+                            );
+
+                            var dialogData = new Model.DialogData {
+                                Title = title ?? "Dialog",
+                                ContentType = dialog.ContentType,
+                                Active = true,
+                                Status = ExtractMessage(content),
+                                Parameters = parameters,
+                                AvailableCommands = ["Cancel"]
+                            };
+
+                            // Special handling for PlateSolvingStatusVM
+                            if (content?.GetType().FullName == "NINA.WPF.Base.ViewModel.PlateSolvingStatusVM") {
+                                dialogData.SlewAndCenter = ExtractSlewAndCenterData(content);
+                            }
+                            
+                            await broadcaster.BroadcastDialogAsync(dialogData);
+                        }
+                    } catch (Exception ex) {
+                        Logger.Error($"Failed to broadcast dialog via SignalR: {ex}");
+                    }
+                });
+            } catch (Exception ex) {
+                Logger.Error($"WindowService.ShowViaDialogService() failed: {ex}");
+            }
+        }
+
+        private string ExtractMessage(object obj) {
+            if (obj == null) return "";
+
+            var type = obj.GetType();
+            var messageProp = type.GetProperty("Message") ?? type.GetProperty("Status");
+            if (messageProp != null) {
+                var value = messageProp.GetValue(obj);
+                if (value != null) return value.ToString();
+            }
+            return "";
+        }
+
+        private Dictionary<string, object> ExtractProperties(object obj) {
+            var result = new Dictionary<string, object>();
+            if (obj == null) return result;
+
+            var properties = obj.GetType().GetProperties();
+            foreach (var prop in properties) {
+                try {
+                    var value = prop.GetValue(obj);
+                    if (value != null) {
+                        result[prop.Name] = value;
+                    }
+                } catch {
+                    // Skip properties that can't be read
+                }
+            }
+            return result;
+        }
+
+        private Model.SlewAndCenterData ExtractSlewAndCenterData(object content) {
+            try {
+                var type = content.GetType();
+                
+                // Get Status property (ApplicationStatus object)
+                var statusProp = type.GetProperty("Status");
+                var statusObj = statusProp?.GetValue(content);
+                var statusMessage = "";
+                
+                if (statusObj != null) {
+                    // ApplicationStatus has a Status property with the actual message
+                    var statusType = statusObj.GetType();
+                    var statusStringProp = statusType.GetProperty("Status") ?? statusType.GetProperty("Message");
+                    if (statusStringProp != null) {
+                        statusMessage = statusStringProp.GetValue(statusObj)?.ToString() ?? "";
+                    } else {
+                        statusMessage = statusObj.ToString();
+                    }
+                }
+
+                // Get PlateSolveHistory collection
+                var historyProp = type.GetProperty("PlateSolveHistory");
+                var historyCollection = historyProp?.GetValue(content);
+                
+                var measurements = new List<Model.DialogMeasurement>();
+                Model.DialogMeasurement currentMeasurement = null;
+
+                if (historyCollection != null) {
+                    var enumerableType = historyCollection as System.Collections.IEnumerable;
+                    if (enumerableType != null) {
+                        var itemsList = new List<object>();
+                        foreach (var item in enumerableType) {
+                            itemsList.Add(item);
+                        }
+                        
+                        // Get the last item as current measurement
+                        if (itemsList.Count > 0) {
+                            var lastItem = itemsList[itemsList.Count - 1];
+                            currentMeasurement = ConvertToMeasurement(lastItem);
+                        }
+
+                        // Convert all items to measurements
+                        foreach (var item in itemsList) {
+                            var measurement = ConvertToMeasurement(item);
+                            if (measurement != null) {
+                                measurements.Add(measurement);
+                            }
+                        }
+                    }
+                }
+
+                var result = new Model.SlewAndCenterData {
+                    Active = true,
+                    Status = statusMessage,
+                    CurrentMeasurement = currentMeasurement,
+                    Measurements = measurements
+                };
+                
+                return result;
+            } catch (Exception ex) {
+                Logger.Error($"Failed to extract SlewAndCenter data: {ex}");
+                return null;
+            }
+        }
+
+        private Model.DialogMeasurement ConvertToMeasurement(object result) {
+            try {
+                var type = result.GetType();
+                
+                // Get SolveTime
+                var solveTimeProp = type.GetProperty("SolveTime");
+                var solveTime = solveTimeProp?.GetValue(result) as DateTime?;
+                
+                // Get Success
+                var successProp = type.GetProperty("Success");
+                var success = (bool)(successProp?.GetValue(result) ?? false);
+                
+                // Get Separation (error distance)
+                var separationProp = type.GetProperty("Separation");
+                var separation = separationProp?.GetValue(result);
+                var errorDistance = separation?.ToString() ?? "--";
+                
+                // Get Position Angle (rotation)
+                var posAngleProp = type.GetProperty("PositionAngle");
+                var posAngle = posAngleProp?.GetValue(result);
+                var rotation = posAngle?.ToString() ?? "--";
+
+                return new Model.DialogMeasurement {
+                    Time = solveTime?.ToString("HH:mm:ss") ?? "",
+                    Success = success,
+                    ErrorDistance = errorDistance,
+                    Rotation = rotation
+                };
+            } catch (Exception ex) {
+                Logger.Error($"Failed to convert measurement: {ex}");
+                return null;
+            }
+        }
     }
 
     public interface IWindowService {
