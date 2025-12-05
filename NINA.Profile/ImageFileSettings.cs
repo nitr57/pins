@@ -31,7 +31,7 @@ namespace NINA.Profile {
 
         protected override void SetDefaultValues() {
             filePath = Path.Combine(System.Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "N.I.N.A");
-            filePattern = "$$DATEMINUS12$$\\$$IMAGETYPE$$\\$$DATETIME$$_$$FILTER$$_$$SENSORTEMP$$_$$EXPOSURETIME$$s_$$FRAMENR$$";
+            filePattern = "$$DATEMINUS12$$/$$IMAGETYPE$$/$$DATETIME$$_$$FILTER$$_$$SENSORTEMP$$_$$EXPOSURETIME$$s_$$FRAMENR$$";
             filePatternDARK = "";
             filePatternBIAS = "";
             filePatternFLAT = "";

@@ -24,6 +24,9 @@ namespace NINA.Core.Enum {
         DCRAW,
 
         [Description("LblFreeImage")]
-        FREEIMAGE
+        FREEIMAGE,
+
+        [Description("LblLibRaw")]
+        LIBRAW
     }
 }

@@ -1,7 +1,7 @@
 #region "copyright"
 
 /*
-    Copyright © 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
+    Copyright Â© 2016 - 2024 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
 
     This file is part of N.I.N.A. - Nighttime Imaging 'N' Astronomy.
 
@@ -341,7 +341,7 @@ namespace NINA.Image.ImageData {
 
                 if (pattern.Contains("$$DSLR_SENSORTEMP$$") && double.IsNaN(MetaData.Camera.Temperature) && !string.IsNullOrEmpty(Data.RAWType)) {
                     // Extract the temperature from the EXIF info for DSLRs
-                    actualPath = ExtractDSLRTemperatureAndMoveFile(actualPath);
+                    //actualPath = ExtractDSLRTemperatureAndMoveFile(actualPath);
                 }
                 Logger.Info($"Saved image to {actualPath}");
             } catch (OperationCanceledException) {
@@ -383,6 +383,11 @@ namespace NINA.Image.ImageData {
         private Task<string> SaveToDiskAsync(FileSaveInfo fileSaveInfo, string fileName, CancellationToken cancelToken, bool forceFileType = false) {
             return Task.Run(() => {
                 string path = string.Empty;
+                
+                // Normalize path separators to use OS-appropriate separator
+                // This is important for Linux where patterns might contain Windows-style backslashes
+                fileName = fileName.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
+                
                 fileSaveInfo.FilePath = Path.Combine(fileSaveInfo.FilePath, fileName);
 
                 if (!forceFileType && Data.RAWData != null) {
@@ -410,6 +415,8 @@ namespace NINA.Image.ImageData {
         }
 
         private string SaveRAW(string path) {
+            // Normalize path separators before creating directory
+            path = path.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             IImageArray data = Data;
             string uniquePath = CoreUtil.GetUniqueFilePath(path + "." + data.RAWType);
@@ -418,6 +425,8 @@ namespace NINA.Image.ImageData {
         }
 
         private string SaveTiff(FileSaveInfo fileSaveInfo) {
+            // Normalize path separators before creating directory
+            fileSaveInfo.FilePath = fileSaveInfo.FilePath.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
             Directory.CreateDirectory(Path.GetDirectoryName(fileSaveInfo.FilePath));
             string uniquePath = CoreUtil.GetUniqueFilePath(fileSaveInfo.FilePath + fileSaveInfo.GetExtension(".tif"));
 
@@ -476,6 +485,8 @@ namespace NINA.Image.ImageData {
         }
 
         private string SaveFits(FileSaveInfo fileSaveInfo) {
+            // Normalize path separators before creating directory
+            fileSaveInfo.FilePath = fileSaveInfo.FilePath.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
             string extension = ".fits";
 
             if(fileSaveInfo.FITSUseLegacyWriter) {
@@ -522,6 +533,8 @@ namespace NINA.Image.ImageData {
         }
 
         private string SaveXisf(FileSaveInfo fileSaveInfo) {
+            fileSaveInfo.FilePath = fileSaveInfo.FilePath.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
+
             XISFHeader header = new XISFHeader();
 
             var sampleFormat = Data.FlatArrayInt != null ? XISFSampleFormat.UInt32 : XISFSampleFormat.UInt16;

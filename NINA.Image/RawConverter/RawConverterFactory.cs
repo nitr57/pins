@@ -24,6 +24,9 @@ namespace NINA.Image.RawConverter {
                 case RawConverterEnum.DCRAW:
                     return new DCRaw(imageDataFactory);
 
+                case RawConverterEnum.LIBRAW:
+                    return new LibRawConverter(imageDataFactory);
+
                 case RawConverterEnum.FREEIMAGE:
                     return new FreeImageConverter(imageDataFactory);
 

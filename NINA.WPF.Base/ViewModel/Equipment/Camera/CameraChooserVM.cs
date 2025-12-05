@@ -19,14 +19,12 @@ using NINA.Core.Utility;
 using NINA.Equipment.Interfaces.Mediator;
 using System;
 using System.Collections.Generic;
-using ZWOptical.ASISDK;
 using NINA.Equipment.Utility;
 using NINA.Core.Locale;
 using NINA.Equipment.Equipment;
 using NINA.Equipment.Interfaces;
 using NINA.Image.Interfaces;
 using NINA.Equipment.Interfaces.ViewModel;
-using NINA.Core.Interfaces;
 using System.Threading.Tasks;
 
 namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
@@ -203,6 +201,17 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                     Logger.Error(ex);
                 }
 
+                /* libgphoto2 */
+                try {
+                    var gpCameras = GPSDK.GPSDK.Enum();
+                    Logger.Info($"Found {gpCameras.Count} libgphoto2 Cameras");
+                    foreach(var cam in gpCameras){
+                        devices.Add(new GPCamera(cam.Key, cam.Value, profileService, exposureDataFactory));
+                    }
+                } catch (Exception ex) {
+                    Logger.Error(ex);
+                }
+
                 //                devices.Add(new FileCamera(profileService, telescopeMediator, imageDataFactory, exposureDataFactory));
                 devices.Add(new SimpleSimulatorCamera(profileService, imageDataFactory, exposureDataFactory));
 
@@ -211,6 +220,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
             } finally {
                 lockObj.Release();
             }
-        }        
+        }
     }
 }
