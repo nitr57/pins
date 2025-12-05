@@ -99,16 +99,16 @@ namespace NINA.Test.Sequencer.Conditions {
 
             sut.ShowMenu.Should().BeTrue();
         }
-        /*
-                [Test]
-                public void ResetProgress_ShowMenuTest() {
-                    var sut = new SeuqenceConditionImpl();
-                    sut.ShowMenu = true;
-                    sut.ResetProgressCommand.Execute(default);
 
-                    sut.ShowMenu.Should().BeFalse();
-                }
-        */
+        [Test]
+        public void ResetProgress_ShowMenuTest() {
+            var sut = new SeuqenceConditionImpl();
+            sut.ShowMenu = true;
+            sut.ResetProgressCommand.Execute(default);
+
+            sut.ShowMenu.Should().BeFalse();
+        }
+
         [Test]
         public virtual void ResetProgress_NoOp() {
             var sut = new SeuqenceConditionImpl();
@@ -169,48 +169,47 @@ namespace NINA.Test.Sequencer.Conditions {
             var sut = new SeuqenceConditionImpl();
             sut.Invoking(x => x.MoveDown()).Should().Throw<NotImplementedException>();
         }
-        /*
-                [Test]
-                public virtual void MoveUp_IsNull() {
-                    var sut = new SeuqenceConditionImpl();
-                    sut.MoveUpCommand.Should().BeNull();
-                }
 
-                [Test]
-                public virtual void MoveDown_IsNull() {
-                    var sut = new SeuqenceConditionImpl();
-                    sut.MoveDownCommand.Should().BeNull();
-                }
+        [Test]
+        public virtual void MoveUp_IsNull() {
+            var sut = new SeuqenceConditionImpl();
+            sut.MoveUpCommand.Should().BeNull();
+        }
 
-                [Test]
-                public virtual void Detach_HasNoParent_NoOp() {
-                    var sut = new SeuqenceConditionImpl();
+        [Test]
+        public virtual void MoveDown_IsNull() {
+            var sut = new SeuqenceConditionImpl();
+            sut.MoveDownCommand.Should().BeNull();
+        }
 
-                    sut.DetachCommand.Execute(default);
-                    sut.Status.Should().Be(SequenceEntityStatus.CREATED);
-                }
+        [Test]
+        public virtual void Detach_HasNoParent_NoOp() {
+            var sut = new SeuqenceConditionImpl();
 
-                [Test]
-                public virtual void Detach_HasParent_CallsRemove() {
-                    var parentMock = new Mock<ISequenceContainer>();
+            sut.DetachCommand.Execute(default);
+            sut.Status.Should().Be(SequenceEntityStatus.CREATED);
+        }
 
-                    var sut = new SeuqenceConditionImpl();
-                    sut.Parent = parentMock.Object;
+        [Test]
+        public virtual void Detach_HasParent_CallsRemove() {
+            var parentMock = new Mock<ISequenceContainer>();
 
-                    sut.DetachCommand.Execute(default);
+            var sut = new SeuqenceConditionImpl();
+            sut.Parent = parentMock.Object;
 
-                    parentMock.Verify(x => x.Remove(It.Is<ISequenceCondition>(y => y == sut)));
-                }
+            sut.DetachCommand.Execute(default);
 
-                [Test]
-                public virtual void ShowMenuCommand_FlipsShowMenu() {
-                    var sut = new SeuqenceConditionImpl();
+            parentMock.Verify(x => x.Remove(It.Is<ISequenceCondition>(y => y == sut)));
+        }
 
-                    sut.ShowMenu = true;
-                    sut.ShowMenuCommand.Execute(default);
+        [Test]
+        public virtual void ShowMenuCommand_FlipsShowMenu() {
+            var sut = new SeuqenceConditionImpl();
 
-                    sut.ShowMenu.Should().BeFalse();
-                }
-                */
+            sut.ShowMenu = true;
+            sut.ShowMenuCommand.Execute(default);
+
+            sut.ShowMenu.Should().BeFalse();
+        }
     }
 }

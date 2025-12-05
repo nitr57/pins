@@ -8,6 +8,7 @@
     <IncludeSource>true</IncludeSource>
     <Deterministic>true</Deterministic>
     <Optimize>true</Optimize>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/*.xaml.cs;**/*.xaml</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\CommonAssemblyInfo.cs">

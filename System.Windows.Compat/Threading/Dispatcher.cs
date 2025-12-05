@@ -74,6 +74,14 @@ namespace System.Windows.Threading {
             // In headless mode, always return true (we can access from any thread)
             return true;
         }
+
+        public static void PushFrame(DispatcherFrame frame) {
+            // In headless mode, simulate frame processing by pumping the message loop
+            // until Continue is set to false by another thread
+            while (frame.Continue) {
+                System.Threading.Thread.Sleep(10);
+            }
+        }
     }
 
     /// <summary>
@@ -115,6 +123,13 @@ namespace System.Windows.Threading {
             // Ignore priority and dispatcher in headless mode
             _timer = new System.Timers.Timer();
             _timer.Elapsed += (s, e) => Tick?.Invoke(this, EventArgs.Empty);
+        }
+
+        public DispatcherTimer(System.TimeSpan interval, DispatcherPriority priority, System.EventHandler callback, Dispatcher dispatcher) {
+            // Ignore priority and dispatcher in headless mode
+            _timer = new System.Timers.Timer(interval.TotalMilliseconds);
+            _timer.Elapsed += (s, e) => callback?.Invoke(this, EventArgs.Empty);
+            Tick += callback;
         }
 
         public TimeSpan Interval {

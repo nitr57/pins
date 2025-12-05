@@ -85,7 +85,7 @@ namespace System.Windows.Media.Imaging {
 
                 // Resize first (using absolute scale), then flip if needed for negative scales
                 using var resized = new Mat();
-                Cv2.Resize(sourceMat, resized, new Size(newWidth, newHeight), 0, 0, InterpolationFlags.Linear);
+                Cv2.Resize(sourceMat, resized, new OpenCvSharp.Size(newWidth, newHeight), 0, 0, InterpolationFlags.Linear);
 
                 if (scaleX < 0 || scaleY < 0) {
                     FlipMode flipMode = FlipMode.X; // Flip horizontally by default

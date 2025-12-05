@@ -8,7 +8,6 @@
     <IncludeSource>true</IncludeSource>
     <Deterministic>true</Deterministic>
     <Optimize>true</Optimize>
-    <!-- Exclude XAML and code-behind files from build -->
     <DefaultItemExcludes>$(DefaultItemExcludes);**/*.xaml.cs;**/*.xaml</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
@@ -41,5 +40,7 @@
     <PackageReference Include="System.Data.SqlClient" Version="4.9.0" />
     <PackageReference Include="System.Net.Http" Version="4.3.4" />
     <PackageReference Include="System.Text.RegularExpressions" Version="4.3.1" />
+    <!-- Exclude System.Drawing.Common as it conflicts with our compat library -->
+    <PackageReference Include="System.Drawing.Common" Version="*" ExcludeAssets="all" />
   </ItemGroup>
 </Project>

@@ -95,7 +95,7 @@ namespace NINA.ViewModel {
                     Logger.Info("Unable to retrieve drive info");
                 }
                 var elapsed = sw.Elapsed;
-            });
+            });            
         }
 
         [RelayCommand]

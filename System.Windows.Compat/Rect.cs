@@ -31,6 +31,13 @@ namespace System.Windows {
             Height = bottomRight.Y - topLeft.Y;
         }
 
+        public Rect(Point topLeft, Size size) {
+            X = topLeft.X;
+            Y = topLeft.Y;
+            Width = size.Width;
+            Height = size.Height;
+        }
+
         public double X { get; set; }
         public double Y { get; set; }
         public double Width { get; set; }

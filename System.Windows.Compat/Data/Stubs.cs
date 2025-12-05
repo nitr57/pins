@@ -12,6 +12,41 @@
 
 #endregion "copyright"
 
+using System.Collections.Generic;
+using System.Windows.Input;
+
+namespace System.Windows {
+    /// <summary>
+    /// Represents the result of a hit test operation.
+    /// </summary>
+    /// </summary>
+    public interface IInputElement {
+        event EventHandler<Input.MouseEventArgs> MouseMove;
+    }
+
+    /// <summary>
+    /// Provides access to designer-related attached properties.
+    /// </summary>
+    public static class DesignerProperties {
+        /// <summary>
+        /// Attached property that indicates whether an element is in design mode.
+        /// </summary>
+        public static DependencyProperty IsInDesignModeProperty { get; } = DependencyProperty.RegisterAttached(
+            "IsInDesignMode",
+            typeof(bool),
+            typeof(DesignerProperties),
+            new PropertyMetadata(false));
+    }
+
+    /// <summary>
+    /// Specifies the direction of text flow.
+    /// </summary>
+    public enum FlowDirection {
+        LeftToRight,
+        RightToLeft
+    }
+}
+
 namespace System.Windows.Data {
     public delegate void CurrentChangingEventHandler(object sender, CurrentChangingEventArgs e);
 
@@ -42,14 +77,26 @@ namespace System.Windows.Data {
     public class SortDescriptionCollection : System.Collections.ObjectModel.Collection<SortDescription> { }
 
     public class CollectionViewSource {
+        private DefaultCollectionView _view;
+        private readonly System.Collections.ObjectModel.ObservableCollection<GroupDescription> _groupDescriptions;
+        private readonly SortDescriptionCollection _sortDescriptions;
+
         public CollectionViewSource() {
-            GroupDescriptions = new System.Collections.ObjectModel.ObservableCollection<GroupDescription>();
-            SortDescriptions = new SortDescriptionCollection();
+            _groupDescriptions = new System.Collections.ObjectModel.ObservableCollection<GroupDescription>();
+            _sortDescriptions = new SortDescriptionCollection();
+            _view = null;
         }
-        public object Source { get; set; }
-        public System.ComponentModel.ICollectionView View { get; }
-        public System.Collections.ObjectModel.ObservableCollection<GroupDescription> GroupDescriptions { get; }
-        public SortDescriptionCollection SortDescriptions { get; }
+
+        public object Source { 
+            get { return _view?.SourceCollection; }
+            set {
+                _view = new DefaultCollectionView(value as System.Collections.IEnumerable);
+            }
+        }
+
+        public System.ComponentModel.ICollectionView View => _view;
+        public System.Collections.ObjectModel.ObservableCollection<GroupDescription> GroupDescriptions => _groupDescriptions;
+        public SortDescriptionCollection SortDescriptions => _sortDescriptions;
 
         public static System.ComponentModel.ICollectionView GetDefaultView(System.Collections.IEnumerable collection) {
             // In headless mode, return a simple wrapper around the collection
@@ -288,6 +335,25 @@ namespace System.Windows {
 
     public class DependencyObject : Media.Visual {
         // Stub for WPF DependencyObject
+        private Dictionary<string, object> _propertyValues = new Dictionary<string, object>();
+
+        public object GetValue(DependencyProperty dp) {
+            if (dp != null && _propertyValues.TryGetValue(dp.ToString(), out var value)) {
+                return value;
+            }
+            return null;
+        }
+
+        public void SetValue(DependencyProperty dp, object value) {
+            if (dp != null) {
+                _propertyValues[dp.ToString()] = value;
+            }
+        }
+
+        public void BeginAnimation(DependencyProperty dp, Media.Animation.AnimationTimeline animation) {
+            // Stub for animation - in headless mode, animations are not executed
+            // This method is called but doesn't actually animate anything
+        }
     }
 
     public class Application {
@@ -314,7 +380,7 @@ namespace System.Windows {
         // Collection of Window objects - empty in headless mode
     }
 
-    public class Window : DependencyObject {
+    public class Window : UIElement {
         public bool IsFocused { get; set; }
         public bool IsLoaded { get; set; }
         public bool IsActive { get; set; }
@@ -351,6 +417,7 @@ namespace System.Windows {
         public bool Focus() => true;
         public bool Activate() => true;
         public Point PointToScreen(Point pt) => pt;
+        public object FindName(string name) => null;
 
         // Added for stub compatibility
         public object GetValue(object dp) => null;
@@ -386,12 +453,19 @@ namespace System.Windows {
     }
 
     public class ResourceDictionary : System.Collections.Generic.Dictionary<object, object> {
+        public Uri Source { get; set; }
+        public System.Collections.Generic.List<ResourceDictionary> MergedDictionaries { get; set; } = new System.Collections.Generic.List<ResourceDictionary>();
+
         public ResourceDictionary() : base() { }
 
         // Always return null - resources are never populated in headless mode
         public new object this[object key] {
             get => null;
             set { } // No-op
+        }
+
+        public bool Contains(object key) {
+            return ContainsKey(key);
         }
     }
 
@@ -426,6 +500,16 @@ namespace System.Windows {
 
         public static Point operator -(Point point, Vector vector) =>
             new Point(point.X - vector.X, point.Y - vector.Y);
+    }
+
+    public struct Size {
+        public double Width { get; set; }
+        public double Height { get; set; }
+
+        public Size(double width, double height) {
+            Width = width;
+            Height = height;
+        }
     }
 
     public struct Vector {
@@ -473,6 +557,55 @@ namespace System.Windows {
 
         public static implicit operator Vector(OpenCvSharp.Vec2d v) =>
             new Vector(v.Item0, v.Item1);
+    }
+
+    /// <summary>
+    /// Represents the method that handles routed events.
+    /// </summary>
+    public delegate void RoutedEventHandler(object sender, RoutedEventArgs e);
+
+    /// <summary>
+    /// Represents a template for displaying data.
+    /// </summary>
+    public class DataTemplate {
+        public object DataType { get; set; }
+    }
+
+    /// <summary>
+    /// Represents a hierarchical data template for displaying data with child items.
+    /// </summary>
+    public class HierarchicalDataTemplate : DataTemplate {
+        public string ItemsSource { get; set; }
+        public DataTemplate ItemTemplate { get; set; }
+    }
+
+    /// <summary>
+    /// Key used to reference a DataTemplate resource.
+    /// </summary>
+    public class DataTemplateKey {
+        public object DataType { get; set; }
+
+        public DataTemplateKey() { }
+
+        public DataTemplateKey(object dataType) {
+            DataType = dataType;
+        }
+    }
+
+    /// <summary>
+    /// Base class for template selectors.
+    /// </summary>
+    public abstract class DataTemplateSelector {
+        public virtual DataTemplate SelectTemplate(object item, System.Windows.DependencyObject container) {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Base class for style selectors.
+    /// </summary>
+    public abstract class StyleSelector {
+        public abstract System.Windows.Style SelectStyle(object item, System.Windows.DependencyObject container);
     }
 }
 
@@ -522,6 +655,16 @@ namespace System.Windows {
     public class RoutedEvent {
         // Stub
     }
+
+    /// <summary>
+    /// Provides static text decoration instances.
+    /// </summary>
+    public static class TextDecorations {
+        public static Media.TextDecoration Underline { get; } = new Media.TextDecoration();
+        public static Media.TextDecoration Strikethrough { get; } = new Media.TextDecoration();
+        public static Media.TextDecoration Overline { get; } = new Media.TextDecoration();
+        public static Media.TextDecoration Baseline { get; } = new Media.TextDecoration();
+    }
 }
 
 namespace System.Windows.Media {
@@ -536,5 +679,49 @@ namespace System.Windows.Media {
             // In headless mode, no visual tree
             return null;
         }
+
+        public static DependencyObject GetParent(DependencyObject reference) {
+            // In headless mode, no visual tree
+            return null;
+        }
+
+        public static HitTestResult HitTest(Visual visual, Point point) {
+            return new HitTestResult();
+        }
+
+        public static HitTestResult HitTest(FrameworkElement element, Point point) {
+            return new HitTestResult();
+        }
+
+        public static HitTestResult HitTest(UIElement visual, HitTestFilterCallback filterCallback, HitTestResultCallback resultCallback, HitTestParameters hitTestParameters) {
+            // In headless mode, no visual tree - just return empty result
+            return new HitTestResult();
+        }
+    }
+
+    /// <summary>
+    /// Represents the result of a hit test operation.
+    /// </summary>
+    public class HitTestResult {
+        public Visual VisualHit { get; set; }
+    }
+
+    /// <summary>
+    /// Represents a text decoration.
+    /// </summary>
+    public class TextDecoration {
+        public Pen Pen { get; set; }
+        public TextDecorationLocation Location { get; set; }
+    }
+
+    /// <summary>
+    /// Specifies the location of a text decoration.
+    /// </summary>
+    public enum TextDecorationLocation {
+        Underline,
+        Strikethrough,
+        Overline,
+        Baseline
     }
 }
+

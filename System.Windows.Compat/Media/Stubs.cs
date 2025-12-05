@@ -13,6 +13,16 @@
 #endregion "copyright"
 
 namespace System.Windows.Media {
+    /// <summary>
+    /// Enum for specifying how content is stretched.
+    /// </summary>
+    public enum Stretch {
+        None,
+        Fill,
+        Uniform,
+        UniformToFill
+    }
+
     public static class Colors {
         public static Color Transparent => Color.FromArgb(0, 0, 0, 0);
         public static Color Black => Color.FromRgb(0, 0, 0);
@@ -36,8 +46,6 @@ namespace System.Windows.Media {
         public GeometryCollection Children { get; set; } = new GeometryCollection();
     }
 
-    public class Geometry { }
-
     public class GeometryCollection : System.Collections.Generic.List<Geometry> { }
 
     public class PointCollection : System.Collections.Generic.List<Point> {
@@ -46,11 +54,61 @@ namespace System.Windows.Media {
         public PointCollection(System.Collections.Generic.IEnumerable<Point> collection) : base(collection) { }
     }
 
-    public class PathGeometry : Geometry { }
+    public class PathFigure {
+        public Point StartPoint { get; set; }
+        public PathSegmentCollection Segments { get; set; } = new PathSegmentCollection();
+        public bool IsClosed { get; set; }
+        public bool IsFilled { get; set; } = true;
+
+        public PathFigure() { }
+
+        public PathFigure(Point startPoint, System.Collections.Generic.List<PathSegment> segments, bool isClosed) {
+            StartPoint = startPoint;
+            Segments = new PathSegmentCollection(segments);
+            IsClosed = isClosed;
+        }
+    }
+
+    public class PathFigureCollection : System.Collections.Generic.List<PathFigure> {
+        public PathFigureCollection() : base() { }
+        public PathFigureCollection(int capacity) : base(capacity) { }
+        public PathFigureCollection(System.Collections.Generic.IEnumerable<PathFigure> collection) : base(collection) { }
+    }
+
+    public abstract class PathSegment { }
+
+    public class LineSegment : PathSegment {
+        public Point Point { get; set; }
+        public bool IsStroked { get; set; } = true;
+
+        public LineSegment() { }
+
+        public LineSegment(Point point, bool isStroked) {
+            Point = point;
+            IsStroked = isStroked;
+        }
+    }
+
+    public class PathSegmentCollection : System.Collections.Generic.List<PathSegment> {
+        public PathSegmentCollection() : base() { }
+        public PathSegmentCollection(int capacity) : base(capacity) { }
+        public PathSegmentCollection(System.Collections.Generic.IEnumerable<PathSegment> collection) : base(collection) { }
+    }
+
+    /// <summary>
+    /// Specifies the fill rule for a path geometry.
+    /// </summary>
+    public enum FillRule {
+        EvenOdd,
+        Nonzero
+    }
+
+    public class PathGeometry : Geometry {
+        public PathFigureCollection Figures { get; set; } = new PathFigureCollection();
+        public FillRule FillRule { get; set; } = FillRule.EvenOdd;
+    }
 
     public class LineGeometry : Geometry { }
-
-    public class RectangleGeometry : Geometry { }
 
     public class EllipseGeometry : Geometry { }
 
@@ -141,6 +199,21 @@ namespace System.Windows.Media {
 
         // Implicit conversion to Scalar for OpenCV
         public static implicit operator OpenCvSharp.Scalar(SolidColorBrush brush) => brush.Color;
+    }
+
+    /// <summary>
+    /// Brush that paints with visual content
+    /// </summary>
+    public class VisualBrush : Brush {
+        public object Visual { get; set; }
+        public Stretch Stretch { get; set; } = Stretch.Fill;
+        public double Opacity { get; set; } = 1.0;
+
+        public VisualBrush() { }
+
+        public VisualBrush(object visual) {
+            Visual = visual;
+        }
     }
 
     /// <summary>
@@ -276,5 +349,124 @@ namespace System.Windows.Media {
     /// Visual base class (minimal implementation for DPI-aware operations)
     /// </summary>
     public class Visual {
+    }
+
+    /// <summary>
+    /// Represents a typeface (font family, weight, style, stretch).
+    /// </summary>
+    public class Typeface {
+        public Typeface(FontFamily fontFamily) {
+            FontFamily = fontFamily;
+        }
+
+        public Typeface(FontFamily fontFamily, FontStyle style, FontWeight weight, FontStretch stretch) {
+            FontFamily = fontFamily;
+            Style = style;
+            Weight = weight;
+            Stretch = stretch;
+        }
+
+        public Typeface(FontFamily fontFamily, FontStyle style, FontWeight weight, FontStretch stretch, FontFamily fallback) {
+            FontFamily = fontFamily;
+            Style = style;
+            Weight = weight;
+            Stretch = stretch;
+        }
+
+        public FontFamily FontFamily { get; set; }
+        public FontStyle Style { get; set; }
+        public FontWeight Weight { get; set; }
+        public FontStretch Stretch { get; set; }
+    }
+
+    /// <summary>
+    /// Represents font style options.
+    /// </summary>
+    public enum FontStyle {
+        Normal,
+        Italic,
+        Oblique
+    }
+
+    /// <summary>
+    /// Provides static predefined font styles.
+    /// </summary>
+    public static class FontStyles {
+        public static FontStyle Normal => FontStyle.Normal;
+        public static FontStyle Italic => FontStyle.Italic;
+        public static FontStyle Oblique => FontStyle.Oblique;
+    }
+
+    /// <summary>
+    /// Represents font weight options.
+    /// </summary>
+    public enum FontWeight {
+        Thin,
+        ExtraLight,
+        Light,
+        Normal,
+        Medium,
+        SemiBold,
+        Bold,
+        ExtraBold,
+        Black
+    }
+
+    /// <summary>
+    /// Provides static predefined font weights.
+    /// </summary>
+    public static class FontWeights {
+        public static FontWeight Thin => FontWeight.Thin;
+        public static FontWeight ExtraLight => FontWeight.ExtraLight;
+        public static FontWeight Light => FontWeight.Light;
+        public static FontWeight Normal => FontWeight.Normal;
+        public static FontWeight Medium => FontWeight.Medium;
+        public static FontWeight SemiBold => FontWeight.SemiBold;
+        public static FontWeight Bold => FontWeight.Bold;
+        public static FontWeight ExtraBold => FontWeight.ExtraBold;
+        public static FontWeight Black => FontWeight.Black;
+    }
+
+    /// <summary>
+    /// Represents font stretch options.
+    /// </summary>
+    public enum FontStretch {
+        UltraCondensed,
+        ExtraCondensed,
+        Condensed,
+        SemiCondensed,
+        Normal,
+        SemiExpanded,
+        Expanded,
+        ExtraExpanded,
+        UltraExpanded
+    }
+
+    /// <summary>
+    /// Provides static predefined font stretches.
+    /// </summary>
+    public static class FontStretches {
+        public static FontStretch UltraCondensed => FontStretch.UltraCondensed;
+        public static FontStretch ExtraCondensed => FontStretch.ExtraCondensed;
+        public static FontStretch Condensed => FontStretch.Condensed;
+        public static FontStretch SemiCondensed => FontStretch.SemiCondensed;
+        public static FontStretch Normal => FontStretch.Normal;
+        public static FontStretch SemiExpanded => FontStretch.SemiExpanded;
+        public static FontStretch Expanded => FontStretch.Expanded;
+        public static FontStretch ExtraExpanded => FontStretch.ExtraExpanded;
+        public static FontStretch UltraExpanded => FontStretch.UltraExpanded;
+    }
+
+    /// <summary>
+    /// Represents a geometric shape.
+    /// </summary>
+    public abstract class Geometry {
+    }
+
+    /// <summary>
+    /// Represents a rectangular geometry.
+    /// </summary>
+    public class RectangleGeometry : Geometry {
+        public Rect Rect { get; set; }
     }
 }

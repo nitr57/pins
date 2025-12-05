@@ -31,13 +31,19 @@ namespace System.Windows.Media {
     internal class DrawingOperation {
         public enum OperationType {
             DrawImage,
-            DrawLine
+            DrawLine,
+            DrawRectangle,
+            DrawGeometry,
+            DrawText
         }
 
         public OperationType Type { get; set; }
         public Imaging.BitmapSource Image { get; set; }
         public Rect Rect { get; set; }
         public Pen Pen { get; set; }
+        public Brush Brush { get; set; }
+        public Geometry Geometry { get; set; }
+        public FormattedText FormattedText { get; set; }
         public Point Point1 { get; set; }
         public Point Point2 { get; set; }
     }
@@ -66,6 +72,32 @@ namespace System.Windows.Media {
                 Pen = pen,
                 Point1 = point1,
                 Point2 = point2
+            });
+        }
+
+        public void DrawRectangle(Brush brush, Pen pen, Rect rectangle) {
+            _visual.Operations.Add(new DrawingOperation {
+                Type = DrawingOperation.OperationType.DrawRectangle,
+                Brush = brush,
+                Pen = pen,
+                Rect = rectangle
+            });
+        }
+
+        public void DrawGeometry(Brush brush, Pen pen, Geometry geometry) {
+            _visual.Operations.Add(new DrawingOperation {
+                Type = DrawingOperation.OperationType.DrawGeometry,
+                Brush = brush,
+                Pen = pen,
+                Geometry = geometry
+            });
+        }
+
+        public void DrawText(FormattedText text, Point point) {
+            _visual.Operations.Add(new DrawingOperation {
+                Type = DrawingOperation.OperationType.DrawText,
+                FormattedText = text,
+                Point1 = point
             });
         }
 

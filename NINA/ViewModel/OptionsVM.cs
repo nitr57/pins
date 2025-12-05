@@ -80,6 +80,8 @@ namespace NINA.ViewModel {
                 // We enforce that the main plugin repository is always present
                 PluginRepositories.Insert(0, Constants.MainPluginRepository);
             }
+            CopyToCustomSchemaCommand = new Core.Utility.RelayCommand(CopyToCustomSchema, (object o) => ActiveProfile.ColorSchemaSettings.ColorSchema?.Name != "Custom");
+            CopyToAlternativeCustomSchemaCommand = new Core.Utility.RelayCommand(CopyToAlternativeCustomSchema, (object o) => ActiveProfile.ColorSchemaSettings.AltColorSchema?.Name != "Alternative Custom");
 
             RecreatePatterns();
 
@@ -107,6 +109,10 @@ namespace NINA.ViewModel {
                     || !string.IsNullOrWhiteSpace(profileService.ActiveProfile.ImageFileSettings.FilePatternDARK)
                     || !string.IsNullOrWhiteSpace(profileService.ActiveProfile.ImageFileSettings.FilePatternFLAT);
             };
+
+            Profiles = CollectionViewSource.GetDefaultView(profileService.Profiles);
+            Profiles.SortDescriptions.Add(new SortDescription("IsActive", ListSortDirection.Descending));
+            Profiles.SortDescriptions.Add(new SortDescription("Name", ListSortDirection.Ascending));
 
             FilePatternsExpanded = !string.IsNullOrWhiteSpace(profileService.ActiveProfile.ImageFileSettings.FilePatternBIAS)
                 || !string.IsNullOrWhiteSpace(profileService.ActiveProfile.ImageFileSettings.FilePatternDARK)
@@ -322,7 +328,9 @@ namespace NINA.ViewModel {
         private void CopyToAlternativeCustomSchema(object obj) {
             ActiveProfile.ColorSchemaSettings.CopyToAltCustom();
         }
-
+        [RelayCommand(CanExecute = nameof(CanCloneProfile))]
+        private void CloneProfile(object obj) {
+        }
         [RelayCommand(CanExecute = nameof(CanRemoveProfile))]
         private void RemoveProfile(object obj) {
             if (MyMessageBox.Show(string.Format(Loc.Instance["LblRemoveProfileText"], SelectedProfile?.Name, SelectedProfile?.Id), Loc.Instance["LblRemoveProfileCaption"], System.Windows.MessageBoxButton.YesNo, System.Windows.MessageBoxResult.No) == System.Windows.MessageBoxResult.Yes) {
@@ -577,6 +585,12 @@ namespace NINA.ViewModel {
                     .Where(p => p != FileTypeEnum.TIFF_ZIP)
                     .ToArray();
 
+#pragma warning restore CS0612 // Type or member is obsolete
+
+        public static TIFFCompressionTypeEnum[] TIFFCompressionTypes => Enum.GetValues(typeof(TIFFCompressionTypeEnum))
+                    .Cast<TIFFCompressionTypeEnum>()
+                    .ToArray();
+
         public static XISFCompressionTypeEnum[] XISFCompressionTypes => Enum.GetValues(typeof(XISFCompressionTypeEnum))
                     .Cast<XISFCompressionTypeEnum>()
                     .ToArray();
@@ -624,6 +638,49 @@ namespace NINA.ViewModel {
             }
         }
 
+        public AutoUpdateSourceEnum AutoUpdateSource {
+            get => (AutoUpdateSourceEnum)NINA.Properties.Settings.Default.AutoUpdateSource;
+            set {
+                NINA.Properties.Settings.Default.AutoUpdateSource = (int)value;
+                CoreUtil.SaveSettings(NINA.Properties.Settings.Default);
+                versionCheckVM.CheckUpdate();
+                RaisePropertyChanged();
+            }
+        }
+
+        public bool UseSavedProfileSelection {
+            get => Properties.Settings.Default.UseSavedProfileSelection;
+            set {
+                NINA.Properties.Settings.Default.UseSavedProfileSelection = value;
+                CoreUtil.SaveSettings(NINA.Properties.Settings.Default);
+                RaisePropertyChanged();
+            }
+        }
+
+
+        public int SaveQueueSize {
+            get => Properties.Settings.Default.SaveQueueSize;
+            set {
+                if (value < 1) { value = 1; }
+                if (value != SaveQueueSize) {
+                    NINA.Properties.Settings.Default.SaveQueueSize = value;
+                    CoreUtil.SaveSettings(NINA.Properties.Settings.Default);
+                    RaisePropertyChanged();
+                    RequiresRestart = true;
+                }
+            }
+        }
+
+        public bool HardwareAcceleration {
+            get => NINA.Properties.Settings.Default.HardwareAcceleration;
+            set {
+                NINA.Properties.Settings.Default.HardwareAcceleration = value;
+                CoreUtil.SaveSettings(NINA.Properties.Settings.Default);
+                RaisePropertyChanged();
+                RequiresRestart = true;
+            }
+        }
+
         public LogLevelEnum LogLevel {
             get => profileService.ActiveProfile.ApplicationSettings.LogLevel;
             set {
@@ -643,9 +700,9 @@ namespace NINA.ViewModel {
         private readonly IPlanetariumFactory planetariumFactory;
         private readonly IGnssFactory gnssFactory;
 
-//        [NotifyCanExecuteChangedFor(nameof(CloneProfileCommand))]
-//        [NotifyCanExecuteChangedFor(nameof(RemoveProfileCommand))]
-//        [NotifyCanExecuteChangedFor(nameof(SelectProfileCommand))]
+        [NotifyCanExecuteChangedFor(nameof(CloneProfileCommand))]
+        [NotifyCanExecuteChangedFor(nameof(RemoveProfileCommand))]
+        [NotifyCanExecuteChangedFor(nameof(SelectProfileCommand))]
         [ObservableProperty]
         private ProfileMeta selectedProfile;
 

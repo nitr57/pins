@@ -35,4 +35,14 @@ namespace System.Windows.Threading {
         public DispatcherOperationStatus Wait(System.TimeSpan timeout) { return DispatcherOperationStatus.Completed; }
         public System.Runtime.CompilerServices.TaskAwaiter GetAwaiter() => Task.GetAwaiter();
     }
+
+    /// <summary>
+    /// Stub implementation of DispatcherFrame for headless execution
+    /// </summary>
+    public class DispatcherFrame {
+        /// <summary>
+        /// Gets or sets a value indicating whether this frame should continue processing
+        /// </summary>
+        public bool Continue { get; set; } = true;
+    }
 }

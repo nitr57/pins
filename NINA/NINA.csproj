@@ -8,6 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Optimize>true</Optimize>
     <LangVersion>default</LangVersion>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/*.xaml.cs;**/*.xaml</DefaultItemExcludes>
   </PropertyGroup>
   <PropertyGroup>
     <RuntimeIdentifier Condition="'$(OS)'=='Linux' and '$(PROCESSOR_ARCHITECTURE)'=='x64'">linux-x64</RuntimeIdentifier>
@@ -113,6 +114,8 @@
     <PackageReference Include="OpenCvSharp4" Version="4.11.0.20250507" />
     <PackageReference Include="OpenCvSharp4.official.runtime.$(RuntimeIdentifier)" Version="4.11.0.20250507" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+    <!-- Exclude System.Drawing.Common as it conflicts with our compat library -->
+    <PackageReference Include="System.Drawing.Common" Version="*" ExcludeAssets="all" />
   </ItemGroup>
   <ItemGroup>
     <None Update="Database\Migration\11.sql">
