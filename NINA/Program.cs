@@ -38,6 +38,7 @@ builder.Services.AddCors(options => {
 builder.Services.AddSignalR();
 builder.Services.AddSingleton<SignalRNotificationBroadcaster>();
 builder.Services.AddSingleton<IDialogBroadcaster, DialogBroadcaster>();
+builder.Services.AddSingleton<IMyMessageBoxBroadcaster, MyMessageBoxBroadcaster>();
 builder.Services.AddControllers().AddJsonOptions(options => {
     options.JsonSerializerOptions.NumberHandling = JsonNumberHandling.AllowNamedFloatingPointLiterals;
 });
@@ -111,6 +112,7 @@ app.UseCors("AllowAll");
 app.MapControllers();
 app.MapHub<NotificationHub>("/hubs/notifications");
 app.MapHub<DialogHub>("/hubs/dialogs");
+app.MapHub<MyMessageBoxHub>("/hubs/messageboxes");
 
 // Set up the notification broadcaster to use SignalR
 var signalRBroadcaster = app.Services.GetRequiredService<SignalRNotificationBroadcaster>();

@@ -18,6 +18,8 @@ using System.Windows.Input;
 namespace NINA.Sequencer.DragDrop {
 
     public interface IDropContainer {
+        ICommand DropIntoCommand { get; }
+
         void InsertIntoSequenceBlocks(int index, ISequenceItem sequenceBlock);
 
         void MoveWithinIntoSequenceBlocks(int index, int newIndex);

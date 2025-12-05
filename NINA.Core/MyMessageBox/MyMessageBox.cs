@@ -14,6 +14,7 @@
 
 using NINA.Core.Utility;
 using NINA.Core.Utility.Extensions;
+using NINA.Core.SignalR;
 using System;
 using System.Windows;
 
@@ -100,6 +101,20 @@ namespace NINA.Core.MyMessageBox {
 
         public static MessageBoxResult Show(string messageBoxText, string caption, MessageBoxButton button, MessageBoxResult defaultresult) {
             var dialogresult = defaultresult;
+
+            // Try to use SignalR broadcaster first (for remote Vue.js app)
+            if (MyMessageBoxBroadcaster.Instance != null) {
+                try {
+                    var task = MyMessageBoxBroadcaster.Instance.ShowMessageBoxAsync(messageBoxText, caption, button, defaultresult);
+                    if (task != null) {
+                        // Block and wait for result from async broadcaster
+                        var result = task.ConfigureAwait(false).GetAwaiter().GetResult();
+                        return result;
+                    }
+                } catch (Exception ex) {
+                    Logger.Warning($"Failed to show message box via SignalR broadcaster: {ex.Message}");
+                }
+            }
 
             // Check if running in headless mode (Linux without WPF)
             if (Application.Current == null) {

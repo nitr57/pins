@@ -75,6 +75,17 @@ namespace NINA.Sequencer.Trigger {
             }
         }
 
+        public ICommand ShowMenuCommand => new GalaSoft.MvvmLight.Command.RelayCommand<object>((o) => ShowMenu = !ShowMenu, (o) => Status != SequenceEntityStatus.DISABLED);
+        public ICommand DisableEnableCommand => new GalaSoft.MvvmLight.Command.RelayCommand(() => {
+            if (Status != SequenceEntityStatus.DISABLED) {
+                Status = SequenceEntityStatus.DISABLED;
+                ShowMenu = false;
+            } else {
+                Status = SequenceEntityStatus.CREATED;
+            }
+
+        });
+
         [JsonProperty]
         public ISequenceContainer Parent { get; set; }
 
@@ -171,6 +182,8 @@ namespace NINA.Sequencer.Trigger {
 
         public virtual void Teardown() {
         }
+
+        public ICommand DetachCommand => new GalaSoft.MvvmLight.Command.RelayCommand<object>((o) => Detach());
 
         public ICommand MoveUpCommand => null;
 

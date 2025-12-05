@@ -50,13 +50,12 @@ namespace NINA.Sequencer {
         public IList<TemplatedSequenceContainer> UserTemplates => Templates.Where(t => t.Group == UserTemplatesGroup).ToList();
 
         public IList<TemplatedSequenceContainer> Templates { get; }
-        /*
-                private CollectionViewSource templatesView;
-                private CollectionViewSource templatesMenuView;
-                public ICollectionView TemplatesView => templatesView.View;
-                public ICollectionView TemplatesMenuView => templatesMenuView.View;
-        */
-/*
+
+        private CollectionViewSource templatesView;
+        private CollectionViewSource templatesMenuView;
+        public ICollectionView TemplatesView => templatesView.View;
+        public ICollectionView TemplatesMenuView => templatesMenuView.View;
+
         private string viewFilter = string.Empty;
 
         public string ViewFilter {
@@ -66,7 +65,7 @@ namespace NINA.Sequencer {
                 TemplatesView.Refresh();
             }
         }
-*/
+
         [ObservableProperty]
         private bool templatesLoading = true;
         [ObservableProperty]
@@ -96,7 +95,7 @@ namespace NINA.Sequencer {
             } catch (Exception ex) {
                 Logger.Error("Error occurred while loading default templates", ex);
             }
-/*
+
             templatesView = new CollectionViewSource { Source = Templates };
             TemplatesView.GroupDescriptions.Add(new PropertyGroupDescription("GroupTranslated"));
             TemplatesView.SortDescriptions.Add(new SortDescription("GroupTranslated", ListSortDirection.Ascending));
@@ -105,7 +104,7 @@ namespace NINA.Sequencer {
 
             templatesMenuView = new CollectionViewSource { Source = Templates };
             TemplatesMenuView.SortDescriptions.Add(new SortDescription("Container.Name", ListSortDirection.Ascending));
-*/
+
             LoadUserTemplates().ContinueWith(t => {
                 sequenceTemplateFolderWatcher = new FileSystemWatcher(profileService.ActiveProfile.SequenceSettings.SequencerTemplatesFolder, "*" + TemplateFileExtension);
                 sequenceTemplateFolderWatcher.Changed += SequenceTemplateFolderWatcher_Changed;
@@ -120,7 +119,7 @@ namespace NINA.Sequencer {
         }
 
         private bool ApplyViewFilter(object obj) {
-            return false; //(obj as TemplatedSequenceContainer).Container.Name.IndexOf(ViewFilter, StringComparison.OrdinalIgnoreCase) >= 0;
+            return (obj as TemplatedSequenceContainer).Container.Name.IndexOf(ViewFilter, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private async void SequenceTemplateFolderWatcher_Changed(object sender, FileSystemEventArgs e) {
@@ -170,7 +169,7 @@ namespace NINA.Sequencer {
                     }
 
                     foreach (var template in Templates.Where(t => t.Group != DefaultTemplatesGroup).ToList()) {
-                        Templates.Remove(template);
+                        await Application.Current.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal, new Action(() => Templates.Remove(template)));
                     }
                     TemplatesLoadingProgress = 0;
                     TemplatesLoadingTotalCount = 1;
@@ -194,12 +193,14 @@ namespace NINA.Sequencer {
                         TemplatesLoadingProgress++;
                     }
 
-                    try {
-//                        TemplatesView.Refresh();
-//                        TemplatesMenuView.Refresh();
-                    } catch (Exception ex) {
-                        Logger.Error(ex);
-                    }
+                    await Application.Current.Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Normal, new Action(() => {
+                        try {
+                            TemplatesView.Refresh();
+                            TemplatesMenuView.Refresh();
+                        } catch (Exception ex) {
+                            Logger.Error(ex);
+                        }
+                    }));
                 } catch (Exception ex) {
                     Logger.Error(ex);
                     Notification.ShowError(Loc.Instance["Lbl_SequenceTemplateController_LoadUserTemplatesFailed"]);

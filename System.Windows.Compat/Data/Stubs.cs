@@ -21,9 +21,176 @@ namespace System.Windows.Data {
 
     public class GroupDescription { }
 
-    public class SortDescription { }
+    public class PropertyGroupDescription : GroupDescription {
+        public PropertyGroupDescription() { }
+        public PropertyGroupDescription(string propertyName) {
+            PropertyName = propertyName;
+        }
+        public string PropertyName { get; set; }
+    }
+
+    public class SortDescription {
+        public SortDescription() { }
+        public SortDescription(string propertyName, System.ComponentModel.ListSortDirection direction) {
+            PropertyName = propertyName;
+            Direction = direction;
+        }
+        public string PropertyName { get; set; }
+        public System.ComponentModel.ListSortDirection Direction { get; set; }
+    }
 
     public class SortDescriptionCollection : System.Collections.ObjectModel.Collection<SortDescription> { }
+
+    public class CollectionViewSource {
+        public CollectionViewSource() {
+            GroupDescriptions = new System.Collections.ObjectModel.ObservableCollection<GroupDescription>();
+            SortDescriptions = new SortDescriptionCollection();
+        }
+        public object Source { get; set; }
+        public System.ComponentModel.ICollectionView View { get; }
+        public System.Collections.ObjectModel.ObservableCollection<GroupDescription> GroupDescriptions { get; }
+        public SortDescriptionCollection SortDescriptions { get; }
+
+        public static System.ComponentModel.ICollectionView GetDefaultView(System.Collections.IEnumerable collection) {
+            // In headless mode, return a simple wrapper around the collection
+            return new DefaultCollectionView(collection);
+        }
+    }
+
+    internal class DefaultCollectionView : System.ComponentModel.ICollectionView {
+        private readonly System.Collections.IEnumerable _collection;
+        private object _currentItem;
+        private int _currentPosition = -1;
+
+        public DefaultCollectionView(System.Collections.IEnumerable collection) {
+            _collection = collection;
+        }
+
+        public System.Collections.IEnumerable SourceCollection => _collection;
+        public object CurrentItem => _currentItem;
+        public int CurrentPosition => _currentPosition;
+        public bool IsCurrentAfterLast => _currentPosition >= GetCount();
+        public bool IsCurrentBeforeFirst => _currentPosition < 0;
+        public System.Globalization.CultureInfo Culture { get; set; }
+        public System.Predicate<object> Filter { get; set; }
+        public bool CanFilter => true;
+        public SortDescriptionCollection SortDescriptions => new SortDescriptionCollection();
+        public bool CanSort => false;
+        public bool CanGroup => false;
+        public System.Collections.ObjectModel.ObservableCollection<GroupDescription> GroupDescriptions => new System.Collections.ObjectModel.ObservableCollection<GroupDescription>();
+        public System.Collections.ObjectModel.ReadOnlyObservableCollection<object> Groups => new System.Collections.ObjectModel.ReadOnlyObservableCollection<object>(new System.Collections.ObjectModel.ObservableCollection<object>());
+        public bool IsEmpty => GetCount() == 0;
+
+        public event System.Windows.Data.CurrentChangingEventHandler CurrentChanging;
+        public event System.EventHandler CurrentChanged;
+        public event System.Collections.Specialized.NotifyCollectionChangedEventHandler CollectionChanged;
+
+        public bool MoveCurrentToFirst() {
+            _currentPosition = 0;
+            _currentItem = GetItemAt(0);
+            CurrentChanged?.Invoke(this, System.EventArgs.Empty);
+            return true;
+        }
+
+        public bool MoveCurrentToLast() {
+            int count = GetCount();
+            if (count > 0) {
+                _currentPosition = count - 1;
+                _currentItem = GetItemAt(_currentPosition);
+                CurrentChanged?.Invoke(this, System.EventArgs.Empty);
+                return true;
+            }
+            return false;
+        }
+
+        public bool MoveCurrentToNext() {
+            if (_currentPosition < GetCount() - 1) {
+                _currentPosition++;
+                _currentItem = GetItemAt(_currentPosition);
+                CurrentChanged?.Invoke(this, System.EventArgs.Empty);
+                return true;
+            }
+            return false;
+        }
+
+        public bool MoveCurrentToPrevious() {
+            if (_currentPosition > 0) {
+                _currentPosition--;
+                _currentItem = GetItemAt(_currentPosition);
+                CurrentChanged?.Invoke(this, System.EventArgs.Empty);
+                return true;
+            }
+            return false;
+        }
+
+        public bool MoveCurrentTo(object item) {
+            int index = 0;
+            foreach (var obj in _collection) {
+                if (obj == item) {
+                    _currentPosition = index;
+                    _currentItem = item;
+                    CurrentChanged?.Invoke(this, System.EventArgs.Empty);
+                    return true;
+                }
+                index++;
+            }
+            return false;
+        }
+
+        public bool MoveCurrentToPosition(int position) {
+            if (position >= 0 && position < GetCount()) {
+                _currentPosition = position;
+                _currentItem = GetItemAt(position);
+                CurrentChanged?.Invoke(this, System.EventArgs.Empty);
+                return true;
+            }
+            return false;
+        }
+
+        public void Refresh() { }
+
+        public System.IDisposable DeferRefresh() {
+            return new DeferRefreshHelper(this);
+        }
+
+        public bool Contains(object item) {
+            foreach (var obj in _collection) {
+                if (obj == item) return true;
+            }
+            return false;
+        }
+
+        public System.Collections.IEnumerator GetEnumerator() {
+            return _collection.GetEnumerator();
+        }
+
+        private int GetCount() {
+            int count = 0;
+            foreach (var item in _collection) {
+                count++;
+            }
+            return count;
+        }
+
+        private object GetItemAt(int index) {
+            int count = 0;
+            foreach (var item in _collection) {
+                if (count == index) return item;
+                count++;
+            }
+            return null;
+        }
+
+        private class DeferRefreshHelper : System.IDisposable {
+            private readonly DefaultCollectionView _view;
+
+            public DeferRefreshHelper(DefaultCollectionView view) {
+                _view = view;
+            }
+
+            public void Dispose() { }
+        }
+    }
 
     public class Binding : BindingBase {
         public Binding() { }
@@ -42,7 +209,9 @@ namespace System.Windows.Data {
     public enum BindingMode { OneWay, TwoWay, OneTime, OneWayToSource, Default }
     public class MultiBinding : BindingBase { }
     public interface IMultiValueConverter { }
+}
 
+namespace System.ComponentModel {
     public interface ICollectionView : System.Collections.IEnumerable, System.Collections.Specialized.INotifyCollectionChanged {
         System.Collections.IEnumerable SourceCollection { get; }
         object CurrentItem { get; }
@@ -52,13 +221,13 @@ namespace System.Windows.Data {
         System.Globalization.CultureInfo Culture { get; set; }
         System.Predicate<object> Filter { get; set; }
         bool CanFilter { get; }
-        SortDescriptionCollection SortDescriptions { get; }
+        System.Windows.Data.SortDescriptionCollection SortDescriptions { get; }
         bool CanSort { get; }
         bool CanGroup { get; }
-        System.Collections.ObjectModel.ObservableCollection<GroupDescription> GroupDescriptions { get; }
+        System.Collections.ObjectModel.ObservableCollection<System.Windows.Data.GroupDescription> GroupDescriptions { get; }
         System.Collections.ObjectModel.ReadOnlyObservableCollection<object> Groups { get; }
         bool IsEmpty { get; }
-        event CurrentChangingEventHandler CurrentChanging;
+        event System.Windows.Data.CurrentChangingEventHandler CurrentChanging;
         event System.EventHandler CurrentChanged;
         bool MoveCurrentToFirst();
         bool MoveCurrentToLast();
