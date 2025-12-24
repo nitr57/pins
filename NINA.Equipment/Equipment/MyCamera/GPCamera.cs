@@ -724,35 +724,17 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         private void ValidateMode() {
             if (!IsManualMode() && !IsBulbMode()) {
-                var result = MyMessageBox.Show(
-                    Loc.Instance["LblEDCameraNotInManualMode"],
-                    Loc.Instance["LblInvalidMode"],
-                    System.Windows.MessageBoxButton.OKCancel,
-                    System.Windows.MessageBoxResult.OK);
-                if (result == System.Windows.MessageBoxResult.OK) {
-                    ValidateMode();
-                } else {
-                    Notification.ShowError("Camera must be in MANUAL or BULB mode");
-                    Logger.Error("Camera must be in MANUAL or BULB mode");
-                    throw new Exception("Invalid camera mode");
-                }
+                Notification.ShowError("Camera must be in MANUAL or BULB mode");
+                Logger.Error("Camera must be in MANUAL or BULB mode");
+                throw new Exception("Invalid camera mode");
             }
         }
 
         private void ValidateModeForExposure(double exposureTime) {
             if (!IsManualMode() && !IsBulbMode()) {
-                var result = MyMessageBox.Show(
-                    Loc.Instance["LblEDCameraNotInManualMode"],
-                    Loc.Instance["LblInvalidMode"],
-                    System.Windows.MessageBoxButton.OKCancel,
-                    System.Windows.MessageBoxResult.OK);
-                if (result == System.Windows.MessageBoxResult.OK) {
-                    ValidateModeForExposure(exposureTime);
-                } else {
-                    Notification.ShowError("Camera must be in MANUAL or BULB mode");
-                    Logger.Error("Camera must be in MANUAL or BULB mode");
-                    throw new Exception("Invalid camera mode for taking exposures");
-                }
+                Notification.ShowError("Camera must be in MANUAL or BULB mode");
+                Logger.Error("Camera must be in MANUAL or BULB mode");
+                throw new Exception("Invalid camera mode for taking exposures");
             }
 
             if (IsManualMode() && !IsBulbMode()) {
@@ -762,38 +744,23 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     SetExposureTime(exposureTime);
                 } else {
                     // Need bulb mode for exposures > 30s
-                    var success = SetExposureTime(double.MaxValue);
-                    Logger.Info("CHECKING");
-                    if (!success) {
-                        Logger.Info("GOING IN THE NON SUCCESS PART");
-                        var result = MyMessageBox.Show(
-                            Loc.Instance["LblChangeToBulbMode"],
-                            Loc.Instance["LblInvalidModeManual"],
-                            System.Windows.MessageBoxButton.OKCancel,
-                            System.Windows.MessageBoxResult.OK);
-                        if (result == System.Windows.MessageBoxResult.OK) {
-                            ValidateModeForExposure(exposureTime);
-                        } else {
-                            Notification.ShowError("Camera must be in MANUAL or BULB mode");
-                            Logger.Error("Camera must be in MANUAL or BULB mode");
-                            throw new Exception("Invalid camera mode [Manual] for taking bulb exposures");
-                        }
+                    // Try to set shutterspeed to "bulb"
+                    Logger.Info($"Exposure time {exposureTime}s > 30s, attempting to set shutter speed to bulb");
+                    if (CheckError(SetProperty("shutterspeed", "bulb"))) {
+                        Notification.ShowError("Camera must be set to BULB mode for exposures > 30s. Please set shutterspeed to 'bulb' manually.");
+                        Logger.Error("Could not set shutterspeed to bulb for long exposure");
+                        throw new Exception("Invalid camera mode [Manual] for taking bulb exposures");
                     }
                 }
             }
 
             if (IsBulbMode() && exposureTime < 1.0) {
-                var result = MyMessageBox.Show(
-                    Loc.Instance["LblChangeToManualMode"],
-                    Loc.Instance["LblInvalidModeBulb"],
-                    System.Windows.MessageBoxButton.OKCancel,
-                    System.Windows.MessageBoxResult.OK);
-                if (result == System.Windows.MessageBoxResult.OK) {
-                    ValidateModeForExposure(exposureTime);
-                } else {
-                    Notification.ShowError("Cannot use BULB mode for exposures less than 1s");
-                    Logger.Error("Cannot use BULB mode for exposures less than 1s");
-                    throw new Exception("Invalid camera mode [Bulb] for taking exposures < 1s");
+                // Try to switch from bulb to a normal shutter speed for short exposures
+                Logger.Info($"Camera is in bulb mode but exposure time is {exposureTime}s (< 1s). Attempting to set shutter speed.");
+                GetShutterSpeeds();
+                if (!SetExposureTime(exposureTime)) {
+                    Logger.Warning($"Could not set exposure time to {exposureTime}s. Camera may need to be switched from Bulb mode manually.");
+                    Notification.ShowWarning($"Camera is in Bulb mode. For exposures < 1s, please switch to Manual mode or use exposure time >= 1s.");
                 }
             }
         }
