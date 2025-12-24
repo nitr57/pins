@@ -437,8 +437,24 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         private bool IsBulbMode() {
+            // Check if camera is in dedicated Bulb mode (autoexposuremode = "Bulb")
+            var mode = string.Empty;
+            if (GetProperty("exposuremode", out mode) == GP_ERROR_CODE.GP_OK) {
+                if (mode.Equals("Bulb", StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
+            }
+            if (GetProperty("autoexposuremode", out mode) == GP_ERROR_CODE.GP_OK) {
+                if (mode.Equals("Bulb", StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
+            }
+
+            // Check if camera is in Manual mode with bulb shutter speed
             if (!CheckError(GetProperty("shutterspeed", out var shutterspeed))) {
-                return shutterspeed.Equals("bulb", StringComparison.OrdinalIgnoreCase);
+                if (shutterspeed.Equals("bulb", StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
             }
 
             // If bulb mode is not set, try to set it
@@ -739,11 +755,13 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 }
             }
 
-            if (IsManualMode()) {
+            if (IsManualMode() && !IsBulbMode()) {
+                // Camera is in Manual mode but NOT in bulb shutter speed
                 GetShutterSpeeds();
                 if (exposureTime <= 30.0) {
                     SetExposureTime(exposureTime);
                 } else {
+                    // Need bulb mode for exposures > 30s
                     var success = SetExposureTime(double.MaxValue);
                     Logger.Info("CHECKING");
                     if (!success) {
