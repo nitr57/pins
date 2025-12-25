@@ -89,6 +89,7 @@ namespace NINA.INDI {
             { "indi_lx200_TeenAstro", "TeenAstro Mount (INDI)" },
             { "indi_eqmod_telescope", "EQMOD Mount (INDI)" },
             { "indi_synscan_telescope", "Synscan Mount (INDI)" },
+            { "indi_lx200_OnStep", "OnStep Mount (INDI)" },
 
             /* Filter Wheels */
             { "indi_pegasusindigo_wheel", "Pegasus Indigo (INDI)" },
