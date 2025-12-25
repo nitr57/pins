@@ -266,7 +266,31 @@ namespace NINA.INDI.Devices {
             return modes;
         }
 
-        public DateTime UTCDate { get; set; }
+        public DateTime UTCDate {
+            get {
+                try {
+                    // Read UTC from TIME_UTC property
+                    var utcTime = GetTextPropertyValue("TIME_UTC", "UTC");
+                    if (!string.IsNullOrEmpty(utcTime) && DateTime.TryParse(utcTime, out var parsedTime)) {
+                        return DateTime.SpecifyKind(parsedTime, DateTimeKind.Utc);
+                    }
+                } catch (Exception ex) {
+                    Logger.Warning($"Could not read TIME_UTC: {ex.Message}");
+                }
+                return DateTime.MinValue;
+            }
+            set {
+                try {
+                    // Set UTC time via TIME_UTC property in ISO 8601 format
+                    var utcString = value.ToString("yyyy-MM-ddTHH:mm:ss");
+                    SetTextValue("TIME_UTC", "UTC", utcString);
+                    Logger.Debug($"Set mount UTC time to {utcString}");
+                } catch (Exception ex) {
+                    Logger.Error($"Could not set TIME_UTC: {ex.Message}");
+                    throw;
+                }
+            }
+        }
 
 
         public void AbortSlew() {
