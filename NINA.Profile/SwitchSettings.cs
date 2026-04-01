@@ -32,6 +32,11 @@ namespace NINA.Profile {
             id = "No_Device";
             indiDriver = "None";
             lastDeviceName = string.Empty;
+            indiConnectionMode = "CONNECTION_SERIAL";
+            indiPort = "/dev/ttyUSB0";
+            indiBaudRate = 9600;
+            indiAutoSearch = true;
+            indiAddress = "localhost";
         }
 
         private string id;
@@ -67,6 +72,66 @@ namespace NINA.Profile {
             set {
                 if (indiDriver != value) {
                     indiDriver = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string indiConnectionMode;
+        [DataMember]
+        public string IndiConnectionMode {
+            get => indiConnectionMode;
+            set {
+                if (indiConnectionMode != value) {
+                    indiConnectionMode = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string indiPort;
+        [DataMember]
+        public string IndiPort {
+            get => indiPort;
+            set {
+                if (indiPort != value) {
+                    indiPort = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private int indiBaudRate;
+        [DataMember]
+        public int IndiBaudRate {
+            get => indiBaudRate;
+            set {
+                if (indiBaudRate != value) {
+                    indiBaudRate = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private bool indiAutoSearch;
+        [DataMember]
+        public bool IndiAutoSearch {
+            get => indiAutoSearch;
+            set {
+                if (indiAutoSearch != value) {
+                    indiAutoSearch = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string indiAddress;
+        [DataMember]
+        public string IndiAddress {
+            get => indiAddress;
+            set {
+                if (indiAddress != value) {
+                    indiAddress = value;
                     RaisePropertyChanged();
                 }
             }

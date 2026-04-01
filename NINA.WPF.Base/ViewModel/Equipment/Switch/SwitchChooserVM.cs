@@ -1,7 +1,7 @@
 #region "copyright"
 
 /*
-    Copyright © 2016 - 2026 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
+    Copyright ï¿½ 2016 - 2026 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
 
     This file is part of N.I.N.A. - Nighttime Imaging 'N' Astronomy.
 
@@ -25,6 +25,7 @@ using NINA.Equipment.Utility;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Equipment;
 using NINA.Equipment.Interfaces.ViewModel;
+using System.Runtime.InteropServices;
 
 namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
 
@@ -61,6 +62,20 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
                     Logger.Info($"Found {alpacaSwitches?.Count} Alpaca Switch Hubs");
                 } catch (Exception ex) {
                     Logger.Error(ex);
+                }
+
+                /* INDI (Linux / macOS) */
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
+                    try {
+                        var indiInteraction = new INDIInteraction(profileService);
+                        var indiSwitches = await indiInteraction.GetSwitches();
+                        foreach (ISwitchHub s in indiSwitches) {
+                            devices.Add(s);
+                        }
+                        Logger.Info($"Found {indiSwitches?.Count} INDI Switch Hubs");
+                    } catch (Exception ex) {
+                        Logger.Error(ex);
+                    }
                 }
 
                 DetermineSelectedDevice(devices, profileService.ActiveProfile.SwitchSettings.Id, profileService.ActiveProfile.SwitchSettings.LastDeviceName);

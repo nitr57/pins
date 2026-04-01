@@ -28,6 +28,7 @@ using NINA.Equipment.Equipment.MyRotator;
 using NINA.Equipment.Equipment.MyFilterWheel;
 using NINA.Equipment.Equipment.MyFlatDevice;
 using NINA.Equipment.Equipment.MyWeatherData;
+using NINA.Equipment.Equipment.MySwitch;
 
 namespace NINA.Equipment.Utility {
 
@@ -111,11 +112,9 @@ namespace NINA.Equipment.Utility {
             return l;
         }
 
-        public async Task<List<IFlatDevice>> GetFlatDevices()
-        {
+        public async Task<List<IFlatDevice>> GetFlatDevices() {
             var l = new List<IFlatDevice>();
-            if (!await INDIClient.Instance.WaitForServerReadyAsync(TimeSpan.FromSeconds(15)))
-            {
+            if (!await INDIClient.Instance.WaitForServerReadyAsync(TimeSpan.FromSeconds(15))) {
                 Logger.Debug("INDI server not ready - skipping INDI flat device enumeration");
                 return l;
             }
@@ -124,19 +123,16 @@ namespace NINA.Equipment.Utility {
             string driver = profileService.ActiveProfile.FlatDeviceSettings.IndiDriver;
 
             // Query devices for this driver
-            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.LIGHTBOX_INTERFACE, driver))
-            {
+            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.LIGHTBOX_INTERFACE, driver)) {
                 IndiFlatDevice flatDevice = new(device, profileService);
                 l.Add(flatDevice);
             }
             return l;
         }
 
-        public async Task<List<IWeatherData>> GetWeatherData()
-        {
+        public async Task<List<IWeatherData>> GetWeatherData() {
             var l = new List<IWeatherData>();
-            if (!await INDIClient.Instance.WaitForServerReadyAsync(TimeSpan.FromSeconds(15)))
-            {
+            if (!await INDIClient.Instance.WaitForServerReadyAsync(TimeSpan.FromSeconds(15))) {
                 Logger.Debug("INDI server not ready - skipping INDI weather data enumeration");
                 return l;
             }
@@ -145,10 +141,24 @@ namespace NINA.Equipment.Utility {
             string driver = profileService.ActiveProfile.WeatherDataSettings.IndiDriver;
 
             // Query devices for this driver
-            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.WEATHER_INTERFACE, driver))
-            {
+            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.WEATHER_INTERFACE, driver)) {
                 IndiWeatherData weatherData = new(device, profileService);
                 l.Add(weatherData);
+            }
+            return l;
+        }
+
+        public async Task<List<ISwitchHub>> GetSwitches() {
+            var l = new List<ISwitchHub>();
+            if (!await INDIClient.Instance.WaitForServerReadyAsync(TimeSpan.FromSeconds(15))) {
+                Logger.Debug("INDI server not ready - skipping INDI switch hub enumeration");
+                return l;
+            }
+
+            string driver = profileService.ActiveProfile.SwitchSettings.IndiDriver;
+
+            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.AUX_INTERFACE, driver)) {
+                l.Add(new IndiSwitchHub(device, profileService));
             }
             return l;
         }
