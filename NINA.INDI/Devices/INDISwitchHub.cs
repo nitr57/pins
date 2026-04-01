@@ -66,6 +66,8 @@ namespace NINA.INDI.Devices {
         private readonly List<INDISwitchDescriptor> _descriptors = new();
         private readonly object _descriptorsLock = new();
 
+        public event System.Action<string> ValuesUpdated;
+
         public INDISwitchHub(INDIDeviceInfo device) : base(device) { }
 
         // No specific property required – the equipment layer adds its own wait.
@@ -105,9 +107,10 @@ namespace NINA.INDI.Devices {
 
             if (SkippedProperties.Contains(p.Name)) return;
             if (SkippedGroups.Contains(p.Group)) return;
-            if (p.Permission == PropertyPermission.ReadOnly) return;
             // OneOfMany = radio-button selector; not a discrete on/off channel.
             if (p.Rule == SwitchRule.OneOfMany) return;
+
+            bool isWritable = p.Permission != PropertyPermission.ReadOnly;
 
             lock (_descriptorsLock) {
                 // Refresh descriptors for this property (initial def or relabel).
@@ -119,7 +122,7 @@ namespace NINA.INDI.Devices {
                         PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
                         ElementName = sw.Name,
                         ElementLabel = string.IsNullOrWhiteSpace(sw.Label) ? sw.Name : sw.Label,
-                        IsWritable = true,
+                        IsWritable = isWritable,
                         IsBoolSwitch = true,
                         Min = 0.0,
                         Max = 1.0,
@@ -127,6 +130,9 @@ namespace NINA.INDI.Devices {
                     });
                 }
             }
+
+            // Notify the equipment layer that values for this property changed.
+            ValuesUpdated?.Invoke(p.Name);
         }
 
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
@@ -134,7 +140,8 @@ namespace NINA.INDI.Devices {
 
             if (SkippedProperties.Contains(p.Name)) return;
             if (SkippedGroups.Contains(p.Group)) return;
-            if (p.Permission == PropertyPermission.ReadOnly) return;
+
+            bool isWritable = p.Permission != PropertyPermission.ReadOnly;
 
             lock (_descriptorsLock) {
                 _descriptors.RemoveAll(d => d.PropertyName == p.Name && !d.IsBoolSwitch);
@@ -145,7 +152,7 @@ namespace NINA.INDI.Devices {
                         PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
                         ElementName = num.Name,
                         ElementLabel = string.IsNullOrWhiteSpace(num.Label) ? num.Name : num.Label,
-                        IsWritable = true,
+                        IsWritable = isWritable,
                         IsBoolSwitch = false,
                         Min = num.Min,
                         Max = num.Max,
@@ -153,6 +160,9 @@ namespace NINA.INDI.Devices {
                     });
                 }
             }
+
+            // Notify the equipment layer that values for this property changed.
+            ValuesUpdated?.Invoke(p.Name);
         }
 
         public override void OnTextPropertyUpdated(INDITextProperty p) {

@@ -76,10 +76,22 @@ namespace NINA.Equipment.Equipment.MySwitch {
             // Give the INDI driver a moment to push all initial property definitions.
             await Task.Delay(TimeSpan.FromSeconds(1));
             BuildSwitchCollection();
+            GetInstance().ValuesUpdated += OnIndiValuesUpdated;
         }
 
         protected override void PostDisconnect() {
+            GetInstance().ValuesUpdated -= OnIndiValuesUpdated;
             Switches = new AsyncObservableCollection<ISwitch>();
+        }
+
+        private void OnIndiValuesUpdated(string propertyName) {
+            foreach (var sw in switches) {
+                // Poll items whose underlying INDI property just changed.
+                if (sw is IndiReadSwitchItem r && r.PropertyName == propertyName)
+                    r.Poll();
+                else if (sw is IndiWritableSwitchItem w && w.PropertyName == propertyName)
+                    w.Poll();
+            }
         }
 
         private void BuildSwitchCollection() {
@@ -124,6 +136,7 @@ namespace NINA.Equipment.Equipment.MySwitch {
         public short  Id          { get; }
         public string Name        { get; }
         public string Description { get; }
+        public string PropertyName => _descriptor.PropertyName;
         public double Value       => _hub.GetValue(_descriptor);
 
         public bool Poll() {
@@ -146,6 +159,7 @@ namespace NINA.Equipment.Equipment.MySwitch {
             _hub        = hub;
             Name        = string.IsNullOrWhiteSpace(descriptor.ElementLabel) ? descriptor.ElementName : descriptor.ElementLabel;
             Description = string.IsNullOrWhiteSpace(descriptor.PropertyLabel) ? descriptor.PropertyName : descriptor.PropertyLabel;
+            PropertyName = descriptor.PropertyName;
             Maximum     = descriptor.Max;
             Minimum     = descriptor.Min;
             StepSize    = descriptor.Step > 0 ? descriptor.Step : 1.0;
@@ -155,6 +169,7 @@ namespace NINA.Equipment.Equipment.MySwitch {
         public short  Id          { get; }
         public string Name        { get; }
         public string Description { get; }
+        public string PropertyName { get; }
         public double Maximum     { get; }
         public double Minimum     { get; }
         public double StepSize    { get; }

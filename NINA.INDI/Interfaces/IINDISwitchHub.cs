@@ -12,6 +12,7 @@
 
 #endregion "copyright"
 
+using System;
 using System.Collections.Generic;
 
 namespace NINA.INDI.Interfaces {
@@ -40,5 +41,11 @@ namespace NINA.INDI.Interfaces {
 
         /// <summary>Writes a numeric value to an INDI number element.</summary>
         void SetNumberElement(INDISwitchDescriptor descriptor, double value);
+
+        /// <summary>
+        /// Raised whenever the INDI server pushes an updated value for any property
+        /// (setSwitchVector or setNumberVector).  The argument is the INDI property name.
+        /// </summary>
+        event System.Action<string> ValuesUpdated;
     }
 }
