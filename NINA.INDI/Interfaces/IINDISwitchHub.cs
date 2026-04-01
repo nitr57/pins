@@ -15,14 +15,16 @@
 using System;
 using System.Collections.Generic;
 
-namespace NINA.INDI.Interfaces {
+namespace NINA.INDI.Interfaces
+{
 
     /// <summary>
     /// INDI-layer contract for a generic AUX device that exposes its writable
     /// switch and numeric properties as a flat list of controllable channels.
     /// Used by the Pegasus UPB and similar power/USB hub drivers.
     /// </summary>
-    public interface IINDISwitchHub : IINDIDevice {
+    public interface IINDISwitchHub : IINDIDevice
+    {
 
         /// <summary>
         /// Returns all controllable channels discovered after the device connected.

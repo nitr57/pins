@@ -17,7 +17,8 @@ using NINA.INDI.Interfaces;
 using NINA.INDI.Protocol;
 using System.Collections.Generic;
 
-namespace NINA.INDI.Devices {
+namespace NINA.INDI.Devices
+{
 
     /// <summary>
     /// Generic INDI switch hub that maps an AUX-interface device (e.g. Pegasus
@@ -32,7 +33,8 @@ namespace NINA.INDI.Devices {
     /// rates) are intentionally excluded because they cannot be treated as
     /// independent on/off channels.
     /// </summary>
-    public class INDISwitchHub : INDIDevice, IINDISwitchHub {
+    public class INDISwitchHub : INDIDevice, IINDISwitchHub
+    {
 
         // ---------------------------------------------------------------------------
         // Properties to ignore entirely – these control INDI infrastructure, not the
@@ -77,24 +79,30 @@ namespace NINA.INDI.Devices {
         // IINDISwitchHub
         // -------------------------------------------------------------------
 
-        public IReadOnlyList<INDISwitchDescriptor> GetDescriptors() {
-            lock (_descriptorsLock) {
+        public IReadOnlyList<INDISwitchDescriptor> GetDescriptors()
+        {
+            lock (_descriptorsLock)
+            {
                 return _descriptors.ToArray();
             }
         }
 
-        public double GetValue(INDISwitchDescriptor descriptor) {
-            if (descriptor.IsBoolSwitch) {
+        public double GetValue(INDISwitchDescriptor descriptor)
+        {
+            if (descriptor.IsBoolSwitch)
+            {
                 return (GetSwitchPropertyValue(descriptor.PropertyName, descriptor.ElementName) ?? false) ? 1.0 : 0.0;
             }
             return GetNumberPropertyValue(descriptor.PropertyName, descriptor.ElementName) ?? 0.0;
         }
 
-        public void SetBoolElement(INDISwitchDescriptor descriptor, bool value) {
+        public void SetBoolElement(INDISwitchDescriptor descriptor, bool value)
+        {
             SetSwitchValue(descriptor.PropertyName, descriptor.ElementName, value);
         }
 
-        public void SetNumberElement(INDISwitchDescriptor descriptor, double value) {
+        public void SetNumberElement(INDISwitchDescriptor descriptor, double value)
+        {
             SetNumberValue(descriptor.PropertyName, descriptor.ElementName, value);
         }
 
@@ -102,7 +110,8 @@ namespace NINA.INDI.Devices {
         // Property update callbacks – build descriptors as properties arrive
         // -------------------------------------------------------------------
 
-        public override void OnSwitchPropertyUpdated(INDISwitchProperty p) {
+        public override void OnSwitchPropertyUpdated(INDISwitchProperty p)
+        {
             base.OnSwitchPropertyUpdated(p);
 
             if (SkippedProperties.Contains(p.Name)) return;
@@ -112,12 +121,15 @@ namespace NINA.INDI.Devices {
 
             bool isWritable = p.Permission != PropertyPermission.ReadOnly;
 
-            lock (_descriptorsLock) {
+            lock (_descriptorsLock)
+            {
                 // Refresh descriptors for this property (initial def or relabel).
                 _descriptors.RemoveAll(d => d.PropertyName == p.Name && d.IsBoolSwitch);
 
-                foreach (var sw in p.Switches) {
-                    _descriptors.Add(new INDISwitchDescriptor {
+                foreach (var sw in p.Switches)
+                {
+                    _descriptors.Add(new INDISwitchDescriptor
+                    {
                         PropertyName = p.Name,
                         PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
                         ElementName = sw.Name,
@@ -135,7 +147,8 @@ namespace NINA.INDI.Devices {
             ValuesUpdated?.Invoke(p.Name);
         }
 
-        public override void OnNumberPropertyUpdated(INDINumberProperty p) {
+        public override void OnNumberPropertyUpdated(INDINumberProperty p)
+        {
             base.OnNumberPropertyUpdated(p);
 
             if (SkippedProperties.Contains(p.Name)) return;
@@ -143,11 +156,14 @@ namespace NINA.INDI.Devices {
 
             bool isWritable = p.Permission != PropertyPermission.ReadOnly;
 
-            lock (_descriptorsLock) {
+            lock (_descriptorsLock)
+            {
                 _descriptors.RemoveAll(d => d.PropertyName == p.Name && !d.IsBoolSwitch);
 
-                foreach (var num in p.Numbers) {
-                    _descriptors.Add(new INDISwitchDescriptor {
+                foreach (var num in p.Numbers)
+                {
+                    _descriptors.Add(new INDISwitchDescriptor
+                    {
                         PropertyName = p.Name,
                         PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
                         ElementName = num.Name,
@@ -165,11 +181,13 @@ namespace NINA.INDI.Devices {
             ValuesUpdated?.Invoke(p.Name);
         }
 
-        public override void OnTextPropertyUpdated(INDITextProperty p) {
+        public override void OnTextPropertyUpdated(INDITextProperty p)
+        {
             base.OnTextPropertyUpdated(p);
         }
 
-        public override void OnBlobPropertyUpdated(INDIBlobProperty p) {
+        public override void OnBlobPropertyUpdated(INDIBlobProperty p)
+        {
             base.OnBlobPropertyUpdated(p);
         }
 

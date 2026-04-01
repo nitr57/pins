@@ -86,11 +86,13 @@ namespace NINA.Equipment.Equipment.MySwitch {
 
         private void OnIndiValuesUpdated(string propertyName) {
             foreach (var sw in switches) {
-                // Poll items whose underlying INDI property just changed.
-                if (sw is IndiReadSwitchItem r && r.PropertyName == propertyName)
+                if (sw is IndiReadSwitchItem r && r.PropertyName == propertyName) {
                     r.Poll();
-                else if (sw is IndiWritableSwitchItem w && w.PropertyName == propertyName)
-                    w.Poll();
+                } else if (sw is IndiWritableSwitchItem w && w.PropertyName == propertyName) {
+                    // SyncFromDevice syncs TargetValue from the live device state so the
+                    // Vue toggle reflects external changes (e.g. from another INDI client).
+                    w.SyncFromDevice();
+                }
             }
         }
 
@@ -126,18 +128,18 @@ namespace NINA.Equipment.Equipment.MySwitch {
         private readonly IINDISwitchHub _hub;
 
         public IndiReadSwitchItem(short id, INDISwitchDescriptor descriptor, IINDISwitchHub hub) {
-            Id          = id;
+            Id = id;
             _descriptor = descriptor;
-            _hub        = hub;
-            Name        = string.IsNullOrWhiteSpace(descriptor.ElementLabel) ? descriptor.ElementName : descriptor.ElementLabel;
+            _hub = hub;
+            Name = string.IsNullOrWhiteSpace(descriptor.ElementLabel) ? descriptor.ElementName : descriptor.ElementLabel;
             Description = string.IsNullOrWhiteSpace(descriptor.PropertyLabel) ? descriptor.PropertyName : descriptor.PropertyLabel;
         }
 
-        public short  Id          { get; }
-        public string Name        { get; }
+        public short Id { get; }
+        public string Name { get; }
         public string Description { get; }
         public string PropertyName => _descriptor.PropertyName;
-        public double Value       => _hub.GetValue(_descriptor);
+        public double Value => _hub.GetValue(_descriptor);
 
         public bool Poll() {
             RaisePropertyChanged(nameof(Value));
@@ -154,25 +156,25 @@ namespace NINA.Equipment.Equipment.MySwitch {
         private readonly IINDISwitchHub _hub;
 
         public IndiWritableSwitchItem(short id, INDISwitchDescriptor descriptor, IINDISwitchHub hub) {
-            Id          = id;
+            Id = id;
             _descriptor = descriptor;
-            _hub        = hub;
-            Name        = string.IsNullOrWhiteSpace(descriptor.ElementLabel) ? descriptor.ElementName : descriptor.ElementLabel;
+            _hub = hub;
+            Name = string.IsNullOrWhiteSpace(descriptor.ElementLabel) ? descriptor.ElementName : descriptor.ElementLabel;
             Description = string.IsNullOrWhiteSpace(descriptor.PropertyLabel) ? descriptor.PropertyName : descriptor.PropertyLabel;
             PropertyName = descriptor.PropertyName;
-            Maximum     = descriptor.Max;
-            Minimum     = descriptor.Min;
-            StepSize    = descriptor.Step > 0 ? descriptor.Step : 1.0;
+            Maximum = descriptor.Max;
+            Minimum = descriptor.Min;
+            StepSize = descriptor.Step > 0 ? descriptor.Step : 1.0;
             targetValue = hub.GetValue(descriptor);
         }
 
-        public short  Id          { get; }
-        public string Name        { get; }
+        public short Id { get; }
+        public string Name { get; }
         public string Description { get; }
         public string PropertyName { get; }
-        public double Maximum     { get; }
-        public double Minimum     { get; }
-        public double StepSize    { get; }
+        public double Maximum { get; }
+        public double Minimum { get; }
+        public double StepSize { get; }
 
         public double Value => _hub.GetValue(_descriptor);
 
@@ -190,6 +192,21 @@ namespace NINA.Equipment.Equipment.MySwitch {
         public bool Poll() {
             RaisePropertyChanged(nameof(Value));
             return true;
+        }
+
+        /// <summary>
+        /// Called when the INDI server pushes an unsolicited state update (setSwitchVector).
+        /// Syncs <see cref="TargetValue"/> to the actual device state so that the UI
+        /// toggle reflects external changes without disrupting the SwitchVM set-value
+        /// polling loop (which relies on Value != TargetValue to detect work-in-progress).
+        /// </summary>
+        public void SyncFromDevice() {
+            var liveValue = _hub.GetValue(_descriptor);
+            if (Math.Abs(targetValue - liveValue) > 0.001) {
+                targetValue = liveValue;
+                RaisePropertyChanged(nameof(TargetValue));
+            }
+            RaisePropertyChanged(nameof(Value));
         }
 
         public void SetValue() {
