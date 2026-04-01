@@ -32,6 +32,6 @@ namespace NINA.INDI.Enums {
         DETECTOR_INTERFACE = (1 << 11),
         ROTATOR_INTERFACE = (1 << 12),
         SPECTROGRAPH_INTERFACE = (1 << 13),
-        AUX_INTERFACE = (1 << 14),
+        AUX_INTERFACE = (1 << 15),
     }
 }
