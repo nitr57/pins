@@ -16,6 +16,8 @@ PI.N.S. aims to bring the powerful features of N.I.N.A. to Linux users.
 
 This fork is not affiliated with the original N.I.N.A. authors. Please see [N.I.N.A.](https://github.com/Isbeorn/N.I.N.A.) for the official Windows version.
 
+**New here?** See the [Quick Start Guide](QUICKSTART.md) for step-by-step setup instructions.
+
 ---
 
 ## ✅ Already Tested Devices
