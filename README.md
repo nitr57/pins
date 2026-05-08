@@ -80,6 +80,16 @@ If you use or modify this code, you must comply with the terms of the MPL. For m
 
 ---
 
+## 💖 Early Supporters
+
+We are grateful to the following companies for their early support of the PI.N.S. project:
+
+| | |
+|---|---|
+| [![ToupTek Astro](docs/sponsors/touptekastro.jpg)](https://www.touptekastro.com/) | **[ToupTek Astro](https://www.touptekastro.com/)** |
+
+---
+
 ## 🙏 Attribution
 
 PI.N.S. is a fork of [N.I.N.A. - Nighttime Imaging 'N' Astronomy](https://github.com/Isbeorn/N.I.N.A.), copyright (c) Stefan Berg.
