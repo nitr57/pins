@@ -84,10 +84,10 @@ If you use or modify this code, you must comply with the terms of the MPL. For m
 
 We are grateful to the following companies for their early support of the PI.N.S. project:
 
-<table>
+<table style="border: none; border-collapse: collapse;">
   <tr>
-    <td><a href="https://www.touptekastro.com/"><img src="docs/sponsors/touptekastro.jpg" alt="ToupTek Astro"></a></td>
-    <td><strong><a href="https://www.touptekastro.com/">ToupTek Astro</a></strong></td>
+    <td style="border: none;"><a href="https://www.touptekastro.com/"><img src="docs/sponsors/touptekastro.jpg" alt="ToupTek Astro"></a></td>
+    <td style="border: none;"><strong><a href="https://www.touptekastro.com/">ToupTek Astro</a></strong></td>
   </tr>
 </table>
 
