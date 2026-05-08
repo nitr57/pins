@@ -84,9 +84,12 @@ If you use or modify this code, you must comply with the terms of the MPL. For m
 
 We are grateful to the following companies for their early support of the PI.N.S. project:
 
-| | |
-|---|---|
-| [![ToupTek Astro](docs/sponsors/touptekastro.jpg)](https://www.touptekastro.com/) | **[ToupTek Astro](https://www.touptekastro.com/)** |
+<table>
+  <tr>
+    <td><a href="https://www.touptekastro.com/"><img src="docs/sponsors/touptekastro.jpg" alt="ToupTek Astro"></a></td>
+    <td><strong><a href="https://www.touptekastro.com/">ToupTek Astro</a></strong></td>
+  </tr>
+</table>
 
 ---
 
