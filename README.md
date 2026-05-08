@@ -84,12 +84,9 @@ If you use or modify this code, you must comply with the terms of the MPL. For m
 
 We are grateful to the following companies for their early support of the PI.N.S. project:
 
-<table style="border: none; border-collapse: collapse;">
-  <tr>
-    <td style="border: none;"><a href="https://www.touptekastro.com/"><img src="docs/sponsors/touptekastro.jpg" alt="ToupTek Astro"></a></td>
-    <td style="border: none;"><strong><a href="https://www.touptekastro.com/">ToupTek Astro</a></strong></td>
-  </tr>
-</table>
+[![ToupTek Astro](docs/sponsors/touptekastro.jpg)](https://www.touptekastro.com/)
+
+[**ToupTek Astro**](https://www.touptekastro.com/) is a dedicated brand crafting astrophotography equipment for stargazers. From beginners to pros, ToupTek Astro provides the tools to capture the cosmos.
 
 ---
 
