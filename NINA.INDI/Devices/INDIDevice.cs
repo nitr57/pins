@@ -512,6 +512,15 @@ namespace NINA.INDI.Devices
                     return false;
                 }
 
+                // Apply optional pre-connect delay (mirrors the Ekos connection-profile setting).
+                // Useful for devices like the SV241 Pro whose ESP32 needs time to finish booting
+                // after the serial port is opened before the CONNECT command is sent.
+                if (_preConnectDelay > TimeSpan.Zero)
+                {
+                    Logger.Info($"[{DeviceName}] Waiting {_preConnectDelay.TotalSeconds}s pre-connect delay");
+                    await Task.Delay(_preConnectDelay, ct);
+                }
+
                 // If the INDI driver is already connected at the server level (e.g. a shared
                 // driver whose other interface was connected first), skip the redundant CONNECT
                 // command.  Sending CONNECT to an already-connected INDI device is well-defined
@@ -1060,6 +1069,7 @@ namespace NINA.INDI.Devices
         private string _address;
         private string _port;
         private int _baudRate;
+        private TimeSpan _preConnectDelay = TimeSpan.Zero;
 
         public void ConfigureConnectionProperties(string connectionMode, bool autoSearch, string address, string port, int baudRate)
         {
@@ -1068,6 +1078,11 @@ namespace NINA.INDI.Devices
             _address = address;
             _port = port;
             _baudRate = baudRate;
+        }
+
+        public void ConfigurePreConnectDelay(TimeSpan delay)
+        {
+            _preConnectDelay = delay;
         }
 
         #region Unsupported

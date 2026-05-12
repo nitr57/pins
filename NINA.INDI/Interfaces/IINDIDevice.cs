@@ -13,6 +13,7 @@
 #endregion "copyright"
 
 using NINA.INDI.Enums;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -33,6 +34,7 @@ namespace NINA.INDI.Interfaces {
         void Dispose();
 
         void ConfigureConnectionProperties(string connectionMode, bool autoSearch, string address, string port, int baudRate);
+        void ConfigurePreConnectDelay(TimeSpan delay);
 
         /// <summary>Returns the value of a switch element in a named INDI switch property, or null if not available.</summary>
         bool? GetSwitchPropertyValue(string propertyName, string elementName);

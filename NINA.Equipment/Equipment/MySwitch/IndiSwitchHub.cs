@@ -68,13 +68,16 @@ namespace NINA.Equipment.Equipment.MySwitch {
                     s.IndiPort,
                     s.IndiBaudRate
                 );
+                if (s.IndiPreConnectDelay > 0) {
+                    GetInstance().ConfigurePreConnectDelay(TimeSpan.FromSeconds(s.IndiPreConnectDelay));
+                }
             }
             return Task.CompletedTask;
         }
 
         protected override async Task PostConnect() {
-            // Give the INDI driver a moment to push all initial property definitions.
-            await Task.Delay(TimeSpan.FromSeconds(1));
+            var postDelay = profileService?.ActiveProfile.SwitchSettings.IndiPostConnectDelay ?? 1;
+            await Task.Delay(TimeSpan.FromSeconds(Math.Max(1, postDelay)));
             BuildSwitchCollection();
             GetInstance().ValuesUpdated += OnIndiValuesUpdated;
         }

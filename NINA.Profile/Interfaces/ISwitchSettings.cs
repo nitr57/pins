@@ -23,5 +23,7 @@ namespace NINA.Profile.Interfaces {
         int IndiBaudRate { get; set; }
         bool IndiAutoSearch { get; set; }
         string IndiAddress { get; set; }
+        int IndiPreConnectDelay { get; set; }
+        int IndiPostConnectDelay { get; set; }
     }
 }

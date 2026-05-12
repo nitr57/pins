@@ -37,6 +37,8 @@ namespace NINA.Profile {
             indiBaudRate = 9600;
             indiAutoSearch = true;
             indiAddress = "localhost";
+            indiPreConnectDelay = 0;
+            indiPostConnectDelay = 1;
         }
 
         private string id;
@@ -132,6 +134,30 @@ namespace NINA.Profile {
             set {
                 if (indiAddress != value) {
                     indiAddress = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private int indiPreConnectDelay;
+        [DataMember]
+        public int IndiPreConnectDelay {
+            get => indiPreConnectDelay;
+            set {
+                if (indiPreConnectDelay != value) {
+                    indiPreConnectDelay = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private int indiPostConnectDelay;
+        [DataMember]
+        public int IndiPostConnectDelay {
+            get => indiPostConnectDelay;
+            set {
+                if (indiPostConnectDelay != value) {
+                    indiPostConnectDelay = value;
                     RaisePropertyChanged();
                 }
             }
