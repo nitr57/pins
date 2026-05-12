@@ -1082,7 +1082,7 @@ namespace NINA.INDI.Devices
 
         public void ConfigurePreConnectDelay(TimeSpan delay)
         {
-            _preConnectDelay = delay;
+            _preConnectDelay = delay < TimeSpan.Zero ? TimeSpan.Zero : delay;
         }
 
         #region Unsupported

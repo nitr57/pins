@@ -68,7 +68,7 @@ namespace NINA.Equipment.Equipment.MySwitch {
                     s.IndiPort,
                     s.IndiBaudRate
                 );
-                if (s.IndiPreConnectDelay > 0) {
+                if (s.IndiPreConnectDelay >= 0) {
                     GetInstance().ConfigurePreConnectDelay(TimeSpan.FromSeconds(s.IndiPreConnectDelay));
                 }
             }
