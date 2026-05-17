@@ -27,5 +27,9 @@ namespace NINA.Equipment.SDK.CameraSDKs.SVBonySDK {
         public int Index { get; }
         public int Min { get => (int)capabilities.MinValue.Value; }
         public int Max { get => (int)capabilities.MaxValue.Value; }
+
+        public override string ToString() {
+            return $"Index: {Index}, Name: {capabilities.Name}, Description: {capabilities.Description}, Min: {Min}, Max: {Max}, Default: {(int)capabilities.DefaultValue.Value}, Auto: {capabilities.IsAutoSupported}, Writable: {capabilities.IsWritable}, ControlType: {capabilities.ControlType}";
+        }
     }
 }

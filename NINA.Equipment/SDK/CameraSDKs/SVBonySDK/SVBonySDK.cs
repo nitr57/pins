@@ -21,6 +21,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Security;
@@ -98,16 +99,27 @@ namespace NINA.Equipment.SDK.CameraSDKs.SVBonySDK {
 
             SetHighestBitDepth();
 
-            sVBonyPInvoke.SVBGetNumOfControls(id, out var numOfControls);
+            CheckAndLogError(sVBonyPInvoke.SVBGetNumOfControls(id, out var numOfControls));
+            Logger.Trace($"Camera has {numOfControls} controls");
 
             for (int i = 0; i < numOfControls; i++) {
-                sVBonyPInvoke.SVBGetControlCaps(id, i, out var caps);
+                if (CheckAndLogError(sVBonyPInvoke.SVBGetControlCaps(id, i, out var caps))) { // // A. API call to retrieve the i-th capability of a CMOS camera
+                    Logger.Trace($"SVBGetControlCaps {i}: {caps.Description} - Type: {caps.ControlType}"); // A-PASS.The capability to control the CMOS camera has been acquired.
+                }
+                else {
+                    Logger.Error($"Failed to get control caps for control index {i}"); // A-NG .Failed to obtain the CMOS camera control capability.
+                    continue; // B Display the contents of the control object registered in `controls`
+                }
                 if (!controls.ContainsKey(caps.ControlType)) {
-                    controls.Add(caps.ControlType, new SVBonyControl(i, caps));
+                    var control = new SVBonyControl(i, caps);
+                    controls.Add(caps.ControlType, control);
 
-                    Logger.Trace($"Found control {caps.description} - default: {caps.DefaultValue}, min: {caps.MinValue}, max: {caps.MaxValue}");
+                    Logger.Trace($"Found control {caps.Description} - default: {caps.DefaultValue}, min: {caps.MinValue}, max: {caps.MaxValue}"); // A-RESULT Display a portion of the results for the acquired capability
+                    Logger.Trace($"Added control {control}");
                     // Set all to default
-                    SetControlValue(caps.ControlType, (int)caps.DefaultValue.Value);
+                    if (caps.IsWritable == SVB_BOOL.SVB_TRUE) {
+                        SetControlValue(caps.ControlType, (int)caps.DefaultValue.Value);
+                    }
                 }
             }
 
@@ -508,10 +520,10 @@ namespace NINA.Equipment.SDK.CameraSDKs.SVBonySDK {
             return false;
         }
 
-        private bool CheckAndLogError(SVB_ERROR_CODE code) {
+        private bool CheckAndLogError(SVB_ERROR_CODE code, [CallerMemberName] string memberName = "", [CallerFilePath] string filePath = "", [CallerLineNumber] int lineNumber = 0) {
             if (code == SVB_ERROR_CODE.SVB_SUCCESS) { return true; }
 
-            Logger.Error(code.ToString());
+            Logger.Error($"{code} [{memberName}] {filePath}:{lineNumber}");
             return false;
         }
 
