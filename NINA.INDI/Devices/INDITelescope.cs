@@ -67,24 +67,29 @@ namespace NINA.INDI.Devices {
         }
 
         /// <summary>
-        /// Returns the index of the switch whose parsed rate is closest to absRate.
-        /// Falls back to proportional mapping if no labels can be parsed.
+        /// Returns the switch index that best matches absRate (in °/s).
+        /// Uses °/s nearest-neighbour matching only when *every* switch carries a parsable
+        /// rate (e.g. OnStep's "48x"/"16x" labels). Named-only rates like Guide/Centering/
+        /// Find/Max parse just "Max", which would otherwise always win — so when any switch
+        /// is unparsable we fall back to proportional index mapping over the ordered list.
         /// </summary>
         private int FindBestSwitchIndex(double absRate, IList<INDISwitch> switches) {
             int maxIndex = switches.Count - 1;
 
             int bestIdx = -1;
             double bestDiff = double.MaxValue;
+            bool allParsable = true;
             for (int i = 0; i <= maxIndex; i++) {
                 var rate = TryParseSwitchRateDps(switches[i]);
-                if (rate == null) continue;
+                if (rate == null) { allParsable = false; continue; }
                 var diff = Math.Abs(rate.Value - absRate);
                 if (diff < bestDiff) { bestDiff = diff; bestIdx = i; }
             }
 
-            if (bestIdx >= 0) return bestIdx;
+            if (allParsable && bestIdx >= 0) return bestIdx;
 
-            // No labels parsed — fall back to proportional mapping
+            // Not all switches expose a real °/s value (e.g. Guide/Centering/Find/Max) —
+            // map proportionally across the ordered switch list instead.
             return Math.Max(0, Math.Min((int)Math.Round(absRate / ActualMaxSlewRateDps * maxIndex), maxIndex));
         }
 
