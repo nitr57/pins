@@ -137,6 +137,9 @@ namespace NINA.Utility {
 
                 // Device Chooser Instances
                 services.AddSingleton<CameraChooserVM>();
+                // Dedicated guide-camera chooser for the integrated PHD2 guider (separate
+                // selection/connection state from the imaging camera so both run in parallel).
+                services.AddSingleton<GuideCameraChooserVM>();
                 services.AddSingleton<FilterWheelChooserVM>();
                 services.AddSingleton<FocuserChooserVM>();
                 services.AddSingleton<RotatorChooserVM>();

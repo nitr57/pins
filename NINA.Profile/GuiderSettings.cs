@@ -43,6 +43,7 @@ namespace NINA.Profile {
             pHD2Camera = "None";
             pHD2CameraId = string.Empty;
             pHD2CameraDepth = 16;
+            integratedGuideCameraId = string.Empty;
             phd2ROIPct = 100;
             settlePixels = 1.5;
             settleTimeout = 40;
@@ -257,6 +258,19 @@ namespace NINA.Profile {
             set {
                 if (pHD2CameraId != value) {
                     pHD2CameraId = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string integratedGuideCameraId;
+
+        [DataMember]
+        public string IntegratedGuideCameraId {
+            get => integratedGuideCameraId;
+            set {
+                if (integratedGuideCameraId != value) {
+                    integratedGuideCameraId = value;
                     RaisePropertyChanged();
                 }
             }

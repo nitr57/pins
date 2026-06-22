@@ -667,6 +667,32 @@
                     <TextBlock Grid.Column="1" Margin="5,0,0,0"><Hyperlink NavigateUri="https://github.com/oleg-st/ZstdSharp" RequestNavigate="Hyperlink_RequestNavigate">https://github.com/oleg-st/ZstdSharp</Hyperlink></TextBlock>
                     <TextBlock Grid.Column="2" Margin="5,0,0,0"><Hyperlink NavigateUri="https://opensource.org/licenses/MIT" RequestNavigate="Hyperlink_RequestNavigate">The MIT License</Hyperlink></TextBlock>
                 </Grid>
+                <Grid Margin="5,5,5,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition
+                            Width="Auto"
+                            MinWidth="150"
+                            SharedSizeGroup="Column1" />
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="Column2" />
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="Column3" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="PHD2 (libphd2core)     " />
+                    <TextBlock Grid.Column="1" Margin="5,0,0,0"><Hyperlink NavigateUri="https://github.com/OpenPHDGuiding/phd2" RequestNavigate="Hyperlink_RequestNavigate">https://github.com/OpenPHDGuiding/phd2</Hyperlink></TextBlock>
+                    <TextBlock Grid.Column="2" Margin="5,0,0,0"><Hyperlink NavigateUri="https://opensource.org/licenses/BSD-3-Clause" RequestNavigate="Hyperlink_RequestNavigate">BSD 3-Clause License</Hyperlink></TextBlock>
+                </Grid>
+                <Grid Margin="5,5,5,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition
+                            Width="Auto"
+                            MinWidth="150"
+                            SharedSizeGroup="Column1" />
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="Column2" />
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="Column3" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="Eigen                  " />
+                    <TextBlock Grid.Column="1" Margin="5,0,0,0"><Hyperlink NavigateUri="https://eigen.tuxfamily.org" RequestNavigate="Hyperlink_RequestNavigate">https://eigen.tuxfamily.org</Hyperlink></TextBlock>
+                    <TextBlock Grid.Column="2" Margin="5,0,0,0"><Hyperlink NavigateUri="https://www.mozilla.org/MPL/2.0/" RequestNavigate="Hyperlink_RequestNavigate">Mozilla Public License 2.0</Hyperlink></TextBlock>
+                </Grid>
 
             </StackPanel>
 

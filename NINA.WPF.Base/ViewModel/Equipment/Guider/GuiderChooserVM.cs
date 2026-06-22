@@ -1,7 +1,7 @@
 #region "copyright"
 
 /*
-    Copyright © 2016 - 2026 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
+    Copyright ï¿½ 2016 - 2026 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
 
     This file is part of N.I.N.A. - Nighttime Imaging 'N' Astronomy.
 
@@ -25,6 +25,7 @@ using NINA.Equipment.Interfaces;
 using NINA.Equipment.Equipment.MyGuider.SkyGuard;
 using System.Threading.Tasks;
 using NINA.Equipment.Interfaces.ViewModel;
+using NINA.WPF.Base.ViewModel.Equipment.Camera;
 
 namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
 
@@ -32,17 +33,26 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
         private readonly ICameraMediator cameraMediator;
         private readonly ITelescopeMediator telescopeMediator;
         private readonly IWindowServiceFactory windowServiceFactory;
+        private readonly GuideCameraChooserVM guideCameraChooser;
 
         public GuiderChooserVM(IProfileService profileService,
                                ICameraMediator cameraMediator,
                                ITelescopeMediator telescopeMediator,
                                IWindowServiceFactory windowServiceFactory,
+                               GuideCameraChooserVM guideCameraChooser,
                                IEquipmentProviders<IGuider> equipmentProviders) : base(profileService, equipmentProviders) {
             this.cameraMediator = cameraMediator;
             this.profileService = profileService;
             this.telescopeMediator = telescopeMediator;
             this.windowServiceFactory = windowServiceFactory;
+            this.guideCameraChooser = guideCameraChooser;
         }
+
+        /// <summary>
+        /// The dedicated guide-camera chooser used by the integrated PHD2 guider. Exposed so the
+        /// headless API can list/select the guide camera independently of the imaging camera.
+        /// </summary>
+        public IDeviceChooserVM GuideCameraChooser => guideCameraChooser;
 
         public override async Task GetEquipment() {
             await lockObj.WaitAsync();
@@ -53,6 +63,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
                 devices.Add(new DirectGuider(profileService, telescopeMediator));
                 devices.Add(new MetaGuideGuider(profileService, windowServiceFactory));
                 devices.Add(new SkyGuardGuider(profileService, windowServiceFactory));
+                devices.Add(new IntegratedGuider(profileService, telescopeMediator,
+                    new CameraGuideCameraSource(profileService, guideCameraChooser)));
 
                 /* Plugin Providers */
                 foreach (var provider in await equipmentProviders.GetProviders()) {

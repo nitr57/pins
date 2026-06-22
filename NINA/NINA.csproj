@@ -117,4 +117,12 @@
   <Target Name="CopySystemWindowsStub" AfterTargets="Build">
     <Copy SourceFiles="$(MSBuildThisFileDirectory)\..\System.Windows.Compat\bin\$(Configuration)\net10.0\System.Windows.dll" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="false" />
   </Target>
+  <!-- Copy the libphd2core native runtime (drop-zone: External\phd2core) into the output root so
+       the integrated PHD2 guider's [DllImport("phd2core")] resolves it. No-op when not present. -->
+  <Target Name="CopyPhd2CoreNative" AfterTargets="Build">
+    <ItemGroup>
+      <Phd2CoreNative Include="$(MSBuildThisFileDirectory)External\phd2core\*.so;$(MSBuildThisFileDirectory)External\phd2core\*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(Phd2CoreNative)" DestinationFolder="$(OutputPath)" SkipUnchangedFiles="true" Condition="'@(Phd2CoreNative)' != ''" />
+  </Target>
 </Project>

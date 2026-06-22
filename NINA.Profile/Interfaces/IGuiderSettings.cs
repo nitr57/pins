@@ -31,6 +31,7 @@ namespace NINA.Profile.Interfaces {
         string PHD2Camera { get; set; }
         string PHD2CameraId { get; set; }
         int PHD2CameraDepth { get; set; }
+        string IntegratedGuideCameraId { get; set; }
         int SettleTime { get; set; }
         double SettlePixels { get; set; }
         int SettleTimeout { get; set; }
