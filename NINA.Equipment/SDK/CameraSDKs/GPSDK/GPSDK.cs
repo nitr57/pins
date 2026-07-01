@@ -44,6 +44,8 @@ namespace GPSDK {
             { "Canon EOS-1D X Mark II", (5472, 3648, 6.58, 6.58) },
             
             // Nikon D series
+            { "Nikon DSC D750", (6016, 4016, 5.97, 5.97) },
+            { "Nikon D750", (6016, 4016, 5.97, 5.97) },
             { "Nikon D850", (8256, 5504, 4.35, 4.35) },
             
             // Nikon Z series
@@ -579,12 +581,29 @@ namespace GPSDK {
 
 
 
+        // gp_widget_get/set_value uses void* in C; expose typed wrappers so callers
+        // pass the right storage for toggles, ranges, and strings.
         [SecurityCritical]
         public static GP_ERROR_CODE GpWidgetGetValue(IntPtr widget, out string value) {
             IntPtr valuePtr = IntPtr.Zero;
-            var ret = (GP_ERROR_CODE)gp_widget_get_value(widget, out valuePtr);
+            var ret = (GP_ERROR_CODE)gp_widget_get_value_string(widget, out valuePtr);
             value = Marshal.PtrToStringAnsi(valuePtr) ?? string.Empty;
             return ret;
+        }
+
+        [SecurityCritical]
+        public static GP_ERROR_CODE GpWidgetGetValue(IntPtr widget, out int value) {
+            return (GP_ERROR_CODE)gp_widget_get_value_int(widget, out value);
+        }
+
+        [SecurityCritical]
+        public static GP_ERROR_CODE GpWidgetGetValue(IntPtr widget, out float value) {
+            return (GP_ERROR_CODE)gp_widget_get_value_float(widget, out value);
+        }
+
+        [SecurityCritical]
+        public static GP_ERROR_CODE GpWidgetGetType(IntPtr widget, out CameraWidgetType type) {
+            return (GP_ERROR_CODE)gp_widget_get_type(widget, out type);
         }
 
         [SecurityCritical]
@@ -610,15 +629,18 @@ namespace GPSDK {
 
         [SecurityCritical]
         public static GP_ERROR_CODE GpWidgetSetValue(IntPtr widget, [MarshalAs(UnmanagedType.LPStr)] string value) {
-            return (GP_ERROR_CODE)gp_widget_set_value(widget, value);
+            return (GP_ERROR_CODE)gp_widget_set_value_string(widget, value);
         }
 
+        [SecurityCritical]
+        public static GP_ERROR_CODE GpWidgetSetValue(IntPtr widget, int value) {
+            return (GP_ERROR_CODE)gp_widget_set_value_int(widget, ref value);
+        }
 
-
-
-
-
-
+        [SecurityCritical]
+        public static GP_ERROR_CODE GpWidgetSetValue(IntPtr widget, float value) {
+            return (GP_ERROR_CODE)gp_widget_set_value_float(widget, ref value);
+        }
         /* Context */
         [DllImport(GPHOTO2, EntryPoint = "gp_context_new", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr gp_context_new();
@@ -731,7 +753,16 @@ namespace GPSDK {
 
         /* Widget */
         [DllImport(GPHOTO2, EntryPoint = "gp_widget_get_value", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int gp_widget_get_value(IntPtr widget, out IntPtr value);
+        private static extern int gp_widget_get_value_string(IntPtr widget, out IntPtr value);
+
+        [DllImport(GPHOTO2, EntryPoint = "gp_widget_get_value", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int gp_widget_get_value_int(IntPtr widget, out int value);
+
+        [DllImport(GPHOTO2, EntryPoint = "gp_widget_get_value", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int gp_widget_get_value_float(IntPtr widget, out float value);
+
+        [DllImport(GPHOTO2, EntryPoint = "gp_widget_get_type", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int gp_widget_get_type(IntPtr widget, out CameraWidgetType type);
 
         [DllImport(GPHOTO2, EntryPoint = "gp_widget_free", CallingConvention = CallingConvention.Cdecl)]
         private static extern int gp_widget_free(IntPtr widget);
@@ -743,7 +774,13 @@ namespace GPSDK {
         private static extern int gp_widget_get_choice(IntPtr widget, int index, ref IntPtr choice);
 
         [DllImport(GPHOTO2, EntryPoint = "gp_widget_set_value", CallingConvention = CallingConvention.Cdecl)]
-        private static extern int gp_widget_set_value(IntPtr widget, [MarshalAs(UnmanagedType.LPStr)] string value);
+        private static extern int gp_widget_set_value_string(IntPtr widget, [MarshalAs(UnmanagedType.LPStr)] string value);
+
+        [DllImport(GPHOTO2, EntryPoint = "gp_widget_set_value", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int gp_widget_set_value_int(IntPtr widget, ref int value);
+
+        [DllImport(GPHOTO2, EntryPoint = "gp_widget_set_value", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int gp_widget_set_value_float(IntPtr widget, ref float value);
 
         /* File Operations */
         [DllImport(GPHOTO2, EntryPoint = "gp_file_new", CallingConvention = CallingConvention.Cdecl)]

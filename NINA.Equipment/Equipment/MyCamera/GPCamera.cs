@@ -34,6 +34,8 @@ using NINA.Equipment.Interfaces;
 using NINA.Equipment.Utility;
 using System.Text;
 using System.Runtime.InteropServices;
+using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace NINA.Equipment.Equipment.MyCamera {
 
@@ -49,6 +51,20 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private System.Timers.Timer _batteryPolling;
         // gphoto2 is not thread-safe; all camera I/O must be serialised through this lock.
         private readonly object _gpLock = new object();
+        private const double LongExposureThresholdSeconds = 30.0d;
+        private const int BulbFileEventTimeoutMs = 20000;
+        private static readonly string[] ShutterSpeedProperties = { "shutterspeed", "shutterspeed2" };
+        private static readonly string[] IsoProperties = { "iso", "iso2", "isospeed" };
+        private string bulbShutterSpeedChoice;
+        private string shutterSpeedProperty = "shutterspeed";
+        private string isoProperty = "iso";
+        private BulbExposureControl activeBulbExposureControl = BulbExposureControl.None;
+
+        private enum BulbExposureControl {
+            None,
+            EosRemoteRelease,
+            BulbToggle
+        }
 
         public GPCamera(string name, string path, IProfileService profileService, IExposureDataFactory exposureDataFactory) {
             _disposed = false;
@@ -278,18 +294,34 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         public int Gain {
             get {
-                GetProperty("iso", out var iso);
+                if (GetProperty(isoProperty, out var iso) != GP_ERROR_CODE.GP_OK) {
+                    return -1;
+                }
 
-                var translatediso = ISOSpeeds.Where(x => x.Key == iso).FirstOrDefault().Value;
-
-                return translatediso;
+                return TranslateISOChoice(iso);
             }
             set {
                 ValidateMode();
-                string iso = ISOSpeeds.Where((x) => x.Value == value).FirstOrDefault().Key;
-                if (CheckError(SetProperty("iso", iso), $"iso-{iso}")) {
-                    Notification.ShowExternalError(Loc.Instance["LblUnableToSetISO"], Loc.Instance["LblCanonDriverError"]);
+                string iso = FindISOChoice(value);
+                if (string.IsNullOrEmpty(iso)) {
+                    Logger.Warning($"libgphoto2: ISO value {value} is not in the camera ISO choices for {isoProperty}. Choices: {string.Join(", ", ISOSpeeds.Values.OrderBy(x => x))}");
+                    Notification.ShowExternalError(Loc.Instance["LblUnableToSetISO"], "libgphoto2 Driver Error");
+                    return;
                 }
+
+                if (CheckError(SetProperty(isoProperty, iso), $"{isoProperty}-{iso}")) {
+                    Notification.ShowExternalError(Loc.Instance["LblUnableToSetISO"], "libgphoto2 Driver Error");
+                    return;
+                }
+
+                if (GetProperty(isoProperty, out var readBackIso) == GP_ERROR_CODE.GP_OK) {
+                    int readBackValue = TranslateISOChoice(readBackIso);
+                    Logger.Info($"libgphoto2: Requested ISO {value} via {isoProperty}='{iso}', camera reads back '{readBackIso}' ({readBackValue})");
+                    if (readBackValue > 0 && readBackValue != value) {
+                        Logger.Warning($"libgphoto2: Camera ISO readback {readBackValue} does not match requested ISO {value}. Check camera Auto ISO and mode settings.");
+                    }
+                }
+
                 RaisePropertyChanged();
             }
         }
@@ -371,8 +403,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
             GetISOSpeeds();
             GetShutterSpeeds();
             GetBatteryLevel();
+            ConfigureCaptureTarget();
             if (!SetRawFormat()) {
-                return false;
+                Logger.Warning("libgphoto2: Could not switch camera to a RAW image format; continuing with the camera's current image format");
             }
 
             _cameraResolution = GetCameraResolution();
@@ -382,28 +415,110 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         private bool SetRawFormat() {
-            // Try well-known RAW format names (Canon, Nikon, Sony, Fuji, Olympus, Panasonic, Pentax)
-            var knownRawFormats = new[] { "RAW", "CR3", "CR2", "NEF", "ARW", "RAF", "ORF", "RW2", "PEF", "NRW", "SRF", "SR2" };
-            foreach (var fmt in knownRawFormats) {
-                if (SetProperty("imageformat", fmt) == GP_ERROR_CODE.GP_OK) {
-                    return true;
-                }
-            }
-
-            // Dynamic fallback: query the available choices and pick one that looks like a RAW format
-            if (GetPropertyList("imageformat", out var formats) == GP_ERROR_CODE.GP_OK) {
-                var rawLike = formats.FirstOrDefault(f =>
-                    f.IndexOf("raw", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    f.Equals("NEF", StringComparison.OrdinalIgnoreCase) ||
-                    f.Equals("ARW", StringComparison.OrdinalIgnoreCase) ||
-                    f.Equals("RAF", StringComparison.OrdinalIgnoreCase));
-                if (rawLike != null && SetProperty("imageformat", rawLike) == GP_ERROR_CODE.GP_OK) {
-                    Logger.Info($"libgphoto2: RAW format set dynamically to '{rawLike}'");
+            // Different camera vendors expose RAW selection under different gphoto2 widgets.
+            foreach (var property in new[] { "imageformat", "imagequality", "imgquality" }) {
+                if (TrySetRawFormat(property)) {
                     return true;
                 }
             }
 
             return false;
+        }
+
+        private bool TrySetRawFormat(string property) {
+            if (GetPropertyList(property, out var formats) == GP_ERROR_CODE.GP_OK) {
+                // Prefer camera-reported choices because labels vary by model and firmware.
+                string rawFormat = SelectRawFormat(formats);
+                if (!string.IsNullOrEmpty(rawFormat)) {
+                    var result = SetProperty(property, rawFormat);
+                    if (result == GP_ERROR_CODE.GP_OK) {
+                        Logger.Info($"libgphoto2: {property} set to RAW format '{rawFormat}'");
+                        return true;
+                    }
+                    Logger.Warning($"libgphoto2: Could not set {property} to '{rawFormat}': {result}");
+                }
+            }
+
+            // Fallback for cameras that accept a RAW token but do not report choices.
+            foreach (var fmt in new[] { "RAW", "NEF", "NRW", "CR3", "CR2", "ARW", "RAF", "ORF", "RW2", "PEF", "SRF", "SR2" }) {
+                if (SetProperty(property, fmt) == GP_ERROR_CODE.GP_OK) {
+                    Logger.Info($"libgphoto2: {property} set to RAW format '{fmt}'");
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static string SelectRawFormat(IList<string> formats) {
+            string rawOnly = formats.FirstOrDefault(f => IsRawFormatChoice(f) && !IsJpegFormatChoice(f));
+            if (!string.IsNullOrEmpty(rawOnly)) {
+                return rawOnly;
+            }
+
+            return formats.FirstOrDefault(IsRawFormatChoice);
+        }
+
+        private static bool IsRawFormatChoice(string format) {
+            if (string.IsNullOrWhiteSpace(format)) {
+                return false;
+            }
+
+            string normalized = format.ToLowerInvariant();
+            return normalized.Contains("raw")
+                || normalized.Contains("nef")
+                || normalized.Contains("nrw")
+                || normalized.Contains("cr2")
+                || normalized.Contains("cr3")
+                || normalized.Contains("arw")
+                || normalized.Contains("raf")
+                || normalized.Contains("orf")
+                || normalized.Contains("rw2")
+                || normalized.Contains("pef")
+                || normalized.Contains("srf")
+                || normalized.Contains("sr2");
+        }
+
+        private static bool IsJpegFormatChoice(string format) {
+            if (string.IsNullOrWhiteSpace(format)) {
+                return false;
+            }
+
+            string normalized = format.ToLowerInvariant();
+            return normalized.Contains("jpg") || normalized.Contains("jpeg");
+        }
+
+        private void ConfigureCaptureTarget() {
+            if (!IsKnownNikonCamera()) {
+                return;
+            }
+
+            if (GetPropertyList("capturetarget", out var targets) != GP_ERROR_CODE.GP_OK) {
+                return;
+            }
+
+            string target = targets.FirstOrDefault(IsMemoryCaptureTargetChoice);
+            if (string.IsNullOrEmpty(target)) {
+                return;
+            }
+
+            var result = SetProperty("capturetarget", target);
+            if (result == GP_ERROR_CODE.GP_OK) {
+                Logger.Info($"libgphoto2: Nikon capturetarget set to '{target}' for direct download");
+            } else {
+                Logger.Warning($"libgphoto2: Could not set Nikon capturetarget to '{target}': {result}");
+            }
+        }
+
+        private static bool IsMemoryCaptureTargetChoice(string target) {
+            if (string.IsNullOrWhiteSpace(target)) {
+                return false;
+            }
+
+            string normalized = target.ToLowerInvariant();
+            return normalized.Contains("sdram")
+                || normalized.Contains("ram")
+                || (normalized.Contains("memory") && !normalized.Contains("card"));
         }
 
         /// <summary>
@@ -415,70 +530,126 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         private void GetShutterSpeeds() {
             ShutterSpeeds.Clear();
+            bulbShutterSpeedChoice = null;
+            shutterSpeedProperty = ShutterSpeedProperties[0];
 
-            GetPropertyList("shutterspeed", out var list);
+            foreach (var property in ShutterSpeedProperties) {
+                if (GetPropertyList(property, out var list) != GP_ERROR_CODE.GP_OK) {
+                    continue;
+                }
 
-            foreach (var prop in list) {
-                // Try to parse as double (shutter speeds are in seconds like "1/2000", "1", "0.5", etc.)
-                try {
-                    // Handle fractions like "1/2000"
-                    if (prop.Contains('/')) {
-                        var parts = prop.Split('/');
-                        if (parts.Length == 2 && double.TryParse(parts[0], out var numerator) &&
-                            double.TryParse(parts[1], out var denominator) && denominator != 0) {
-                            ShutterSpeeds.Add(prop, numerator / denominator);
-                        }
-                    } else if (double.TryParse(prop, out double speed)) {
-                        ShutterSpeeds.Add(prop, speed);
+                bool parsedAnyChoice = false;
+                foreach (var prop in list) {
+                    if (IsBulbShutterSpeedChoice(prop)) {
+                        bulbShutterSpeedChoice ??= prop;
+                        shutterSpeedProperty = property;
+                        continue;
                     }
-                } catch (Exception ex) {
-                    Logger.Warning($"Failed to parse shutter speed '{prop}': {ex.Message}");
+
+                    try {
+                        if (TryParseShutterSpeed(prop, out double speed)) {
+                            ShutterSpeeds[prop] = speed;
+                            parsedAnyChoice = true;
+                        }
+                    } catch (Exception ex) {
+                        Logger.Warning($"Failed to parse shutter speed '{prop}': {ex.Message}");
+                    }
+                }
+
+                if (parsedAnyChoice) {
+                    shutterSpeedProperty = property;
+                    Logger.Debug($"libgphoto2: Using {property} for shutter speed control");
+                    return;
                 }
             }
+
+            Logger.Warning("libgphoto2: No usable shutter-speed choices were reported by the camera");
+        }
+
+        private static bool TryParseShutterSpeed(string value, out double seconds) {
+            seconds = 0;
+            if (string.IsNullOrWhiteSpace(value)) {
+                return false;
+            }
+
+            // gphoto2 labels vary: Canon often reports "1/2000" or "0.5", while
+            // Nikon bodies may report values such as "2s" or "0.2s".
+            string normalized = value.Trim().Trim('"').Replace(',', '.');
+            if (normalized.EndsWith("s", StringComparison.OrdinalIgnoreCase)) {
+                normalized = normalized.Substring(0, normalized.Length - 1).Trim();
+            }
+
+            if (normalized.Contains('/')) {
+                var parts = normalized.Split('/');
+                if (parts.Length == 2
+                    && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var numerator)
+                    && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var denominator)
+                    && denominator != 0) {
+                    seconds = numerator / denominator;
+                    return seconds > 0;
+                }
+                return false;
+            }
+
+            return double.TryParse(normalized, NumberStyles.Float, CultureInfo.InvariantCulture, out seconds) && seconds > 0;
         }
 
         private bool IsManualMode() {
-            var mode = string.Empty;
-            // Check "exposuremode" (Canon), "autoexposuremode" (Canon alternate), "capturemode" (Nikon)
-            if (GetProperty("exposuremode", out mode) != GP_ERROR_CODE.GP_OK) {
-                if (GetProperty("autoexposuremode", out mode) != GP_ERROR_CODE.GP_OK) {
-                    if (GetProperty("capturemode", out mode) != GP_ERROR_CODE.GP_OK) {
-                        return false;
-                    }
-                }
-            }
-            return mode == "M" || mode.Contains("Manual");
-        }
-
-        private bool IsBulbMode() {
-            // Check if camera is in dedicated Bulb mode (exposuremode / autoexposuremode (Canon), capturemode (Nikon))
-            var mode = string.Empty;
-            if (GetProperty("exposuremode", out mode) == GP_ERROR_CODE.GP_OK) {
-                if (mode.Equals("Bulb", StringComparison.OrdinalIgnoreCase)) {
-                    return true;
-                }
-            }
-            if (GetProperty("autoexposuremode", out mode) == GP_ERROR_CODE.GP_OK) {
-                if (mode.Equals("Bulb", StringComparison.OrdinalIgnoreCase)) {
-                    return true;
-                }
-            }
-            if (GetProperty("capturemode", out mode) == GP_ERROR_CODE.GP_OK) {
-                if (mode.Equals("Bulb", StringComparison.OrdinalIgnoreCase)) {
-                    return true;
-                }
-            }
-
-            // Check if camera is in Manual mode with bulb shutter speed. Use a plain status
-            // check (not CheckError) so cameras without a 'shutterspeed' widget do not spam
-            // the error log on every call.
-            if (GetProperty("shutterspeed", out var shutterspeed) == GP_ERROR_CODE.GP_OK) {
-                if (shutterspeed.Equals("bulb", StringComparison.OrdinalIgnoreCase)) {
+            // gphoto2 uses different mode widget names across vendors and bodies.
+            foreach (var property in new[] { "exposuremode", "autoexposuremode", "expprogram", "capturemode" }) {
+                if (GetProperty(property, out var mode) == GP_ERROR_CODE.GP_OK && IsManualModeValue(mode)) {
                     return true;
                 }
             }
 
             return false;
+        }
+
+        private bool IsBulbMode() {
+            // Some bodies expose Bulb as a mode, while others expose it as a shutter-speed choice.
+            foreach (var property in new[] { "exposuremode", "autoexposuremode", "expprogram", "capturemode" }) {
+                if (GetProperty(property, out var mode) == GP_ERROR_CODE.GP_OK && IsBulbModeValue(mode)) {
+                    return true;
+                }
+            }
+
+            // Use plain status checks so cameras without a shutter-speed widget do not spam error logs.
+            foreach (var property in ShutterSpeedProperties) {
+                if (GetProperty(property, out var shutterspeed) == GP_ERROR_CODE.GP_OK && IsBulbShutterSpeedChoice(shutterspeed)) {
+                    bulbShutterSpeedChoice ??= shutterspeed;
+                    shutterSpeedProperty = property;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsManualModeValue(string value) {
+            if (string.IsNullOrWhiteSpace(value)) {
+                return false;
+            }
+
+            string normalized = value.Trim();
+            return normalized.Equals("M", StringComparison.OrdinalIgnoreCase)
+                || normalized.StartsWith("M ", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("Manual", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsBulbModeValue(string value) {
+            return !string.IsNullOrWhiteSpace(value)
+                && value.Contains("Bulb", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsBulbShutterSpeedChoice(string value) {
+            if (string.IsNullOrWhiteSpace(value)) {
+                return false;
+            }
+
+            string normalized = value.Trim();
+            return normalized.Equals("bulb", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("b", StringComparison.OrdinalIgnoreCase)
+                || normalized.Contains("Bulb", StringComparison.OrdinalIgnoreCase);
         }
 
         private Dictionary<string, int> ISOSpeeds = new Dictionary<string, int>();
@@ -487,21 +658,68 @@ namespace NINA.Equipment.Equipment.MyCamera {
             ISOSpeeds.Clear();
             Gains.Clear();
 
-            GetPropertyList("iso", out var list);
+            IList<string> list = Array.Empty<string>();
+            foreach (var property in IsoProperties) {
+                if (GetPropertyList(property, out list) == GP_ERROR_CODE.GP_OK && list.Count > 0) {
+                    isoProperty = property;
+                    break;
+                }
+            }
 
             foreach (var prop in list) {
                 // Try to parse as integer
                 try {
-                    if (int.TryParse(prop, out var number)) {
-                        if (number > 0) {
-                            ISOSpeeds.Add(prop, number);
-                            Gains.Add(number);
-                        }
+                    var match = Regex.Match(prop, @"\d+");
+                    if (match.Success && int.TryParse(match.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number) && number > 0) {
+                        ISOSpeeds.Add(prop, number);
+                        Gains.Add(number);
                     }
                 } catch (Exception ex) {
                     Logger.Warning($"Failed to parse iso speed '{prop}': {ex.Message}");
                 }
             }
+
+            if (ISOSpeeds.Count > 0) {
+                Logger.Info($"libgphoto2: Using ISO property {isoProperty} with choices: {string.Join(", ", ISOSpeeds.Values.OrderBy(x => x))}");
+            } else {
+                Logger.Warning($"libgphoto2: Could not find parseable ISO choices using: {string.Join(", ", IsoProperties)}");
+            }
+        }
+
+        private string FindISOChoice(int value) {
+            return ISOSpeeds.Where(x => x.Value == value).Select(x => x.Key).FirstOrDefault();
+        }
+
+        private int TranslateISOChoice(string value) {
+            if (string.IsNullOrWhiteSpace(value)) {
+                return -1;
+            }
+
+            if (ISOSpeeds.TryGetValue(value, out var translatedISO)) {
+                return translatedISO;
+            }
+
+            // Nikon labels can include units or extra text. Fall back to parsing the first
+            // positive integer so metadata and readback still reflect the camera value.
+            var match = Regex.Match(value, @"\d+");
+            if (match.Success && int.TryParse(match.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedISO) && parsedISO > 0) {
+                return parsedISO;
+            }
+
+            return -1;
+        }
+
+        private void AddISOMetadata(ImageMetaData metaData) {
+            if (metaData.Camera.Gain <= 0) {
+                return;
+            }
+
+            // NINA's generic DSLR control is named Gain, but for libgphoto2 cameras this
+            // value is the camera ISO. Write explicit ISO keys so FITS/TIFF/XISF readers
+            // do not have to guess that GAIN means ISO for Nikon/Canon DSLR captures.
+            metaData.GenericHeaders.Add(new IntMetaDataHeader("ISO", metaData.Camera.Gain, "Camera ISO speed"));
+            metaData.GenericHeaders.Add(new IntMetaDataHeader("ISOSPEED", metaData.Camera.Gain, "Camera ISO speed"));
+            metaData.GenericHeaders.Add(new StringMetaDataHeader("ISOPROP", isoProperty, "libgphoto2 ISO property"));
         }
 
         private void GetBatteryLevel() {
@@ -661,13 +879,16 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     using (MyStopWatch.Measure("libgphoto2 - Creating Image Array")) {
                         var metaData = new ImageMetaData();
                         metaData.FromCamera(this);
+                        AddISOMetadata(metaData);
 
                         // Derive the file type from the actual filename extension
                         string fileType = System.IO.Path.GetExtension(_lastCapturedFilename)
                             .TrimStart('.')
                             .ToLowerInvariant();
                         if (string.IsNullOrEmpty(fileType)) {
-                            fileType = "cr2"; // Fallback for Canon
+                            // File events normally include an extension; if not, avoid assuming
+                            // Canon CR2 for every camera.
+                            fileType = GetDefaultRawExtension();
                         }
 
                         return this.exposureDataFactory.CreateRAWExposureData(
@@ -697,7 +918,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
                     // Wait for the file event to get the image location, then delete it
                     Logger.Debug("libgphoto2: Waiting for file event to delete aborted image...");
-                    SetCapturedFileFromEvent(5000);
+                    SetCapturedFileFromEvent(BulbFileEventTimeoutMs);
                     if (!string.IsNullOrEmpty(_lastCapturedFolder) && !string.IsNullOrEmpty(_lastCapturedFilename)) {
                         Logger.Debug($"libgphoto2: Aborted image location: {_lastCapturedFolder}/{_lastCapturedFilename}");
                         DeleteFileFromCamera(_lastCapturedFolder, _lastCapturedFilename);
@@ -708,6 +929,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     _lastCapturedFilename = null;
                 }
                 _currentExposureIsBulb = false;
+                activeBulbExposureControl = BulbExposureControl.None;
                 bulbCompletionCTS?.Cancel();
             } catch (Exception ex) {
                 Logger.Error($"Exception in CancelDownloadExposure: {ex.Message}");
@@ -761,40 +983,82 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         private void ValidateModeForExposure(double exposureTime) {
-            if (!IsManualMode() && !IsBulbMode()) {
+            bool isManualMode = IsManualMode();
+            bool isBulbMode = IsBulbMode();
+
+            if (!isManualMode && !isBulbMode) {
                 Notification.ShowError("Camera must be in MANUAL or BULB mode");
                 Logger.Error("Camera must be in MANUAL or BULB mode");
                 throw new Exception("Invalid camera mode for taking exposures");
             }
 
-            if (IsManualMode() && !IsBulbMode()) {
-                // Camera is in Manual mode but NOT in bulb shutter speed
-                GetShutterSpeeds();
-                if (exposureTime <= 30.0) {
-                    SetExposureTime(exposureTime);
-                } else {
-                    // Exposures > 30s need the camera's bulb mode. Writing shutterspeed=bulb is not
-                    // reliable: e.g. a Canon 5D Mark IV accepts the write and even reads back 'bulb',
-                    // yet still exposes only 30s because bulb is only reachable via the mode dial.
-                    // Refuse to expose instead of capturing a truncated frame.
+            if (isManualMode && !isBulbMode && exposureTime > LongExposureThresholdSeconds) {
+                // Canon EOS bodies can accept shutterspeed=bulb and read it back, yet still
+                // expose only 30s unless the physical mode dial is set to Bulb. Fail fast
+                // instead of capturing a truncated frame.
+                if (IsKnownCanonCamera()) {
                     Notification.ShowError("For exposures > 30s, please switch the camera to BULB mode manually.");
-                    Logger.Error($"Exposure time {exposureTime}s > 30s requested while camera is in Manual mode; the camera must be switched to BULB mode manually");
+                    Logger.Error($"Exposure time {exposureTime}s > 30s requested while a Canon camera is in Manual mode; the camera must be switched to BULB mode manually");
                     throw new Exception("Camera requires manual BULB mode for exposures > 30s");
+                }
+
+                // Nikon/libgphoto2 cameras commonly expose Bulb as a shutter-speed choice,
+                // so select that before using the bulb toggle exposure path.
+                if (IsKnownNikonCamera() && HasProperty("bulb")) {
+                    // Some Nikon bodies report Manual even when the body is in Bulb-capable
+                    // state. Prefer the explicit bulb property over rejecting the exposure.
+                    TryPrepareBulbShutterSpeed();
+                } else if (!TryPrepareBulbShutterSpeed()) {
+                    Notification.ShowError("For exposures > 30s, please switch the camera to BULB mode manually.");
+                    Logger.Error($"Exposure time {exposureTime}s > 30s requested, but no usable bulb shutter speed could be selected");
+                    throw new Exception("Camera requires BULB mode for exposures > 30s");
                 }
             }
 
-            if (IsBulbMode() && exposureTime < 1.0) {
-                // Try to switch from bulb to a normal shutter speed for short exposures
+            if (isBulbMode && exposureTime < 1.0) {
+                // Try to leave Bulb for short exposures; gp_camera_capture in Bulb can wait
+                // for a release we never issue.
                 Logger.Info($"Camera is in bulb mode but exposure time is {exposureTime}s (< 1s). Attempting to set shutter speed.");
                 GetShutterSpeeds();
                 if (!SetExposureTime(exposureTime)) {
-                    // If we cannot leave bulb, the timed capture path (gp_camera_capture) would
-                    // block indefinitely waiting for a shutter release it never issues. Fail fast.
+                    // Fail fast instead of starting a timed capture that can block indefinitely.
                     Logger.Error($"Could not set exposure time to {exposureTime}s while camera is in Bulb mode.");
                     Notification.ShowError("Camera is in Bulb mode. For exposures < 1s, switch to Manual mode or use exposure time >= 1s.");
                     throw new Exception("Cannot take a sub-second exposure while the camera is in Bulb mode");
                 }
             }
+        }
+
+        private bool TryPrepareBulbShutterSpeed() {
+            if (IsBulbMode()) {
+                return true;
+            }
+
+            if (string.IsNullOrEmpty(bulbShutterSpeedChoice)) {
+                GetShutterSpeeds();
+            }
+
+            if (string.IsNullOrEmpty(bulbShutterSpeedChoice)) {
+                Logger.Warning("libgphoto2: Camera did not report a bulb shutter-speed choice");
+                return false;
+            }
+
+            var result = SetProperty(shutterSpeedProperty, bulbShutterSpeedChoice);
+            if (result == GP_ERROR_CODE.GP_OK) {
+                Logger.Info($"libgphoto2: {shutterSpeedProperty} set to bulb choice '{bulbShutterSpeedChoice}'");
+                return true;
+            }
+
+            Logger.Warning($"libgphoto2: Could not set {shutterSpeedProperty} to bulb choice '{bulbShutterSpeedChoice}': {result}");
+            return false;
+        }
+
+        private bool ShouldUseBulbExposure(double exposureTime) {
+            if (exposureTime > LongExposureThresholdSeconds) {
+                return true;
+            }
+
+            return exposureTime >= 1.0 && IsBulbMode();
         }
 
         private Task bulbCompletionTask = null;
@@ -818,7 +1082,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
             ValidateModeForExposure(exposureTime);
 
             downloadExposure = new TaskCompletionSource<object>();
-            bool useBulb = (IsManualMode() && exposureTime > 30.0) || (IsBulbMode() && exposureTime >= 1.0);
+            _lastCapturedFolder = null;
+            _lastCapturedFilename = null;
+            activeBulbExposureControl = BulbExposureControl.None;
+            bool useBulb = ShouldUseBulbExposure(exposureTime);
             _currentExposureIsBulb = useBulb;
 
             // Set exposure time first if not using bulb mode
@@ -950,27 +1217,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private bool SendStartExposureCmd(bool useBulb) {
             try {
                 if (useBulb) {
-                    Logger.Debug("libgphoto2: Initiating BULB mode exposure - pressing shutter via eosremoterelease");
-                    // Try "Immediate", then "Press Full", then "Press Full MF" as fallbacks.
-                    GP_ERROR_CODE pressResult = SetProperty("eosremoterelease", "Immediate");
-                    if (pressResult != GP_ERROR_CODE.GP_OK) {
-                        Logger.Warning($"eosremoterelease 'Immediate' failed ({pressResult}), trying 'Press Full'");
-                        pressResult = SetProperty("eosremoterelease", "Press Full");
-                    }
-                    if (pressResult != GP_ERROR_CODE.GP_OK) {
-                        Logger.Warning($"eosremoterelease 'Press Full' failed ({pressResult}), trying 'Press Full MF'");
-                        pressResult = SetProperty("eosremoterelease", "Press Full MF");
-                    }
-                    if (CheckError(pressResult, "eosremoterelease-pressfull")) {
-                        Logger.Error("Failed to initiate bulb exposure via eosremoterelease");
-                        return false;
-                    }
-                    Logger.Debug("libgphoto2: Shutter pressed for bulb exposure");
-                    _shutterReleased = false;
-                    return true;
+                    return TryStartBulbExposure();
                 } else {
+                    // Timed exposures use gp_camera_capture immediately and return the file path directly.
                     Logger.Debug("libgphoto2: Initiating timed exposure");
-                    // For timed mode, capture immediately
                     var (success, folder, filename) = TriggerCapture();
                     if (!success) {
                         Logger.Error($"libgphoto2: Error initiating timed exposure");
@@ -978,7 +1228,6 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     }
                     _lastCapturedFolder = folder;
                     _lastCapturedFilename = filename;
-                    // Signal that image is ready for download (for timed exposures)
                     downloadExposure?.TrySetResult(true);
                     return true;
                 }
@@ -988,19 +1237,77 @@ namespace NINA.Equipment.Equipment.MyCamera {
             }
         }
 
+        private bool TryStartBulbExposure() {
+            bool preferBulbToggle = IsKnownNikonCamera() || (HasProperty("bulb") && !IsKnownCanonCamera());
+
+            if (preferBulbToggle && TryStartBulbToggleExposure()) {
+                return true;
+            }
+
+            if (TryStartEosRemoteReleaseExposure()) {
+                return true;
+            }
+
+            if (!preferBulbToggle && TryStartBulbToggleExposure()) {
+                return true;
+            }
+
+            Logger.Error("libgphoto2: Could not initiate bulb exposure with either bulb toggle or eosremoterelease");
+            return false;
+        }
+
+        private bool TryStartBulbToggleExposure() {
+            Logger.Debug("libgphoto2: Initiating BULB exposure via bulb toggle");
+            var pressResult = SetBooleanProperty("bulb", true);
+            if (pressResult != GP_ERROR_CODE.GP_OK) {
+                Logger.Warning($"libgphoto2: bulb=1 failed ({pressResult})");
+                return false;
+            }
+
+            activeBulbExposureControl = BulbExposureControl.BulbToggle;
+            _shutterReleased = false;
+            Logger.Debug("libgphoto2: Bulb toggle opened shutter");
+            return true;
+        }
+
+        private bool TryStartEosRemoteReleaseExposure() {
+            // Canon EOS bodies vary in accepted eosremoterelease labels; try common
+            // gphoto2 values.
+            Logger.Debug("libgphoto2: Initiating BULB exposure via eosremoterelease");
+            GP_ERROR_CODE pressResult = SetProperty("eosremoterelease", "Immediate");
+            if (pressResult != GP_ERROR_CODE.GP_OK) {
+                Logger.Warning($"eosremoterelease 'Immediate' failed ({pressResult}), trying 'Press Full'");
+                pressResult = SetProperty("eosremoterelease", "Press Full");
+            }
+            if (pressResult != GP_ERROR_CODE.GP_OK) {
+                Logger.Warning($"eosremoterelease 'Press Full' failed ({pressResult}), trying 'Press Full MF'");
+                pressResult = SetProperty("eosremoterelease", "Press Full MF");
+            }
+            if (pressResult != GP_ERROR_CODE.GP_OK) {
+                Logger.Warning($"libgphoto2: Failed to initiate bulb exposure via eosremoterelease: {pressResult}");
+                return false;
+            }
+
+            activeBulbExposureControl = BulbExposureControl.EosRemoteRelease;
+            _shutterReleased = false;
+            Logger.Debug("libgphoto2: eosremoterelease opened shutter");
+            return true;
+        }
+
         private void SendStopExposureCmd(bool useBulb) {
             try {
                 if (useBulb) {
-                    Logger.Debug("libgphoto2: Stopping BULB mode exposure - releasing shutter after timer expired");
+                    Logger.Debug("libgphoto2: Stopping BULB exposure after timer expired");
 
-                    // Release the shutter button - use "Release Full" as per gphoto2 docs
                     ReleaseShutter();
-                    Logger.Debug("libgphoto2: Shutter released, bulb exposure complete");
 
-                    // Per gphoto2 docs, wait for event after release to let camera finalize the capture
-                    Logger.Debug("libgphoto2: Waiting for event after shutter release (up to 5s)...");
-                    SetCapturedFileFromEvent(5000);
+                    // After bulb release, libgphoto2 reports the finalized image path
+                    // through a FILE_ADDED event.
+                    Logger.Debug($"libgphoto2: Waiting for file event after shutter release (up to {BulbFileEventTimeoutMs}ms)...");
+                    SetCapturedFileFromEvent(BulbFileEventTimeoutMs);
 
+                    activeBulbExposureControl = BulbExposureControl.None;
+                    _currentExposureIsBulb = false;
                     downloadExposure?.TrySetResult(true);
                 } else {
                     Logger.Debug("libgphoto2: Timed exposure complete");
@@ -1010,26 +1317,96 @@ namespace NINA.Equipment.Equipment.MyCamera {
             }
         }
 
-        private void ReleaseShutter() {
+        private bool ReleaseShutter() {
             if (_shutterReleased) {
                 Logger.Debug("libgphoto2: Shutter already released, skipping");
-                return;
+                return true;
             }
             _shutterReleased = true;
-            try {
-                // Use "Release" first; fall back to "Release Full" if unsupported.
-                var releaseResult = SetProperty("eosremoterelease", "Release");
-                if (releaseResult != GP_ERROR_CODE.GP_OK) {
-                    Logger.Warning($"eosremoterelease 'Release' failed ({releaseResult}), trying 'Release Full'");
-                    releaseResult = SetProperty("eosremoterelease", "Release Full");
+
+            // Release through the same control path that opened the shutter; fall back if
+            // state was lost during abort/stop races.
+            return activeBulbExposureControl switch {
+                BulbExposureControl.BulbToggle => TryReleaseBulbToggle(),
+                BulbExposureControl.EosRemoteRelease => TryReleaseEosRemoteRelease(),
+                _ => TryReleaseBulbToggle() || TryReleaseEosRemoteRelease()
+            };
+        }
+
+        private bool TryReleaseBulbToggle() {
+            var releaseResult = SetBooleanProperty("bulb", false);
+            if (releaseResult == GP_ERROR_CODE.GP_OK) {
+                Logger.Debug("libgphoto2: Bulb toggle closed shutter");
+                return true;
+            }
+
+            Logger.Warning($"libgphoto2: bulb=0 failed ({releaseResult})");
+            return false;
+        }
+
+        private bool TryReleaseEosRemoteRelease() {
+            // Use "Release" first; fall back to "Release Full" for models that expose
+            // that value instead.
+            var releaseResult = SetProperty("eosremoterelease", "Release");
+            if (releaseResult != GP_ERROR_CODE.GP_OK) {
+                Logger.Warning($"eosremoterelease 'Release' failed ({releaseResult}), trying 'Release Full'");
+                releaseResult = SetProperty("eosremoterelease", "Release Full");
+            }
+            if (releaseResult != GP_ERROR_CODE.GP_OK) {
+                Logger.Warning($"libgphoto2: Failed to release shutter via eosremoterelease: {releaseResult}");
+                return false;
+            }
+
+            Logger.Debug("libgphoto2: eosremoterelease closed shutter");
+            return true;
+        }
+
+        private string GetDefaultRawExtension() {
+            if (IsKnownNikonCamera()) {
+                return "nef";
+            }
+            if (IsKnownCanonCamera()) {
+                return "cr2";
+            }
+            if (CameraNameContains("Sony")) {
+                return "arw";
+            }
+            if (CameraNameContains("Fuji") || CameraNameContains("Fujifilm")) {
+                return "raf";
+            }
+            if (CameraNameContains("Olympus") || CameraNameContains("OM System")) {
+                return "orf";
+            }
+            if (CameraNameContains("Panasonic") || CameraNameContains("Lumix")) {
+                return "rw2";
+            }
+            if (CameraNameContains("Pentax")) {
+                return "pef";
+            }
+
+            return "raw";
+        }
+
+        private bool IsKnownNikonCamera() {
+            return CameraNameContains("Nikon");
+        }
+
+        private bool IsKnownCanonCamera() {
+            return CameraNameContains("Canon");
+        }
+
+        private bool CameraNameContains(string value) {
+            return _name?.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private bool HasProperty(string property) {
+            lock (_gpLock) {
+                IntPtr widget = IntPtr.Zero;
+                var err = GpCameraGetSingleConfig(_camera, property, out widget, _context);
+                if (widget != IntPtr.Zero) {
+                    GpWidgetFree(widget);
                 }
-                if (CheckError(releaseResult, "eosremoterelease-release")) {
-                    Logger.Error("Failed to release shutter via eosremoterelease");
-                } else {
-                    Logger.Debug("libgphoto2: Shutter released");
-                }
-            } catch (Exception ex) {
-                Logger.Error($"Exception releasing shutter: {ex.Message}");
+                return err == GP_ERROR_CODE.GP_OK;
             }
         }
 
@@ -1050,8 +1427,13 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private bool SetExposureTime(double exposureTime) {
             double nearestExposureTime = double.MaxValue;
             if (exposureTime != double.MaxValue) {
+                if (ShutterSpeeds.Count == 0) {
+                    GetShutterSpeeds();
+                }
+
                 var l = new List<double>(ShutterSpeeds.Values);
                 if (l.Count == 0) {
+                    Logger.Warning("libgphoto2: Camera did not report any usable shutter-speed choices");
                     return false;
                 }
                 nearestExposureTime = l.Aggregate((x, y) => Math.Abs(x - exposureTime) < Math.Abs(y - exposureTime) ? x : y);
@@ -1066,8 +1448,8 @@ namespace NINA.Equipment.Equipment.MyCamera {
             }
 
             // Set the shutter speed on the camera
-            if (CheckError(SetProperty("shutterspeed", key), $"shutterspeed-{key}")) {
-                Logger.Error($"Failed to set shutter speed to {key}");
+            if (CheckError(SetProperty(shutterSpeedProperty, key), $"{shutterSpeedProperty}-{key}")) {
+                Logger.Error($"Failed to set {shutterSpeedProperty} to {key}");
                 Notification.ShowError("Switch to bulb mode for exposures longer than 30s");
                 return false;
             }
@@ -1104,26 +1486,69 @@ namespace NINA.Equipment.Equipment.MyCamera {
             _currentExposureIsBulb = false;
         }
 
+        private GP_ERROR_CODE SetBooleanProperty(string property, bool value) {
+            string[] candidates = value
+                ? new[] { "1", "on", "true", "yes" }
+                : new[] { "0", "off", "false", "no" };
+
+            GP_ERROR_CODE lastResult = GP_ERROR_CODE.GP_ERROR_NOT_SUPPORTED;
+            foreach (string candidate in candidates) {
+                lastResult = SetProperty(property, candidate);
+                if (lastResult == GP_ERROR_CODE.GP_OK) {
+                    return GP_ERROR_CODE.GP_OK;
+                }
+            }
+
+            return lastResult;
+        }
+
         private GP_ERROR_CODE SetProperty(string property, string value) {
             lock (_gpLock) {
                 IntPtr widget = IntPtr.Zero;
-                GP_ERROR_CODE err;
-
-                err = GpCameraGetSingleConfig(_camera, property, out widget, _context);
+                GP_ERROR_CODE err = GpCameraGetSingleConfig(_camera, property, out widget, _context);
                 if (err != GP_ERROR_CODE.GP_OK) {
                     return err;
                 }
 
                 try {
-                    err = GpWidgetSetValue(widget, value);
+                    err = SetWidgetValue(widget, value);
                     if (err != GP_ERROR_CODE.GP_OK) {
                         return err;
                     }
-                    err = GpCameraSetSingleConfig(_camera, property, widget, _context);
-                    return err;
+                    return GpCameraSetSingleConfig(_camera, property, widget, _context);
                 } finally {
                     GpWidgetFree(widget);
                 }
+            }
+        }
+
+        private GP_ERROR_CODE SetWidgetValue(IntPtr widget, string value) {
+            // gp_widget_set_value takes a void*; Nikon bulb is commonly a toggle,
+            // not a string.
+            var typeResult = GpWidgetGetType(widget, out var type);
+            if (typeResult != GP_ERROR_CODE.GP_OK) {
+                return typeResult;
+            }
+
+            switch (type) {
+                case CameraWidgetType.GP_WIDGET_TOGGLE:
+                    if (TryParseBooleanPropertyValue(value, out int toggleValue)) {
+                        return GpWidgetSetValue(widget, toggleValue);
+                    }
+                    return GP_ERROR_CODE.GP_ERROR_BAD_PARAMETERS;
+                case CameraWidgetType.GP_WIDGET_RANGE:
+                    if (float.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out float rangeValue)
+                        || float.TryParse(value, NumberStyles.Float, CultureInfo.CurrentCulture, out rangeValue)) {
+                        return GpWidgetSetValue(widget, rangeValue);
+                    }
+                    return GP_ERROR_CODE.GP_ERROR_BAD_PARAMETERS;
+                case CameraWidgetType.GP_WIDGET_DATE:
+                    if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int dateValue)) {
+                        return GpWidgetSetValue(widget, dateValue);
+                    }
+                    return GP_ERROR_CODE.GP_ERROR_BAD_PARAMETERS;
+                default:
+                    return GpWidgetSetValue(widget, value);
             }
         }
 
@@ -1139,7 +1564,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 }
 
                 try {
-                    err = GpWidgetGetValue(widget, out data);
+                    err = GetWidgetValue(widget, out data);
                     if (err != GP_ERROR_CODE.GP_OK) {
                         return err;
                     }
@@ -1148,6 +1573,60 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     GpWidgetFree(widget);
                 }
             }
+        }
+
+        private static GP_ERROR_CODE GetWidgetValue(IntPtr widget, out string value) {
+            value = string.Empty;
+            var typeResult = GpWidgetGetType(widget, out var type);
+            if (typeResult != GP_ERROR_CODE.GP_OK) {
+                return typeResult;
+            }
+
+            switch (type) {
+                case CameraWidgetType.GP_WIDGET_TOGGLE:
+                    var toggleResult = GpWidgetGetValue(widget, out int toggleValue);
+                    value = toggleValue == 0 ? "0" : "1";
+                    return toggleResult;
+                case CameraWidgetType.GP_WIDGET_RANGE:
+                    var rangeResult = GpWidgetGetValue(widget, out float rangeValue);
+                    value = rangeValue.ToString(CultureInfo.InvariantCulture);
+                    return rangeResult;
+                case CameraWidgetType.GP_WIDGET_DATE:
+                    var dateResult = GpWidgetGetValue(widget, out int dateValue);
+                    value = dateValue.ToString(CultureInfo.InvariantCulture);
+                    return dateResult;
+                default:
+                    return GpWidgetGetValue(widget, out value);
+            }
+        }
+
+        private static bool TryParseBooleanPropertyValue(string value, out int toggleValue) {
+            toggleValue = 0;
+            if (string.IsNullOrWhiteSpace(value)) {
+                return false;
+            }
+
+            string normalized = value.Trim();
+            if (int.TryParse(normalized, NumberStyles.Integer, CultureInfo.InvariantCulture, out toggleValue)) {
+                toggleValue = toggleValue == 0 ? 0 : 1;
+                return true;
+            }
+
+            if (normalized.Equals("true", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("on", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("yes", StringComparison.OrdinalIgnoreCase)) {
+                toggleValue = 1;
+                return true;
+            }
+
+            if (normalized.Equals("false", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("off", StringComparison.OrdinalIgnoreCase)
+                || normalized.Equals("no", StringComparison.OrdinalIgnoreCase)) {
+                toggleValue = 0;
+                return true;
+            }
+
+            return false;
         }
 
         private GP_ERROR_CODE GetPropertyList(string property, out IList<string> list) {
@@ -1199,17 +1678,21 @@ namespace NINA.Equipment.Equipment.MyCamera {
             if (err == GP_ERROR_CODE.GP_OK) {
                 return false;
             } else {
-                Logger.Error(new Exception(string.Format(Loc.Instance["LblCanonErrorOccurred"], err)), memberName);
+                Logger.Error(new Exception(FormatGPhotoError(err)), memberName);
                 return true;
             }
         }
 
         private static void CheckAndThrowError(GP_ERROR_CODE err, [CallerMemberName] string memberName = "") {
             if (err != GP_ERROR_CODE.GP_OK) {
-                var ex = new Exception(string.Format(Loc.Instance["LblCanonErrorOccurred"], err));
+                var ex = new Exception(FormatGPhotoError(err));
                 Logger.Error(ex, memberName);
                 throw ex;
             }
+        }
+
+        private static string FormatGPhotoError(GP_ERROR_CODE err) {
+            return $"libgphoto2 camera error occurred: {err}";
         }
 
         public async Task<bool> Connect(CancellationToken token) {
@@ -1234,7 +1717,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 } catch (Exception ex) {
                     Logger.Error(ex);
                     Disconnect();
-                    Notification.ShowExternalError(ex.Message, Loc.Instance["LblCanonDriverError"]);
+                    Notification.ShowExternalError(ex.Message, "libgphoto2 Driver Error");
                     return false;
                 }
             });

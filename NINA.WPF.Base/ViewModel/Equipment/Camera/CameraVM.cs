@@ -567,6 +567,25 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
             cameraValues.TryGetValue(nameof(CameraInfo.Gain), out o);
             CameraInfo.Gain = (int)(o ?? -1);
 
+            // API clients poll CameraInfo after the initial connect broadcast; keep discrete
+            // gain/ISO choices in that polled state so DSLR ISO dropdowns stay populated.
+            cameraValues.TryGetValue(nameof(CameraInfo.Gains), out o);
+            if (o is IList<int> gains) {
+                CameraInfo.Gains = gains;
+            }
+
+            cameraValues.TryGetValue(nameof(CameraInfo.GainMin), out o);
+            CameraInfo.GainMin = (int)(o ?? CameraInfo.GainMin);
+
+            cameraValues.TryGetValue(nameof(CameraInfo.GainMax), out o);
+            CameraInfo.GainMax = (int)(o ?? CameraInfo.GainMax);
+
+            cameraValues.TryGetValue(nameof(CameraInfo.CanSetGain), out o);
+            CameraInfo.CanSetGain = (bool)(o ?? CameraInfo.CanSetGain);
+
+            cameraValues.TryGetValue(nameof(CameraInfo.CanGetGain), out o);
+            CameraInfo.CanGetGain = (bool)(o ?? CameraInfo.CanGetGain);
+
             cameraValues.TryGetValue(nameof(CameraInfo.DefaultGain), out o);
             CameraInfo.DefaultGain = (int)(o ?? -1);
 
@@ -612,6 +631,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
             if (_cam != null && CameraInfo.CanSetGain) {
                 cameraValues.Add(nameof(CameraInfo.Gain), _cam?.Gain ?? -1);
                 cameraValues.Add(nameof(CameraInfo.DefaultGain), DefaultGain);
+                cameraValues.Add(nameof(CameraInfo.Gains), _cam?.Gains ?? new List<int>());
+                cameraValues.Add(nameof(CameraInfo.GainMin), _cam?.GainMin ?? 0);
+                cameraValues.Add(nameof(CameraInfo.GainMax), _cam?.GainMax ?? 0);
+                cameraValues.Add(nameof(CameraInfo.CanSetGain), _cam?.CanSetGain ?? false);
+                cameraValues.Add(nameof(CameraInfo.CanGetGain), _cam?.CanGetGain ?? false);
             }
 
             if (_cam != null && CameraInfo.CanSetOffset) {
