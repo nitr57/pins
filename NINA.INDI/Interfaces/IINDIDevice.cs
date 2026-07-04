@@ -19,7 +19,9 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace NINA.INDI.Interfaces {
-    public interface IINDIDevice {
+    // IDisposable so using-statements, DI container disposal and analyzers see the Dispose
+    // implementations (a bare Dispose() member is invisible to all of them).
+    public interface IINDIDevice : IDisposable {
         string Id { get; }
         string Name { get; }
         string DisplayName { get; }
@@ -31,7 +33,6 @@ namespace NINA.INDI.Interfaces {
 
         Task<bool> Connect(CancellationToken ct);
         void Disconnect();
-        void Dispose();
 
         void ConfigureConnectionProperties(string connectionMode, bool autoSearch, string address, string port, int baudRate);
         void ConfigurePreConnectDelay(TimeSpan delay);

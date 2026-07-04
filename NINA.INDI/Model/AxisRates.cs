@@ -23,6 +23,12 @@ namespace NINA.INDI.Model {
     /// </summary>
     public class AxisRates : IAxisRates {
         private readonly List<IRate> _rates = new List<IRate>();
+
+        // Only backs this object's own IEnumerator implementation below, kept solely because
+        // IAxisRates (mirroring ASCOM's COM-era IAxisRates) requires MoveNext/Reset/Current on
+        // the same type. GetEnumerator() does NOT return `this` — it hands out an independent
+        // Enumerator instance instead, so two concurrent foreach loops over the same AxisRates
+        // no longer share (and corrupt) one position counter.
         private int _position = -1;
 
         public AxisRates(double min, double max) {
@@ -35,8 +41,7 @@ namespace NINA.INDI.Model {
         public IRate this[int index] => _rates[index];
 
         public IEnumerator GetEnumerator() {
-            _position = -1;
-            return this;
+            return new Enumerator(_rates);
         }
 
         public bool MoveNext() {
@@ -49,6 +54,26 @@ namespace NINA.INDI.Model {
         }
 
         public object Current => _rates[_position];
+
+        private sealed class Enumerator : IEnumerator {
+            private readonly List<IRate> _rates;
+            private int _position = -1;
+
+            public Enumerator(List<IRate> rates) {
+                _rates = rates;
+            }
+
+            public bool MoveNext() {
+                _position++;
+                return _position < _rates.Count;
+            }
+
+            public void Reset() {
+                _position = -1;
+            }
+
+            public object Current => _rates[_position];
+        }
     }
 
     /// <summary>

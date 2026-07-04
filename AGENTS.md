@@ -8,6 +8,17 @@ For repository-wide contribution workflow, branch expectations, release-note upd
 
 This guide covers the projects listed in `NINA.sln`.
 
+## Runtime Model (pins fork)
+
+PI 'N' Stars (pins) is a Linux fork of N.I.N.A. (see [`README.md`](README.md)) and runs **headless**. This changes how the upstream-named projects below should be read:
+
+- **Target platform is Linux** (down to Raspberry Pi). Code, scripts, and runtime assumptions should not assume Windows. `NINA.INDI`, for example, shells out to `indiserver`/`mkfifo`/`pkill`.
+- **There is no WPF window/shell as the user surface.** The app is not launched as an interactive WPF desktop application the way upstream NINA is, so XAML views and the main-window shell are largely irrelevant to the running product.
+- **The WPF view models still execute.** Projects like `NINA.WPF.Base` (and the view models under `NINA`) remain the live runtime/business layer — they are *not* dead code. Do not delete or gut view models on the assumption that "headless means no WPF"; only the XAML/view shell is unused.
+- **The user-facing UI is the Touch-N-Stars Vue app**, which drives the backend over HTTP/WebSocket through the `ninaAPI` plugin (under `NINA.Plugins/`). New user-facing behavior is generally surfaced through an API endpoint consumed by that frontend, not through a WPF view.
+
+When a task touches "UI", confirm whether it means the WPF layer (usually not the surface here) or the Vue frontend + `ninaAPI` (usually what users actually see).
+
 ## Documentation Boundary
 
 - `NINA.Docs` is a git submodule declared in `.gitmodules` and points to `https://github.com/isbeorn/nina.docs.git`.
@@ -38,6 +49,7 @@ Read the project-local architecture doc before making non-trivial changes in tha
 - [`NINA.CustomControlLibrary/ARCHITECTURE.md`](NINA.CustomControlLibrary/ARCHITECTURE.md)
 - [`NINA.Equipment/ARCHITECTURE.md`](NINA.Equipment/ARCHITECTURE.md)
 - [`NINA.Image/ARCHITECTURE.md`](NINA.Image/ARCHITECTURE.md)
+- [`NINA.INDI/ARCHITECTURE.md`](NINA.INDI/ARCHITECTURE.md)
 - [`NINA.MGEN/ARCHITECTURE.md`](NINA.MGEN/ARCHITECTURE.md)
 - [`NINA.Platesolving/ARCHITECTURE.md`](NINA.Platesolving/ARCHITECTURE.md)
 - [`NINA.Plugin/ARCHITECTURE.md`](NINA.Plugin/ARCHITECTURE.md)
@@ -72,6 +84,8 @@ The solution has a clear layering pattern.
   Standalone MGEN2/MGEN3 transport/protocol library.
 - `NINA.Equipment`
   Device abstractions and concrete ASCOM/Alpaca/native adapters.
+- `NINA.INDI`
+  pins-specific INDI integration: indiserver process lifecycle, INDI XML protocol, global property store, and per-device-type adapters consumed by `NINA.Equipment`. (Not present in upstream NINA.)
 - `NINA.Platesolving`
   Plate-solver integrations and orchestration.
 

@@ -12,14 +12,48 @@
 
 #endregion "copyright"
 
+using NINA.Core.Utility;
 using NINA.INDI.Enums;
 using System;
 using System.Globalization;
+using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Xml.Linq;
 
 namespace NINA.INDI.Protocol {
     public static class INDIProtocolParser {
+        /// <summary>
+        /// Tolerant parse for INDI "numberValue" text. The spec permits both plain decimal
+        /// numbers and sexagesimal notation ("sdd:mm:ss.s" / "sdd:mm.m", used for coordinates
+        /// like RA/Dec), and an empty value is legal too. A single malformed element must not
+        /// throw and drop the entire vector (the caller logs/catches upstream), so this falls
+        /// back to 0 and logs rather than propagating a FormatException.
+        /// </summary>
+        public static double ParseNumberValue(string raw) {
+            if (string.IsNullOrWhiteSpace(raw)) return 0;
+            raw = raw.Trim();
+
+            if (double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var simple)) {
+                return simple;
+            }
+
+            var negative = raw.StartsWith("-");
+            var parts = (negative ? raw[1..] : raw).Split(':');
+            if (parts.Length is 2 or 3
+                && double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var whole)
+                && double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var minutes)) {
+                var seconds = 0.0;
+                if (parts.Length == 3) {
+                    double.TryParse(parts[2], NumberStyles.Float, CultureInfo.InvariantCulture, out seconds);
+                }
+                var value = whole + minutes / 60.0 + seconds / 3600.0;
+                return negative ? -value : value;
+            }
+
+            Logger.Warning($"INDI: could not parse number value '{raw}', defaulting to 0");
+            return 0;
+        }
         public static PropertyState ParseState(string state) {
             return state.ToLower() switch {
                 "idle" => PropertyState.Idle,
@@ -42,7 +76,7 @@ namespace NINA.INDI.Protocol {
         public static SwitchRule ParseRule(string rule) {
             return rule.ToLower() switch {
                 "oneofmany" => SwitchRule.OneOfMany,
-                "atmosone" => SwitchRule.AtMostOne,
+                "atmostone" => SwitchRule.AtMostOne,
                 "anyofmany" => SwitchRule.AnyOfMany,
                 _ => SwitchRule.OneOfMany
             };
@@ -64,10 +98,10 @@ namespace NINA.INDI.Protocol {
                     Name = defNum.Attribute("name")?.Value ?? string.Empty,
                     Label = defNum.Attribute("label")?.Value ?? string.Empty,
                     Format = defNum.Attribute("format")?.Value ?? "%g",
-                    Min = double.Parse(defNum.Attribute("min")?.Value ?? "0", CultureInfo.InvariantCulture),
-                    Max = double.Parse(defNum.Attribute("max")?.Value ?? "0", CultureInfo.InvariantCulture),
-                    Step = double.Parse(defNum.Attribute("step")?.Value ?? "0", CultureInfo.InvariantCulture),
-                    Value = double.Parse(defNum.Value, CultureInfo.InvariantCulture)
+                    Min = ParseNumberValue(defNum.Attribute("min")?.Value),
+                    Max = ParseNumberValue(defNum.Attribute("max")?.Value),
+                    Step = ParseNumberValue(defNum.Attribute("step")?.Value),
+                    Value = ParseNumberValue(defNum.Value)
                 });
             }
 
@@ -155,13 +189,13 @@ namespace NINA.INDI.Protocol {
                     // which attaches min/max/step attributes to the oneNumber elements
                     // (e.g. toupbase widening the gain range after connect). Honor them.
                     var min = oneNum.Attribute("min");
-                    if (min != null) number.Min = double.Parse(min.Value, CultureInfo.InvariantCulture);
+                    if (min != null) number.Min = ParseNumberValue(min.Value);
                     var max = oneNum.Attribute("max");
-                    if (max != null) number.Max = double.Parse(max.Value, CultureInfo.InvariantCulture);
+                    if (max != null) number.Max = ParseNumberValue(max.Value);
                     var step = oneNum.Attribute("step");
-                    if (step != null) number.Step = double.Parse(step.Value, CultureInfo.InvariantCulture);
+                    if (step != null) number.Step = ParseNumberValue(step.Value);
 
-                    number.Value = double.Parse(oneNum.Value, CultureInfo.InvariantCulture);
+                    number.Value = ParseNumberValue(oneNum.Value);
                 }
             }
         }
@@ -235,7 +269,6 @@ namespace NINA.INDI.Protocol {
             foreach (var oneBlob in element.Elements("oneBLOB")) {
                 var name = oneBlob.Attribute("name")?.Value ?? string.Empty;
                 var format = oneBlob.Attribute("format")?.Value ?? string.Empty;
-                var size = int.Parse(oneBlob.Attribute("size")?.Value ?? "0", CultureInfo.InvariantCulture);
 
                 var blob = prop.Blobs.FirstOrDefault(b => b.Name == name);
                 if (blob == null) {
@@ -245,16 +278,39 @@ namespace NINA.INDI.Protocol {
 
                 blob.Format = format;
 
-                // Decode base64 BLOB data
-                var base64Data = oneBlob.Value.Replace("\r", "").Replace("\n", "").Trim();
-                if (!string.IsNullOrEmpty(base64Data)) {
+                // Decode base64 BLOB data. Convert.FromBase64String ignores embedded
+                // whitespace, so the payload (libindi wraps it in 72-char lines) is passed
+                // through as-is — stripping the line breaks first would copy the
+                // multi-megabyte string twice per frame.
+                var base64Data = oneBlob.Value;
+                if (!string.IsNullOrWhiteSpace(base64Data)) {
                     try {
-                        blob.Data = Convert.FromBase64String(base64Data);
-                    } catch {
+                        var data = Convert.FromBase64String(base64Data);
+
+                        // A ".z" format suffix means the driver zlib-compressed the payload
+                        // (libindi does this when the device's CCD_COMPRESSION is enabled —
+                        // reachable via the INDI control panel). Inflate here so downstream
+                        // consumers always see the raw payload and its real format.
+                        if (format.EndsWith(".z", StringComparison.OrdinalIgnoreCase)) {
+                            data = InflateZlib(data);
+                            blob.Format = format[..^2];
+                        }
+
+                        blob.Data = data;
+                    } catch (Exception ex) {
+                        Logger.Warning($"INDI: failed to decode BLOB '{name}' (format '{format}'): {ex.Message}");
                         blob.Data = [];
                     }
                 }
             }
+        }
+
+        private static byte[] InflateZlib(byte[] compressed) {
+            using var input = new MemoryStream(compressed);
+            using var zlib = new ZLibStream(input, CompressionMode.Decompress);
+            using var output = new MemoryStream();
+            zlib.CopyTo(output);
+            return output.ToArray();
         }
     }
 }

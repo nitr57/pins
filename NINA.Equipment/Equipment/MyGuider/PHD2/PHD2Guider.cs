@@ -278,9 +278,33 @@ namespace NINA.Equipment.Equipment.MyGuider.PHD2 {
 
                     // Set camera bit depth
                     int bitDepth = profileService.ActiveProfile.GuiderSettings.PHD2CameraDepth;
+                    bool bitDepthChanged = selectedCameraDepth != bitDepth;
                     if (!await ValidateCameraBitDepth(bitDepth, selectedCameraDepth)) {
                         Logger.Warning($"Failed to synchronize bit depth to {bitDepth} bit. Currently: {selectedCameraDepth} bit");
                         Notification.ShowWarning(Loc.Instance["LblPhd2DepthMismatch"] ?? $"Failed to set PHD2 camera to {bitDepth} bit");
+                    } else if (bitDepthChanged && await IsPHD2EquipmentConnected()) {
+                        // set_camera_bitdepth only writes the PHD2 profile; the new depth takes effect
+                        // on the next camera connect. If the equipment is already connected, disconnect
+                        // it here so EnsurePHD2EquipmentConnected below reconnects at the new depth.
+                        Logger.Info($"PHD2 camera bit depth changed to {bitDepth} bit; reconnecting equipment so it takes effect");
+                        await DisconnectPHD2Equipment();
+                    }
+
+                    // PHD2's auto-restore calibration fires only at equipment connect time (gear_dialog.cpp).
+                    // Push auto_restore=true BEFORE connecting so PHD2 loads calibration at the connect.
+                    // If equipment is already up but calibration isn't in memory, disconnect first so
+                    // EnsurePHD2EquipmentConnected below re-connects and triggers the load.
+                    if (profileService.ActiveProfile.GuiderSettings.PHD2AutoRestoreCalibration == true) {
+                        Logger.Info("PHD2 - Pre-setting auto restore calibration before equipment connect");
+                        var preMsg = new Phd2SetAutoRestoreCalibration() { Parameters = new object[] { true } };
+                        var preResp = await SendMessage(preMsg);
+                        if (preResp.error != null)
+                            Logger.Warning($"PHD2 - Failed to pre-set auto restore calibration: {preResp.error.message}");
+
+                        if (await IsPHD2EquipmentConnected() && !await IsCalibrated()) {
+                            Logger.Info("PHD2 - Equipment connected but calibration not loaded; reconnecting to trigger auto-restore");
+                            await DisconnectPHD2Equipment();
+                        }
                     }
 
                     await EnsurePHD2EquipmentConnected();
@@ -1080,6 +1104,23 @@ namespace NINA.Equipment.Equipment.MyGuider.PHD2 {
                         }
                         break;
                     }
+                case "Alert": {
+                        var alert = message.ToObject<PhdEventAlert>();
+                        var msg = $"PHD2: {alert.Msg}";
+                        Logger.Warning($"PHD2 - Alert ({alert.Type}): {alert.Msg}");
+                        switch (alert.Type) {
+                            case "error":
+                                Notification.ShowError(msg);
+                                break;
+                            case "warning":
+                                Notification.ShowWarning(msg);
+                                break;
+                            default:
+                                Notification.ShowInformation(msg);
+                                break;
+                        }
+                        break;
+                    }
                 default: {
                         break;
                     }
@@ -1312,6 +1353,7 @@ namespace NINA.Equipment.Equipment.MyGuider.PHD2 {
                         Logger.Warning($"Failed to restore focal length: {resp.error.message}");
                 }
                 if (s.PHD2AutoRestoreCalibration.HasValue) {
+                    Logger.Info($"Phd2 - Setting auto restore calibration: {s.PHD2AutoRestoreCalibration.Value}");
                     var msg = new Phd2SetAutoRestoreCalibration() { Parameters = new object[] { s.PHD2AutoRestoreCalibration.Value } };
                     var resp = await SendMessage(msg);
                     if (resp.error != null)
@@ -1807,6 +1849,15 @@ namespace NINA.Equipment.Equipment.MyGuider.PHD2 {
             }
 
             return true;
+        }
+
+        private async Task<bool> IsPHD2EquipmentConnected() {
+            var getConnected = new Phd2GetConnected();
+            var getConnectedResult = await SendMessage(getConnected);
+            if (getConnectedResult.error != null) {
+                return false;
+            }
+            return (bool)getConnectedResult.result;
         }
 
         private async Task DisconnectPHD2Equipment() {

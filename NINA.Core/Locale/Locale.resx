@@ -4444,6 +4444,12 @@ In case a longer duration is needed, a duration can be specified and the applica
   <data name="Lbl_SequenceItem_Telescope_SlewScopeToRaDec_Name" xml:space="preserve">
     <value>Slew To Ra/Dec</value>
   </data>
+  <data name="Lbl_SequenceItem_Telescope_SlewToGuiderCalibrationPosition_Description" xml:space="preserve">
+    <value>Slews the telescope to a position suitable for guider calibration, matching PHD2's Calibration Assistant algorithm</value>
+  </data>
+  <data name="Lbl_SequenceItem_Telescope_SlewToGuiderCalibrationPosition_Name" xml:space="preserve">
+    <value>Slew To Guider Calibration Position</value>
+  </data>
   <data name="Lbl_SequenceItem_Telescope_UnparkScope_Description" xml:space="preserve">
     <value>Unparks the telescope</value>
   </data>

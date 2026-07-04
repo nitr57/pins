@@ -88,7 +88,6 @@ namespace NINA.Profile {
             phd2CameraBinning = 1;
             phd2UseSubframes = false;
             phd2FocalLength = 200;
-            phd2AutoRestoreCalibration = false;
             phd2AssumeDecOrthogonal = false;
             phd2UseDecCompensation = true;
             phd2ReverseDecOnFlip = false;

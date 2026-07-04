@@ -39,9 +39,6 @@ namespace NINA.INDI.Devices {
         /// </summary>
         public static double ActualMaxSlewRateDps { get; set; } = 4.0;
 
-        // Sidereal tracking rate in °/s (≈ 15"/s)
-        private const double SIDEREAL_RATE_DPS = 15.0 / 3600.0;
-
         /// <summary>
         /// Tries to parse an INDI switch Label or Name to a real °/s value.
         /// Handles: "Max"/"Maximum" → ActualMaxSlewRateDps, "Half"/"Half-Max" → max/2,
@@ -61,7 +58,7 @@ namespace NINA.INDI.Devices {
             if (m.Success && double.TryParse(m.Groups[1].Value,
                     System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out var mult))
-                return mult * SIDEREAL_RATE_DPS;
+                return mult * SiderealDegPerSec;
 
             return null;
         }
@@ -94,8 +91,72 @@ namespace NINA.INDI.Devices {
             base.OnTextPropertyUpdated(p);
         }
 
+        private bool _isPulseGuidingNS;
+        private bool _isPulseGuidingWE;
+
+        // Coordinate-motion tracking for the Slewing property. Some firmwares (observed on
+        // OnStep while homing) move the mount without reporting a slew on ANY property state,
+        // but the driver still polls and pushes EQUATORIAL_EOD_COORD values every cycle — so
+        // an angular RATE computed between consecutive updates is a reliable motion signal.
+        // All three sample fields are touched only on the receive thread; the Slewing getter
+        // reads only _lastCoordMotionAt (atomic 64-bit) cross-thread.
+        private (double Ra, double Dec)? _lastCoordSample;
+        private DateTime _lastCoordSampleAt;
+        private DateTime _lastCoordMotionAt = DateTime.MinValue;
+        private DateTime _suppressCoordMotionUntil = DateTime.MinValue;
+        // How long after the last observed coordinate motion the mount still counts as
+        // moving. Must cover at least one driver polling period (default 1s) plus margin,
+        // since a mount that just stopped simply ceases to send coordinate updates.
+        private static readonly TimeSpan CoordMotionWindow = TimeSpan.FromSeconds(3);
+
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
             base.OnNumberPropertyUpdated(p);
+
+            switch (p.Name) {
+                case "TELESCOPE_TIMED_GUIDE_NS":
+                    _isPulseGuidingNS = p.State == PropertyState.Busy;
+                    break;
+                case "TELESCOPE_TIMED_GUIDE_WE":
+                    _isPulseGuidingWE = p.State == PropertyState.Busy;
+                    break;
+                case "EQUATORIAL_EOD_COORD":
+                    TrackCoordinateMotion(p);
+                    break;
+            }
+        }
+
+        private void TrackCoordinateMotion(INDINumberProperty p) {
+            var ra = p.Numbers.FirstOrDefault(n => n.Name == "RA")?.Value;
+            var dec = p.Numbers.FirstOrDefault(n => n.Name == "DEC")?.Value;
+            if (ra == null || dec == null) {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var current = (Ra: ra.Value, Dec: dec.Value);
+
+            if (_lastCoordSample is { } prev) {
+                // Local receive time, not the INDI timestamp — that only has 1s resolution.
+                var dt = (now - _lastCoordSampleAt).TotalSeconds;
+                if (dt > 0.05) {
+                    var dRaHours = Math.Abs(current.Ra - prev.Ra);
+                    if (dRaHours > 12) {
+                        dRaHours = 24 - dRaHours; // RA wrap-around
+                    }
+                    var deg = Math.Max(dRaHours * 15.0, Math.Abs(current.Dec - prev.Dec));
+                    // Rate-based (deg/s) so the driver's polling period doesn't matter:
+                    // 0.05°/s is ~12× the apparent sidereal RA drift of a stopped,
+                    // non-tracking mount (0.0042°/s) and far below any slew/home rate.
+                    // Suppressed briefly around a sync, whose instant coordinate jump is
+                    // not physical motion.
+                    if (deg / dt > 0.05 && now >= _suppressCoordMotionUntil) {
+                        _lastCoordMotionAt = now;
+                    }
+                }
+            }
+
+            _lastCoordSample = current;
+            _lastCoordSampleAt = now;
         }
 
         public override void OnSwitchPropertyUpdated(INDISwitchProperty p) {
@@ -132,7 +193,25 @@ namespace NINA.INDI.Devices {
         private bool atHome = false;
         public bool AtHome => atHome;
 
-        public bool AtPark => GetSwitchPropertyValue("TELESCOPE_PARK", "PARK") ?? false;
+        // Set while ParkAsync is running. Needed because the vector-state check below is
+        // not enough on its own: lx200_OnStep's Park() forgets TrackState=SCOPE_PARKING,
+        // so the base class publishes TELESCOPE_PARK as Ok (not Busy) for the WHOLE park
+        // motion — and the INDI tree is off-limits for local patches, so this must be
+        // handled client-side.
+        private volatile bool _parkInProgress;
+
+        // PARK=On alone is not "at park": per libindi convention the switch shows the
+        // TARGET while the vector state shows progress — parking publishes PARK=On the
+        // moment the command is accepted (and our own optimistic send does too), while the
+        // mount is still slewing to its park position. At park = target reached AND no
+        // park operation in flight (vector Busy for well-behaved drivers, _parkInProgress
+        // for pins-initiated parks on drivers that mis-report, Slewing for the motion
+        // itself incl. externally-commanded parks).
+        public bool AtPark =>
+            (GetSwitchPropertyValue("TELESCOPE_PARK", "PARK") ?? false)
+            && GetProperty("TELESCOPE_PARK")?.State != PropertyState.Busy
+            && !_parkInProgress
+            && !Slewing;
         public double Azimuth {
             get {
                 var azimuth = GetNumberPropertyValue("HORIZONTAL_COORD", "AZ");
@@ -192,7 +271,10 @@ namespace NINA.INDI.Devices {
                 SetNumberValue("GUIDE_RATE", "GUIDE_RATE_WE", value / SiderealDegPerSec);
             }
         }
-        public bool IsPulseGuiding { get; }
+        // Tracked from TELESCOPE_TIMED_GUIDE_NS/WE Busy state (see OnNumberPropertyUpdated) —
+        // INDI has no dedicated "is guiding" flag, so a pulse counts as in-progress for exactly
+        // as long as the driver reports the corresponding guide vector as Busy.
+        public bool IsPulseGuiding => _isPulseGuidingNS || _isPulseGuidingWE;
         public double RightAscension => GetNumberPropertyValue("EQUATORIAL_EOD_COORD", "RA") ?? double.NaN;
         public double RightAscensionRate { get; set; }
         public PierSide SideOfPier {
@@ -241,8 +323,13 @@ namespace NINA.INDI.Devices {
                 bool motionNorth = GetSwitchPropertyValue("TELESCOPE_MOTION_NS", "MOTION_NORTH") ?? false;
                 bool motionSouth = GetSwitchPropertyValue("TELESCOPE_MOTION_NS", "MOTION_SOUTH") ?? false;
                 var motionRaDec = GetProperty("EQUATORIAL_EOD_COORD")?.State == PropertyState.Busy;
-                var motionAltAz = GetProperty("HORIZONTAL_COORD")?.State == PropertyState.Busy;
-                return motionWest || motionEast || motionNorth || motionSouth || motionRaDec || motionAltAz;
+                // HORIZONTAL_COORD.State is deliberately excluded: AltAz mounts in tracking
+                // mode keep it Busy indefinitely (both axes move continuously to compensate
+                // for Earth's rotation), which would make Slewing permanently true.
+                // Coordinate motion covers firmwares that move without reporting any slew
+                // state (OnStep homing) — see TrackCoordinateMotion.
+                var coordMotion = DateTime.UtcNow - _lastCoordMotionAt < CoordMotionWindow;
+                return motionWest || motionEast || motionNorth || motionSouth || motionRaDec || coordMotion;
             }
         }
         public double TargetDeclination { get; }
@@ -250,12 +337,19 @@ namespace NINA.INDI.Devices {
         public bool Tracking {
             get => GetSwitchPropertyValue("TELESCOPE_TRACK_STATE", "TRACK_ON") ?? false;
             set {
-                // Use SetSwitchProperty to respect OneOfMany rule
-                var switchValues = new Dictionary<string, bool> {
-                    { "TRACK_ON", value },
-                    { "TRACK_OFF", !value }
-                };
-                SetSwitchProperty("TELESCOPE_TRACK_STATE", switchValues);
+                try {
+                    // Use SetSwitchProperty to respect OneOfMany rule
+                    var switchValues = new Dictionary<string, bool> {
+                        { "TRACK_ON", value },
+                        { "TRACK_OFF", !value }
+                    };
+                    SetSwitchProperty("TELESCOPE_TRACK_STATE", switchValues);
+                } catch (ArgumentException ex) {
+                    // Mounts without TELESCOPE_TRACK_STATE (and Stopped IS always advertised
+                    // by GetSupportedTrackingModes) get the NotImplementedException contract
+                    // like every other unsupported capability, not a raw ArgumentException.
+                    throw new NotImplementedException(ex.Message, ex);
+                }
 
                 // Negate atHome, if tracking was enabled
                 if (value) {
@@ -264,9 +358,35 @@ namespace NINA.INDI.Devices {
             }
         }
 
+        public async Task<bool> EnableTrackingAsync(CancellationToken ct = default) {
+            // Already tracking: nothing to transition. Skipping the round-trip also preserves the
+            // fast path for gotos issued while the mount is already tracking.
+            if (Tracking) {
+                return true;
+            }
+
+            // Wait for the driver to acknowledge TRACK_ON rather than firing the switch and
+            // returning immediately. A goto sent microseconds after a fire-and-forget enable races
+            // the tracking transition, and OnStep (and similar mounts) reject that goto as "below
+            // the horizon limit" until tracking has started and a valid position is established.
+            var acknowledged = await SetSwitchValueAsync("TELESCOPE_TRACK_STATE", "TRACK_ON", true, TimeSpan.FromSeconds(10));
+
+            if (acknowledged) {
+                atHome = false;
+                // Give the mount a beat to settle on a valid tracked position before the caller
+                // issues the goto.
+                await Task.Delay(500, ct);
+            }
+
+            return acknowledged;
+        }
+
         /// <summary>
         /// Set the telescope tracking mode (Sidereal, Lunar, Solar, Custom)
-        /// Uses SetSwitchProperty to respect the OneOfMany rule for TELESCOPE_TRACK_MODE
+        /// Uses SetSwitchValue, which applies the OneOfMany radio rule and skips (with a
+        /// warning) when the mount does not expose the requested mode's switch — hand-building
+        /// the whole vector here used to send an illegal all-off update in that case (e.g.
+        /// King on a mount without TRACK_CUSTOM).
         /// </summary>
         /// <param name="mode">Tracking mode: 0=Sidereal, 1=Lunar, 2=Solar, 3=King/Custom, 5=Stopped</param>
         public void SetTrackingMode(TrackingMode mode) {
@@ -276,39 +396,18 @@ namespace NINA.INDI.Devices {
                 return;
             }
 
-            // Build the switch values dictionary based on the desired tracking mode
-            var switchValues = new Dictionary<string, bool>();
+            var elementName = mode switch {
+                TrackingMode.Sidereal => "TRACK_SIDEREAL",
+                TrackingMode.Lunar => "TRACK_LUNAR",
+                TrackingMode.Solar => "TRACK_SOLAR",
+                TrackingMode.King or TrackingMode.Custom => "TRACK_CUSTOM",
+                _ => null
+            };
 
-            switch (mode) {
-                case TrackingMode.Sidereal:
-                    switchValues["TRACK_SIDEREAL"] = true;
-                    switchValues["TRACK_LUNAR"] = false;
-                    switchValues["TRACK_SOLAR"] = false;
-                    switchValues["TRACK_CUSTOM"] = false;
-                    break;
-                case TrackingMode.Lunar:
-                    switchValues["TRACK_SIDEREAL"] = false;
-                    switchValues["TRACK_LUNAR"] = true;
-                    switchValues["TRACK_SOLAR"] = false;
-                    switchValues["TRACK_CUSTOM"] = false;
-                    break;
-                case TrackingMode.Solar:
-                    switchValues["TRACK_SIDEREAL"] = false;
-                    switchValues["TRACK_LUNAR"] = false;
-                    switchValues["TRACK_SOLAR"] = true;
-                    switchValues["TRACK_CUSTOM"] = false;
-                    break;
-                case TrackingMode.King:
-                case TrackingMode.Custom:
-                    switchValues["TRACK_SIDEREAL"] = false;
-                    switchValues["TRACK_LUNAR"] = false;
-                    switchValues["TRACK_SOLAR"] = false;
-                    switchValues["TRACK_CUSTOM"] = true;
-                    break;
+            if (elementName != null) {
+                SetSwitchValue("TELESCOPE_TRACK_MODE", elementName, true);
             }
 
-            // Use SetSwitchProperty to respect OneOfMany rule
-            SetSwitchProperty("TELESCOPE_TRACK_MODE", switchValues);
             // Turn tracking on after setting the mode
             Tracking = true;
             atHome = false;
@@ -324,19 +423,15 @@ namespace NINA.INDI.Devices {
                 return TrackingMode.Stopped;
             }
 
-            try {
-                // Check which tracking mode switch is active
-                if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_SIDEREAL") == true) {
-                    return TrackingMode.Sidereal;
-                } else if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_LUNAR") == true) {
-                    return TrackingMode.Lunar;
-                } else if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_SOLAR") == true) {
-                    return TrackingMode.Solar;
-                } else if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_CUSTOM") == true) {
-                    return TrackingMode.King;
-                }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            // Check which tracking mode switch is active
+            if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_SIDEREAL") == true) {
+                return TrackingMode.Sidereal;
+            } else if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_LUNAR") == true) {
+                return TrackingMode.Lunar;
+            } else if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_SOLAR") == true) {
+                return TrackingMode.Solar;
+            } else if (GetSwitchPropertyValue("TELESCOPE_TRACK_MODE", "TRACK_CUSTOM") == true) {
+                return TrackingMode.King;
             }
 
             // Default to Sidereal if we can't determine the mode
@@ -353,25 +448,21 @@ namespace NINA.INDI.Devices {
             // Sidereal is always supported
             modes.Add(TrackingMode.Sidereal);
 
-            try {
-                var trackModeProperty = GetSwitchProperty("TELESCOPE_TRACK_MODE");
-                if (trackModeProperty != null) {
-                    foreach (var sw in trackModeProperty.Switches) {
-                        switch (sw.Name) {
-                            case "TRACK_LUNAR":
-                                modes.Add(TrackingMode.Lunar);
-                                break;
-                            case "TRACK_SOLAR":
-                                modes.Add(TrackingMode.Solar);
-                                break;
-                            case "TRACK_CUSTOM":
-                                modes.Add(TrackingMode.King);
-                                break;
-                        }
+            var trackModeProperty = GetSwitchProperty("TELESCOPE_TRACK_MODE");
+            if (trackModeProperty != null) {
+                foreach (var sw in trackModeProperty.Switches) {
+                    switch (sw.Name) {
+                        case "TRACK_LUNAR":
+                            modes.Add(TrackingMode.Lunar);
+                            break;
+                        case "TRACK_SOLAR":
+                            modes.Add(TrackingMode.Solar);
+                            break;
+                        case "TRACK_CUSTOM":
+                            modes.Add(TrackingMode.King);
+                            break;
                     }
                 }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
             }
 
             // Stopped is always available
@@ -383,9 +474,15 @@ namespace NINA.INDI.Devices {
         public DateTime UTCDate {
             get {
                 try {
-                    // Read UTC from TIME_UTC property
+                    // Read UTC from TIME_UTC property. Must parse with InvariantCulture — the
+                    // wire format is a fixed ISO-8601-like string, not locale-dependent — and
+                    // AssumeUniversal so a value without a timezone offset isn't silently
+                    // reinterpreted as local time under a non-UTC system locale.
                     var utcTime = GetTextPropertyValue("TIME_UTC", "UTC");
-                    if (!string.IsNullOrEmpty(utcTime) && DateTime.TryParse(utcTime, out var parsedTime)) {
+                    if (!string.IsNullOrEmpty(utcTime) && DateTime.TryParse(utcTime,
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            System.Globalization.DateTimeStyles.AssumeUniversal | System.Globalization.DateTimeStyles.AdjustToUniversal,
+                            out var parsedTime)) {
                         return DateTime.SpecifyKind(parsedTime, DateTimeKind.Utc);
                     }
                 } catch (Exception ex) {
@@ -418,9 +515,12 @@ namespace NINA.INDI.Devices {
 
         public void AbortSlew() {
             try {
-                SetSwitchValue("TELESCOPE_ABORT_MOTION", "ABORT_MOTION", true);
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+                // libindi's standard element is TELESCOPE_ABORT_MOTION.ABORT (inditelescope.cpp:
+                // AbortSP[0].fill("ABORT", ...)). The previous "ABORT_MOTION" element name exists
+                // in no driver, so aborts were silently skipped by the element guard.
+                SetSwitchValue("TELESCOPE_ABORT_MOTION", "ABORT", true);
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             }
         }
 
@@ -449,6 +549,76 @@ namespace NINA.INDI.Devices {
             // Return a default continuous range of 0.0 to 9.0
             // For OnStep devices with 10 slew rate levels (0-9)
             return new AxisRates(0.0, 9.0);
+        }
+
+        public SlewRateCapability GetSlewRateCapability() {
+            try {
+                // 1. Discrete switch-based rates (OnStep, EQMod, LX200, ...).
+                //    Counts and labels vary per driver, so we surface them verbatim.
+                var slewRateProp = GetSwitchProperty("TELESCOPE_SLEW_RATE");
+                if (slewRateProp != null && slewRateProp.Switches.Count > 0) {
+                    var options = new List<SlewRateOption>(slewRateProp.Switches.Count);
+                    for (int i = 0; i < slewRateProp.Switches.Count; i++) {
+                        var sw = slewRateProp.Switches[i];
+                        options.Add(new SlewRateOption {
+                            Index = i,
+                            Name = sw.Name,
+                            Label = string.IsNullOrWhiteSpace(sw.Label) ? sw.Name : sw.Label,
+                            IsSelected = sw.Value,
+                            EstimatedRateDps = TryParseSwitchRateDps(sw)
+                        });
+                    }
+                    return new SlewRateCapability {
+                        Kind = SlewRateKind.Discrete,
+                        PropertyName = "TELESCOPE_SLEW_RATE",
+                        Options = options
+                    };
+                }
+
+                // 2. Continuous numeric rate in °/s (simulators and some drivers).
+                var motionRateProp = GetNumberProperty("TELESCOPE_MOTION_RATE");
+                var motionRate = motionRateProp?.Numbers.FirstOrDefault(n => n.Name == "MOTION_RATE");
+                if (motionRate != null) {
+                    return new SlewRateCapability {
+                        Kind = SlewRateKind.Continuous,
+                        PropertyName = "TELESCOPE_MOTION_RATE",
+                        Min = motionRate.Min,
+                        Max = motionRate.Max,
+                        Step = motionRate.Step,
+                        Unit = "°/s",
+                        CurrentValue = motionRate.Value
+                    };
+                }
+            } catch (Exception ex) {
+                Logger.Debug($"GetSlewRateCapability failed: {ex.Message}");
+            }
+
+            // 3. Driver exposes no rate control; motion runs at its fixed internal rate.
+            return SlewRateCapability.None();
+        }
+
+        public void SetSlewRateIndex(int index) {
+            var prop = GetSwitchProperty("TELESCOPE_SLEW_RATE");
+            if (prop == null || prop.Switches.Count == 0) {
+                Logger.Warning("SetSlewRateIndex: TELESCOPE_SLEW_RATE not available");
+                return;
+            }
+
+            int clamped = Math.Max(0, Math.Min(index, prop.Switches.Count - 1));
+            foreach (var sw in prop.Switches) {
+                sw.Value = false;
+            }
+            prop.Switches[clamped].Value = true;
+            INDIClient.Instance.SendProperty(prop);
+            Logger.Debug($"SetSlewRateIndex: selected {clamped}/{prop.Switches.Count - 1} '{prop.Switches[clamped].Label}'");
+        }
+
+        public void SetSlewRateValue(double rateDps) {
+            try {
+                SetNumberValue("TELESCOPE_MOTION_RATE", "MOTION_RATE", Math.Abs(rateDps));
+            } catch (Exception ex) {
+                Logger.Warning($"SetSlewRateValue: TELESCOPE_MOTION_RATE not available ({ex.Message})");
+            }
         }
 
         public void ConfigureJNOW() {
@@ -610,8 +780,48 @@ namespace NINA.INDI.Devices {
                         }
                         break;
                 }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
+            }
+        }
+
+        public void MoveAxisDirection(TelescopeAxes axis, int sign) {
+            // Direction-only motion for manual slew. Unlike MoveAxis this never touches the
+            // slew rate — the rate is selected separately via SetSlewRateIndex/SetSlewRateValue
+            // (the capability model). This keeps a user's discrete rate choice (e.g. "Guide")
+            // from being clobbered on every keepalive message.
+            try {
+                if (sign != 0) {
+                    atHome = false;
+                }
+
+                string property = axis == TelescopeAxes.Primary ? "TELESCOPE_MOTION_WE" : "TELESCOPE_MOTION_NS";
+                var prop = GetSwitchProperty(property);
+                if (prop == null) {
+                    return;
+                }
+
+                if (sign == 0) {
+                    // Stop this axis — only send if it was actually moving.
+                    if (prop.Switches.Any(sw => sw.Value)) {
+                        foreach (var sw in prop.Switches) {
+                            sw.Value = false;
+                        }
+                        INDIClient.Instance.SendProperty(prop);
+                    }
+                    return;
+                }
+
+                // Primary: positive=East, negative=West. Secondary: positive=North, negative=South.
+                string target = axis == TelescopeAxes.Primary
+                    ? (sign > 0 ? "MOTION_EAST" : "MOTION_WEST")
+                    : (sign > 0 ? "MOTION_NORTH" : "MOTION_SOUTH");
+                foreach (var sw in prop.Switches) {
+                    sw.Value = (sw.Name == target);
+                }
+                INDIClient.Instance.SendProperty(prop);
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             }
         }
 
@@ -631,52 +841,127 @@ namespace NINA.INDI.Devices {
                         SetNumberValue("TELESCOPE_TIMED_GUIDE_WE", "TIMED_GUIDE_E", duration);
                         break;
                 }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             }
         }
 
+        // Ceiling for the park/unpark/home poll loops below. They are cleared only by driver
+        // updates, so a mount that stops responding mid-motion would otherwise leave the
+        // caller polling forever with only its own cancellation token as a way out — the
+        // same hardening the dome/focuser/rotator/filter-wheel MoveTimeout fixes applied.
+        private static readonly TimeSpan MotionTimeout = TimeSpan.FromMinutes(5);
+
         public async Task ParkAsync(CancellationToken ct = default) {
-            try {
-                SetSwitchValue("TELESCOPE_PARK", "PARK", true);
-
-                // Wait for property to become busy then return to idle/ok
-                await Task.Delay(100, ct);
-
-                var parkProp = GetProperty("TELESCOPE_PARK");
-                while ((Slewing == true || parkProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
-                    await Task.Delay(200, ct);
-                    parkProp = GetProperty("TELESCOPE_PARK");
-                }
-
-                atHome = false;
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            // Preserve the NotImplementedException contract for mounts without park support —
+            // the equipment layer uses it to clear its CanPark flag.
+            if (GetSwitchProperty("TELESCOPE_PARK") == null) {
+                throw new NotImplementedException("TELESCOPE_PARK property not found");
             }
+
+            _parkInProgress = true;
+            try {
+                await ParkCoreAsync(ct);
+            } finally {
+                _parkInProgress = false;
+            }
+        }
+
+        private async Task ParkCoreAsync(CancellationToken ct) {
+            var preSendTimestamp = GetProperty("TELESCOPE_PARK")?.Timestamp ?? string.Empty;
+            var lastPos = SampleRaDec();
+
+            // Acknowledged send (mirrors INDIDome.Park): the previous fire-and-forget write
+            // plus a fixed 100ms grace could return before a slow mount even flipped the
+            // property to Busy, reporting "parked" while the mount was still moving.
+            if (!await SetSwitchValueAsync("TELESCOPE_PARK", "PARK", true, TimeSpan.FromSeconds(10))) {
+                Logger.Warning($"[{DeviceName}] TELESCOPE_PARK was not acknowledged — polling for park completion anyway");
+            }
+
+            // Wait (bounded) for the park motion to START. Buggy drivers can publish
+            // TELESCOPE_PARK as Ok with PARK=On the instant the command is accepted while
+            // the mount is still slewing to its park position (lx200_OnStep's Park()
+            // forgets TrackState=SCOPE_PARKING; the INDI tree is off-limits for local
+            // patches, so this is handled entirely client-side). Without this phase
+            // the completion wait below exits before the motion ever becomes visible.
+            // A mount already at the park position legitimately never moves — that case
+            // falls through after the timeout. A timestamp-fresh Alert means the driver
+            // reported the park attempt as FAILED.
+            var motionStartTimeout = TimeSpan.FromSeconds(10);
+            var started = DateTime.UtcNow;
+            var parkProp = GetProperty("TELESCOPE_PARK");
+            while (!ct.IsCancellationRequested) {
+                parkProp = GetProperty("TELESCOPE_PARK");
+                if (parkProp?.State == PropertyState.Alert && parkProp.Timestamp != preSendTimestamp) {
+                    Logger.Error($"[{DeviceName}] Mount reported the park attempt as failed (TELESCOPE_PARK Alert)");
+                    throw new InvalidOperationException("Mount reported the park attempt as failed");
+                }
+                var pos = SampleRaDec();
+                if (Slewing || parkProp?.State == PropertyState.Busy || PositionMoved(lastPos, pos)) {
+                    break;
+                }
+                lastPos = pos;
+                if (DateTime.UtcNow - started > motionStartTimeout) {
+                    Logger.Warning($"[{DeviceName}] Mount did not start park motion within {motionStartTimeout.TotalSeconds:F0}s — assuming it was already at the park position");
+                    break;
+                }
+                await Task.Delay(500, ct);
+            }
+
+            // Completion: motion has to stop (Slewing includes coordinate motion with its
+            // ~3s decay window, which doubles as the settle) and TELESCOPE_PARK must leave
+            // Busy on drivers that manage it properly.
+            started = DateTime.UtcNow;
+            while ((Slewing == true || parkProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MotionTimeout) {
+                    Logger.Warning($"[{DeviceName}] Mount did not report park completion within {MotionTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
+                await Task.Delay(200, ct);
+                parkProp = GetProperty("TELESCOPE_PARK");
+            }
+
+            atHome = false;
         }
 
         public async Task UnparkAsync(CancellationToken ct = default) {
-            try {
-                SetSwitchValue("TELESCOPE_PARK", "UNPARK", true);
+            if (GetSwitchProperty("TELESCOPE_PARK") == null) {
+                throw new NotImplementedException("TELESCOPE_PARK property not found");
+            }
 
-                // Wait for property to become busy then return to idle/ok
-                await Task.Delay(100, ct);
+            // The ack can be a FALSE Alert: OnStep's UnPark() reads a single-char reply to
+            // :hR# and reports failure on any serial hiccup even though the controller does
+            // unpark — the driver's status poll then reconciles via SetParked(false) a
+            // moment later. So a rejected/missing ack is only a warning here; the real
+            // outcome is read from the PARK switch below.
+            if (!await SetSwitchValueAsync("TELESCOPE_PARK", "UNPARK", true, TimeSpan.FromSeconds(10))) {
+                Logger.Warning($"[{DeviceName}] TELESCOPE_PARK unpark was not acknowledged — waiting for the unparked state anyway");
+            }
 
-                var parkProp = GetProperty("TELESCOPE_PARK");
-                while (parkProp?.State == PropertyState.Busy && !ct.IsCancellationRequested) {
-                    await Task.Delay(200, ct);
-                    parkProp = GetProperty("TELESCOPE_PARK");
+            // Outcome wait: unparked = PARK switch off and no operation in flight. Reading
+            // the switch is sound in the false-Alert case because the driver's Alert update
+            // restores PARK=On in the cache (overwriting our optimistic UNPARK write) and
+            // the eventual SetParked(false) flips it off with state Ok. Returning before
+            // the mount is really unparked would make follow-up commands (the VM sends
+            // TRACK_OFF right after) bounce off a still-parked driver.
+            var unparkTimeout = TimeSpan.FromSeconds(60);
+            var started = DateTime.UtcNow;
+            var parkProp = GetProperty("TELESCOPE_PARK");
+            while ((AtPark || parkProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > unparkTimeout) {
+                    Logger.Error($"[{DeviceName}] Mount still reports parked {unparkTimeout.TotalSeconds:F0}s after the unpark command");
+                    throw new InvalidOperationException("Mount did not unpark");
                 }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+                await Task.Delay(200, ct);
+                parkProp = GetProperty("TELESCOPE_PARK");
             }
         }
 
         public void SetPark() {
             try {
                 SetSwitchValue("TELESCOPE_PARK_OPTION", "PARK_CURRENT", true);
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             }
         }
 
@@ -697,8 +982,8 @@ namespace NINA.INDI.Devices {
                 if (!await SetNumberValuesAsync("EQUATORIAL_EOD_COORD", TimeSpan.FromSeconds(30), ("RA", ra), ("DEC", dec))) {
                     throw new InvalidOperationException("Mount rejected coordinates");
                 }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
                 Logger.Error($"Error in SlewToCoordinates: {ex.Message}");
                 throw;
@@ -706,22 +991,45 @@ namespace NINA.INDI.Devices {
         }
 
         public async Task SlewToCoordinatesTaskAsync(double ra, double dec, CancellationToken ct = default) {
+            const int maxSlewAttempts = 2;
             try {
-                // Slew
-                await SlewToCoordinates(ra, dec);
+                for (int attempt = 1; ; attempt++) {
+                    try {
+                        await SlewToCoordinates(ra, dec);
+                        break;
+                    } catch (InvalidOperationException) when (attempt < maxSlewAttempts && !ct.IsCancellationRequested && !AtPark) {
+                        // Mounts like OnStep transiently reject a goto issued while their state is
+                        // still settling (right after connect / a tracking-enable) as "below the
+                        // horizon limit". A single retry after a short wait clears it; a genuinely
+                        // unreachable target still fails on the second attempt.
+                        Logger.Warning($"Slew rejected on attempt {attempt}/{maxSlewAttempts}; retrying after settle");
+                        await Task.Delay(1000, ct);
+                    }
+                }
 
-                // Wait for slew to finish
-                while (Slewing && !ct.IsCancellationRequested) {
+                // Watch EQUATORIAL_EOD_COORD.State directly rather than the composite
+                // Slewing flag so that AltAz tracking motion cannot interfere. Bounded by
+                // MotionTimeout like every other completion wait — a driver that stops
+                // replying mid-slew must not park the caller forever on its own token.
+                var started = DateTime.UtcNow;
+                while (!ct.IsCancellationRequested) {
                     var coordState = GetProperty("EQUATORIAL_EOD_COORD")?.State;
                     if (coordState == PropertyState.Alert) {
                         Logger.Error("EQUATORIAL_EOD_COORD in Alert state - slew rejected by mount");
                         throw new InvalidOperationException("Slew rejected by mount - check mount limits and target accessibility");
                     }
+                    if (coordState != PropertyState.Busy) {
+                        break;
+                    }
+                    if (DateTime.UtcNow - started > MotionTimeout) {
+                        Logger.Warning($"[{DeviceName}] Mount did not report slew completion within {MotionTimeout.TotalSeconds:F0}s — giving up waiting");
+                        break;
+                    }
 
                     await Task.Delay(500, ct);
                 }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
                 Logger.Error($"Error in SlewToCoordinatesTaskAsync: {ex.Message}");
                 throw;
@@ -743,8 +1051,8 @@ namespace NINA.INDI.Devices {
 
                 // Send coordinates
                 SetNumberValues("HORIZONTAL_COORD", ("ALT", altitude), ("AZ", azimuth));
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
                 Logger.Error($"Error in SlewToCoordinates: {ex.Message}");
                 throw;
@@ -753,32 +1061,79 @@ namespace NINA.INDI.Devices {
 
         public async Task SlewToAltAzTaskAsync(double azimuth, double altitude, CancellationToken ct = default) {
             try {
-                // Slew
+                // Captured BEFORE the send: the busy-start loop below must distinguish a
+                // fresh driver response from state left over by an earlier operation (same
+                // stale-guard idiom as the async-ack machinery). INDI timestamps have
+                // 1-second resolution, so a same-second response can still read as stale —
+                // those cases fall back to the bounded timeout paths instead of misfiring.
+                var preSendTimestamp = GetProperty("HORIZONTAL_COORD")?.Timestamp;
+
                 SlewToAltAz(azimuth, altitude);
 
-                // Wait a bit for the slew to start
-                await Task.Delay(1000, ct);
-
-                // Check the actual property state
+                // Wait (bounded) for the driver to flip HORIZONTAL_COORD to Busy.
+                // SlewToAltAz is a fire-and-forget send (unlike the equatorial path, which
+                // awaits the Busy ack), so a fixed grace period would let a driver that takes
+                // longer than it to start reporting motion fall straight through the
+                // completion loop below — returning while the mount is still moving (same
+                // shape as the FindHomeAsync fix).
+                var busyStartTimeout = TimeSpan.FromSeconds(10);
+                var started = DateTime.UtcNow;
                 var coordProp = GetProperty("HORIZONTAL_COORD");
-
-                // Wait for slew to finish
-                while (Slewing && !ct.IsCancellationRequested) {
-                    // Check slewing status
-                    if (coordProp?.State == PropertyState.Idle) {
-                        // Done
+                while (!ct.IsCancellationRequested) {
+                    var state = coordProp?.State;
+                    var fresh = coordProp?.Timestamp != preSendTimestamp;
+                    if (state == PropertyState.Busy) {
                         break;
-                    } else if (coordProp?.State == PropertyState.Alert) {
+                    }
+                    // Only a FRESH Alert is a rejection of THIS slew (the completion loop
+                    // throws on it). A stale Alert left over from an earlier failed operation
+                    // must be waited out here — reading it in the first ~200ms would reject
+                    // the slew before the driver even processed the command.
+                    if (state == PropertyState.Alert && fresh) {
+                        break;
+                    }
+                    // A fresh Ok means the goto completed immediately (already at target) —
+                    // exit now instead of paying the full fallthrough timeout.
+                    if (state == PropertyState.Ok && fresh) {
+                        break;
+                    }
+                    if (DateTime.UtcNow - started > busyStartTimeout) {
+                        Logger.Warning($"[{DeviceName}] HORIZONTAL_COORD did not become Busy within {busyStartTimeout.TotalSeconds:F0}s of the slew command — assuming the mount was already at the target");
+                        break;
+                    }
+                    await Task.Delay(200, ct);
+                    coordProp = GetProperty("HORIZONTAL_COORD");
+                }
+
+                // Watch HORIZONTAL_COORD.State directly. Slewing no longer includes
+                // HORIZONTAL_COORD.Busy (removed to fix AltAz tracking false-positive),
+                // so we cannot rely on the composite Slewing flag here.
+                // A completed goto reports Ok, not Idle, so we exit on any non-Busy state.
+                // Bounded by MotionTimeout: an AltAz mount in tracking mode holds
+                // HORIZONTAL_COORD Busy indefinitely (see the Slewing property comment), so
+                // without a ceiling this wait could only ever exit via cancellation there.
+                started = DateTime.UtcNow;
+                while (!ct.IsCancellationRequested) {
+                    var state = coordProp?.State;
+                    if (state == PropertyState.Alert) {
                         Logger.Error("HORIZONTAL_COORD in Alert state - slew rejected by mount");
                         throw new InvalidOperationException("Slew rejected by mount - check mount limits and target accessibility");
                     }
+                    if (state != PropertyState.Busy) {
+                        break;
+                    }
+                    if (DateTime.UtcNow - started > MotionTimeout) {
+                        Logger.Warning($"[{DeviceName}] Mount did not report AltAz slew completion within {MotionTimeout.TotalSeconds:F0}s — giving up waiting");
+                        break;
+                    }
 
                     await Task.Delay(500, ct);
+                    coordProp = GetProperty("HORIZONTAL_COORD");
                 }
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
-                Logger.Error($"Error in SlewToCoordinatesTaskAsync: {ex.Message}");
+                Logger.Error($"Error in SlewToAltAzTaskAsync: {ex.Message}");
                 throw;
             }
         }
@@ -791,17 +1146,51 @@ namespace NINA.INDI.Devices {
                     throw new InvalidOperationException("Mount is parked");
                 }
 
+                // A sync makes the reported coordinates JUMP without any physical motion —
+                // keep the coordinate-motion detector from reading that jump as a slew
+                // (a platesolve sync would otherwise flag Slewing for a few seconds).
+                _suppressCoordMotionUntil = DateTime.UtcNow.AddSeconds(2);
+
                 // Enable sync mode
                 SetSwitchValue("ON_COORD_SET", "SYNC", true);
 
                 // Send coordinates
                 SetNumberValues("EQUATORIAL_EOD_COORD", ("RA", ra), ("DEC", dec));
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
                 Logger.Error($"Error in SlewToCoordinates: {ex.Message}");
                 throw;
             }
+        }
+
+        // Motion detection via the mount's actual position, for operations (homing) where
+        // firmwares don't reliably report a slew state but the driver still polls and
+        // pushes EQUATORIAL_EOD_COORD values every cycle.
+        private (double Ra, double Dec)? SampleRaDec() {
+            var ra = GetNumberPropertyValue("EQUATORIAL_EOD_COORD", "RA");
+            var dec = GetNumberPropertyValue("EQUATORIAL_EOD_COORD", "DEC");
+            if (!ra.HasValue || !dec.HasValue) {
+                return null;
+            }
+            return (ra.Value, dec.Value);
+        }
+
+        // True when the position changed meaningfully between two samples. The 0.02°
+        // threshold sits far below goto-rate motion (≥ ~0.5° per 500ms sample) but well
+        // above the apparent RA drift of a stopped, non-tracking mount (~0.002° per
+        // 500ms sample), so neither tracking state produces false positives.
+        private static bool PositionMoved((double Ra, double Dec)? a, (double Ra, double Dec)? b) {
+            if (a == null || b == null) {
+                return false;
+            }
+            var dRaHours = Math.Abs(b.Value.Ra - a.Value.Ra);
+            if (dRaHours > 12) {
+                dRaHours = 24 - dRaHours; // RA wrap-around
+            }
+            var dRaDeg = dRaHours * 15.0;
+            var dDecDeg = Math.Abs(b.Value.Dec - a.Value.Dec);
+            return dRaDeg > 0.02 || dDecDeg > 0.02;
         }
 
         public async Task FindHomeAsync(CancellationToken ct = default) {
@@ -827,41 +1216,86 @@ namespace NINA.INDI.Devices {
                 }
 
                 Logger.Info($"Sending home command via TELESCOPE_HOME.{homeSwitch.Name}");
+                var preSendTimestamp = homeProp.Timestamp;
+                var lastPos = SampleRaDec();
                 SetSwitchValue("TELESCOPE_HOME", homeSwitch.Name, true);
 
-                // Wait for property to become busy then return to idle/ok
-                await Task.Delay(1000, ct);
-
-                homeProp = GetSwitchProperty("TELESCOPE_HOME");
-                Logger.Debug($"Slewing state: {Slewing}");
-                while (Slewing == true && !ct.IsCancellationRequested) {
-                    await Task.Delay(500, ct);
+                // Wait (bounded) for the homing motion to START — via the composite Slewing
+                // flag OR the mount position actually changing. The position check matters:
+                // some firmwares (observed on OnStep) home without ever reporting a slew
+                // state on any INDI property, so state-based detection alone concludes
+                // "already at home" while the mount is in fact moving. A FRESH Alert on
+                // TELESCOPE_HOME means the driver refused the command (libindi refuses
+                // homing while parked) — surface that as an error instead of claiming home.
+                var motionStartTimeout = TimeSpan.FromSeconds(10);
+                var started = DateTime.UtcNow;
+                while (!ct.IsCancellationRequested) {
                     homeProp = GetSwitchProperty("TELESCOPE_HOME");
-                    Logger.Debug($"Waiting to reach home...");
+                    if (homeProp?.State == PropertyState.Alert && homeProp.Timestamp != preSendTimestamp) {
+                        Logger.Error($"[{DeviceName}] Mount refused the home command (TELESCOPE_HOME reported Alert)");
+                        throw new InvalidOperationException("Mount refused the home command — is it parked?");
+                    }
+                    var pos = SampleRaDec();
+                    if (Slewing || PositionMoved(lastPos, pos)) {
+                        break;
+                    }
+                    lastPos = pos;
+                    if (DateTime.UtcNow - started > motionStartTimeout) {
+                        Logger.Warning($"[{DeviceName}] Mount did not start moving within {motionStartTimeout.TotalSeconds:F0}s of the home command — assuming it was already at home");
+                        break;
+                    }
+                    await Task.Delay(500, ct);
                 }
+
+                // Completion is gated on MOTION only (Slewing flag + position settling), NOT
+                // on the TELESCOPE_HOME property's own state. Many mounts never manage
+                // TELESCOPE_HOME correctly while homing — libindi's framework sets it Busy on
+                // accept and no driver we've seen ever completes it — so keying off
+                // homeProp.State would hang. This was changed deliberately (commit d2954ec70,
+                // "onstep homing"); do not re-add a TELESCOPE_HOME-state condition here.
+                // "Home reached" = not Slewing AND position stable for a few samples (the
+                // stability window also absorbs the settle right after motion stops).
+                started = DateTime.UtcNow;
+                var stableSamples = 0;
+                lastPos = SampleRaDec();
+                while (!ct.IsCancellationRequested) {
+                    await Task.Delay(500, ct);
+                    var pos = SampleRaDec();
+                    if (!Slewing && !PositionMoved(lastPos, pos)) {
+                        // ~2s of confirmed standstill
+                        if (++stableSamples >= 4) {
+                            break;
+                        }
+                    } else {
+                        stableSamples = 0;
+                        Logger.Debug($"Waiting to reach home...");
+                    }
+                    lastPos = pos;
+                    if (DateTime.UtcNow - started > MotionTimeout) {
+                        // Gave up waiting — the mount may still be moving; do NOT claim home.
+                        Logger.Warning($"[{DeviceName}] Mount did not report homing completion within {MotionTimeout.TotalSeconds:F0}s — giving up waiting");
+                        return;
+                    }
+                }
+
+                // A cancelled wait is not a completed homing run either.
+                if (ct.IsCancellationRequested) return;
 
                 Logger.Debug($"Reached home");
                 atHome = true;
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             }
         }
 
         public bool CanMoveAxis(TelescopeAxes axis) {
-            try {
-                // Check if motion properties exist
-                switch (axis) {
-                    case TelescopeAxes.Primary:
-                        GetProperty("TELESCOPE_MOTION_WE");
-                        return true;
-                    case TelescopeAxes.Secondary:
-                        GetProperty("TELESCOPE_MOTION_NS");
-                        return true;
-                    default:
-                        return false;
-                }
-            } catch {
-                return false;
+            switch (axis) {
+                case TelescopeAxes.Primary:
+                    return GetProperty("TELESCOPE_MOTION_WE") != null;
+                case TelescopeAxes.Secondary:
+                    return GetProperty("TELESCOPE_MOTION_NS") != null;
+                default:
+                    return false;
             }
         }
 

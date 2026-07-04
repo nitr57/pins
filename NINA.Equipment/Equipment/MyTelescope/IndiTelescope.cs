@@ -466,6 +466,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         public IList<(double, double)> GetAxisRates(TelescopeAxes axis) {
             List<(double, double)> axisRates = new List<(double, double)>();
             try {
+                RefreshMaxSlewRate();
                 var rates = device.AxisRates(axis);
                 foreach (IRate item in rates) {
                     axisRates.Add((item.Minimum, item.Maximum));
@@ -480,6 +481,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 if (ShouldBeConnected) {
                     if (CanSlew) {
                         if (!AtPark) {
+                            RefreshMaxSlewRate();
                             var actualRate = rate;
                             try {
                                 if (axis == TelescopeAxes.Primary && !CanMovePrimaryAxis) {
@@ -605,7 +607,10 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             if (ShouldBeConnected && !AtPark) {
                 try {
                     if (!TrackingEnabled) {
-                        TrackingEnabled = true;
+                        // Await the tracking transition before slewing. A fire-and-forget enable
+                        // races the goto on the first slew after connect (mount not yet tracking),
+                        // and OnStep rejects it as "below the horizon limit". See EnableTrackingAsync.
+                        await device.EnableTrackingAsync(token);
                     }
                     TargetCoordinates = coordinates.Transform(EquatorialSystem);
 
@@ -618,6 +623,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                         while (Slewing) {
                             await CoreUtil.Wait(TimeSpan.FromSeconds(profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval), token);
                         }
+                    }
+
+                    // Some AltAz mount INDI drivers reset tracking state when a SLEW goto
+                    // completes. Re-enable it so the mount tracks the target after arrival.
+                    if (!TrackingEnabled) {
+                        TrackingEnabled = true;
                     }
 
                     return true;
@@ -638,7 +649,6 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         public async Task<bool> SlewToAltAz(TopocentricCoordinates coordinates, CancellationToken token) {
             if (ShouldBeConnected && !AtPark && CanSlewAltAz) {
                 try {
-                    TrackingEnabled = false;
                     TargetCoordinates = coordinates.Transform(EquatorialSystem);
 
                     if (CanSlewAltAzAsync) {
@@ -1045,8 +1055,17 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             var settings = profileService.ActiveProfile.TelescopeSettings;
             var instance = GetInstance();
             instance.ConfigureConnectionProperties(settings.IndiConnectionMode, settings.IndiAutoSearch, settings.IndiAddress, settings.IndiPort, settings.IndiBaudRate);
-            INDITelescope.ActualMaxSlewRateDps = settings.IndiMaxSlewRateDps;
+            RefreshMaxSlewRate();
             return base.PreConnect();
+        }
+
+        /// <summary>
+        /// Pushes the current profile's IndiMaxSlewRateDps into the INDITelescope static used
+        /// for °/s ↔ switch-index mapping. Called before every slew and axis-rate query so a
+        /// settings change in the UI takes effect immediately without reconnecting the mount.
+        /// </summary>
+        private void RefreshMaxSlewRate() {
+            INDITelescope.ActualMaxSlewRateDps = profileService.ActiveProfile.TelescopeSettings.IndiMaxSlewRateDps;
         }
 
         protected override Task PostConnect() {

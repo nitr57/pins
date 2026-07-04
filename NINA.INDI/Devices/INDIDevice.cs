@@ -132,20 +132,12 @@ namespace NINA.INDI.Devices
         public string DriverVersion => _device?.Version ?? "1.0";
 
         private readonly Dictionary<string, INDIProperty> _properties = new();
-        private TaskCompletionSource<bool> _propertiesReadyTcs;
 
         public void AddProperty(INDIProperty property)
         {
             lock (_properties)
             {
                 _properties[property.Name] = property;
-
-                // Signal when CONNECTION property arrives (if we're waiting)
-                if (property.Name == "CONNECTION" && _propertiesReadyTcs != null && !_propertiesReadyTcs.Task.IsCompleted)
-                {
-                    Logger.Debug($"Device {DeviceName}: CONNECTION property received");
-                    _propertiesReadyTcs.TrySetResult(true);
-                }
             }
         }
 
@@ -153,10 +145,7 @@ namespace NINA.INDI.Devices
         {
             lock (_properties)
             {
-                if (_properties.TryGetValue(propertyName, out var prop))
-                {
-                    _properties.Remove(propertyName);
-                }
+                _properties.Remove(propertyName);
             }
         }
 
@@ -213,7 +202,6 @@ namespace NINA.INDI.Devices
         public void SetNumberValue(string propertyName, string elementName, double value)
         {
             var prop = GetNumberProperty(propertyName) ?? throw new ArgumentException($"Number property '{propertyName}' not found");
-            if (prop == null) return;
 
             var number = prop.Numbers.FirstOrDefault(n => n.Name == elementName);
             if (number == null) return;
@@ -225,7 +213,6 @@ namespace NINA.INDI.Devices
         public void SetNumberValues(string propertyName, params (string elementName, double value)[] values)
         {
             var prop = GetNumberProperty(propertyName) ?? throw new ArgumentException($"Number property '{propertyName}' not found");
-            if (prop == null) return;
 
             foreach (var (elementName, value) in values)
             {
@@ -243,6 +230,16 @@ namespace NINA.INDI.Devices
         {
             try
             {
+                // Fail fast when NONE of the requested elements exist: SetNumberValues would
+                // then send the vector unchanged — a silent no-op the driver happily acks,
+                // which would resolve the wait below as a false success.
+                var existing = GetNumberProperty(propertyName);
+                if (existing != null && !values.Any(v => existing.Numbers.Any(n => n.Name == v.elementName)))
+                {
+                    Logger.Warning($"[{DeviceName}] SetNumberValuesAsync: none of the requested elements [{string.Join(", ", values.Select(v => v.elementName))}] exist on '{propertyName}' (has: {string.Join(", ", existing.Numbers.Select(n => n.Name))}) — failing fast");
+                    return false;
+                }
+
                 // Create a unique operation ID for this async set
                 var operationId = $"{propertyName}_{Guid.NewGuid()}";
 
@@ -257,10 +254,10 @@ namespace NINA.INDI.Devices
                 // Numbers keep the timestamp-only behaviour (no value predicate): a number
                 // reaching its target value does not necessarily mean the operation is done
                 // (e.g. a slew passes through the target), so we leave the predicate null.
-                var tcs = new TaskCompletionSource<bool>();
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 lock (_asyncOperationsLock)
                 {
-                    _pendingAsyncOperations[operationId] = (tcs, preSendTimestamp, null);
+                    _pendingAsyncOperations[operationId] = (tcs, propertyName, preSendTimestamp, null);
                 }
 
                 try
@@ -314,6 +311,20 @@ namespace NINA.INDI.Devices
         {
             try
             {
+                // Fail fast when the element does not exist on the vector: SetSwitchValue
+                // would skip the send (see its guard), so no state transition could ever
+                // resolve the pending operation — the wait would burn the full timeout, and
+                // an unrelated re-broadcast of the property could even resolve it as a false
+                // success. Reachable with profile-driven element names (CONNECTION_MODE,
+                // DEVICE_BAUD_RATE). A missing PROPERTY still goes through the send, whose
+                // ArgumentException the catch below turns into a fast false.
+                var existing = GetSwitchProperty(propertyName);
+                if (existing != null && existing.Switches.All(s => s.Name != elementName))
+                {
+                    Logger.Warning($"[{DeviceName}] SetSwitchValueAsync: element '{elementName}' does not exist on '{propertyName}' (has: {string.Join(", ", existing.Switches.Select(s => s.Name))}) — failing fast");
+                    return false;
+                }
+
                 // Create a unique operation ID for this async set
                 var operationId = $"{propertyName}_{Guid.NewGuid()}";
 
@@ -335,10 +346,10 @@ namespace NINA.INDI.Devices
                 };
 
                 // Create and register the TaskCompletionSource
-                var tcs = new TaskCompletionSource<bool>();
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 lock (_asyncOperationsLock)
                 {
-                    _pendingAsyncOperations[operationId] = (tcs, preSendTimestamp, desiredReached);
+                    _pendingAsyncOperations[operationId] = (tcs, propertyName, preSendTimestamp, desiredReached);
                 }
 
                 try
@@ -391,6 +402,16 @@ namespace NINA.INDI.Devices
         public void SetSwitchValue(string propertyName, string elementName, bool value)
         {
             var prop = GetSwitchProperty(propertyName) ?? throw new ArgumentException($"Switch property '{propertyName}' not found");
+
+            // Mirror SetNumberValue/SetTextValue: skip when the element does not exist.
+            // Proceeding would be worse for switches — the OneOfMany branch below switches
+            // everything off first, so a bad element name (e.g. a profile baud rate that
+            // matches no DEVICE_BAUD_RATE element) would send an illegal all-off vector.
+            if (prop.Switches.All(s => s.Name != elementName))
+            {
+                Logger.Warning($"[{DeviceName}] Switch element '{elementName}' not found on '{propertyName}' — not sending");
+                return;
+            }
 
             // Handle switch rules
             if (prop.Rule == SwitchRule.OneOfMany)
@@ -446,22 +467,26 @@ namespace NINA.INDI.Devices
         public void SetSwitchProperty(string propertyName, Dictionary<string, bool> values)
         {
             var prop = GetSwitchProperty(propertyName) ?? throw new ArgumentException($"Switch property '{propertyName}' not found");
-            if (prop == null) return;
 
-            // Validate based on switch rule
+            // Validate based on switch rule — against the elements that actually exist on
+            // this vector. Counting the requested dictionary alone would let a 'true' aimed
+            // at a nonexistent element (e.g. TRACK_CUSTOM on a mount that doesn't expose it)
+            // pass validation, silently drop out in the apply loop, and send an illegal
+            // all-off OneOfMany update.
+            var applicable = prop.Switches.Where(sw => values.ContainsKey(sw.Name)).ToList();
+            var trueCount = applicable.Count(sw => values[sw.Name]);
+
             if (prop.Rule == SwitchRule.OneOfMany)
             {
                 // Must have exactly one switch set to true
-                var trueCount = values.Values.Count(v => v);
                 if (trueCount != 1)
                 {
-                    throw new ArgumentException($"OneOfMany rule requires exactly one switch to be true, got {trueCount}");
+                    throw new ArgumentException($"OneOfMany rule requires exactly one existing switch to be true, got {trueCount} (vector has: {string.Join(", ", prop.Switches.Select(s => s.Name))})");
                 }
             }
             else if (prop.Rule == SwitchRule.AtMostOne)
             {
                 // Can have at most one switch set to true
-                var trueCount = values.Values.Count(v => v);
                 if (trueCount > 1)
                 {
                     throw new ArgumentException($"AtMostOne rule allows at most one switch to be true, got {trueCount}");
@@ -469,12 +494,27 @@ namespace NINA.INDI.Devices
             }
             // AnyOfMany has no restrictions
 
-            // Apply the values
-            foreach (var sw in prop.Switches)
+            if ((prop.Rule == SwitchRule.OneOfMany || prop.Rule == SwitchRule.AtMostOne) && trueCount == 1)
             {
-                if (values.TryGetValue(sw.Name, out bool value))
+                // Radio behavior: the single 'on' element defines the whole vector. Switch
+                // everything else off, including elements the caller didn't mention — the
+                // caller may not know the full element set, and leaving another element on
+                // would violate the rule.
+                var chosen = applicable.First(sw => values[sw.Name]).Name;
+                foreach (var sw in prop.Switches)
                 {
-                    sw.Value = value;
+                    sw.Value = sw.Name == chosen;
+                }
+            }
+            else
+            {
+                // Apply the values
+                foreach (var sw in prop.Switches)
+                {
+                    if (values.TryGetValue(sw.Name, out bool value))
+                    {
+                        sw.Value = value;
+                    }
                 }
             }
 
@@ -484,7 +524,6 @@ namespace NINA.INDI.Devices
         public void SetTextValue(string propertyName, string elementName, string value)
         {
             var prop = GetTextProperty(propertyName) ?? throw new ArgumentException($"Text property '{propertyName}' not found");
-            if (prop == null) return;
 
             var text = prop.Texts.FirstOrDefault(t => t.Name == elementName);
             if (text == null) return;
@@ -513,6 +552,16 @@ namespace NINA.INDI.Devices
         {
             try
             {
+                // Fail fast when the element does not exist — same rationale as
+                // SetSwitchValueAsync: SetTextValue would silently skip the send and the
+                // wait below could never be resolved by a real response.
+                var existing = GetTextProperty(propertyName);
+                if (existing != null && existing.Texts.All(t => t.Name != elementName))
+                {
+                    Logger.Warning($"[{DeviceName}] SetTextValueAsync: element '{elementName}' does not exist on '{propertyName}' (has: {string.Join(", ", existing.Texts.Select(t => t.Name))}) — failing fast");
+                    return false;
+                }
+
                 // Create a unique operation ID for this async set
                 var operationId = $"{propertyName}_{Guid.NewGuid()}";
 
@@ -531,10 +580,10 @@ namespace NINA.INDI.Devices
                 };
 
                 // Create and register the TaskCompletionSource
-                var tcs = new TaskCompletionSource<bool>();
+                var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
                 lock (_asyncOperationsLock)
                 {
-                    _pendingAsyncOperations[operationId] = (tcs, preSendTimestamp, desiredReached);
+                    _pendingAsyncOperations[operationId] = (tcs, propertyName, preSendTimestamp, desiredReached);
                 }
 
                 try
@@ -586,13 +635,24 @@ namespace NINA.INDI.Devices
 
 
         // For tracking multiple concurrent SetXxxAsync operations.
-        // The tuple carries the TCS, the pre-send property timestamp (so that a stale Alert/Ok
-        // already present before we sent can be distinguished from a real response), and an
-        // optional DesiredReached predicate. The predicate lets us accept a same-second "Ok"
+        // The tuple carries the TCS, the property the operation was issued against (kept as its
+        // own field — INDI property names are prefixes of each other, e.g. CCD_EXPOSURE vs.
+        // CCD_EXPOSURE_ABORT or CONNECTION vs. CONNECTION_MODE, so this must never be derived by
+        // string-matching the dictionary key), the pre-send property timestamp (so that a stale
+        // Alert/Ok already present before we sent can be distinguished from a real response), and
+        // an optional DesiredReached predicate. The predicate lets us accept a same-second "Ok"
         // (INDI timestamps have only 1-second resolution) when the property actually reflects
         // the value we requested, instead of discarding it as a stale re-broadcast.
-        private readonly Dictionary<string, (TaskCompletionSource<bool> Tcs, string PreSendTimestamp, Func<INDIProperty, bool> DesiredReached)> _pendingAsyncOperations = new();
+        private readonly Dictionary<string, (TaskCompletionSource<bool> Tcs, string PropertyName, string PreSendTimestamp, Func<INDIProperty, bool> DesiredReached)> _pendingAsyncOperations = new();
         private readonly object _asyncOperationsLock = new();
+
+        private bool HasPendingOperationFor(string propertyName)
+        {
+            lock (_asyncOperationsLock)
+            {
+                return _pendingAsyncOperations.Values.Any(v => v.PropertyName == propertyName);
+            }
+        }
 
         public Task<bool> Connect(CancellationToken ct)
         {
@@ -661,6 +721,31 @@ namespace NINA.INDI.Devices
                         while (!HasProperties(requiredProps) && propStopwatch.Elapsed < TimeSpan.FromSeconds(20) && !ct.IsCancellationRequested)
                         {
                             await CoreUtil.Wait(TimeSpan.FromMilliseconds(200), ct);
+                        }
+                        if (!HasProperties(requiredProps))
+                        {
+                            Logger.Warning($"[{DeviceName}] Required properties did not arrive within 20s: {string.Join(", ", requiredProps)}");
+                        }
+                    }
+
+                    // The CONNECT ack above resolves on the driver's Busy state, which only
+                    // means the driver STARTED connecting. If the attempt then fails
+                    // (Busy → Alert, typical for TCP mounts whose socket connect times out),
+                    // the Alert arrives after the pending operation is gone, so nothing above
+                    // notices — the driver resets CONNECT to Off in that case. Re-read the
+                    // switch as the final verdict instead of trusting the ack. (Limitation:
+                    // if the required-props wait was skipped or instant, a slow Busy → Alert
+                    // failure can still slip through, because our own send optimistically set
+                    // CONNECT=On in the cache.)
+                    if (!alreadyConnectedAtIndi)
+                    {
+                        var connPropAfter = GetSwitchProperty("CONNECTION");
+                        var connectedNow = connPropAfter?.Switches.FirstOrDefault(s => s.Name == "CONNECT")?.Value == true;
+                        if (!connectedNow)
+                        {
+                            Logger.Error($"[{DeviceName}] Driver acknowledged CONNECT but the connection did not complete (CONNECT=Off, state={connPropAfter?.State.ToString() ?? "unknown"})");
+                            _connectionAttemptFailed = true;
+                            success = false;
                         }
                     }
                 }
@@ -760,6 +845,14 @@ namespace NINA.INDI.Devices
             if (Connected)
             {
                 Disconnect();
+            }
+
+            // Close the raw LX200 TCP socket, if one was ever opened — otherwise it leaks
+            // for the lifetime of the process (the mount side will eventually time it out,
+            // but nothing on our side ever does).
+            lock (_lx200Lock)
+            {
+                DisposeLx200Connection();
             }
 
             // Unregister device from client. If a graceful disconnect is still in flight,
@@ -1044,7 +1137,12 @@ namespace NINA.INDI.Devices
             // Track CONNECTION failures to prevent spurious DISCONNECT attempts
             if (p.Name == "CONNECTION")
             {
-                if (p.State == PropertyState.Alert)
+                // Only treat an Alert as a failed attempt while a CONNECTION operation from
+                // this instance is actually in flight — a re-broadcast of a pre-existing
+                // Alert state (e.g. left over from an earlier failure) must not mark a
+                // fresh attempt as failed. An actual mid-session disconnect is handled by
+                // the CONNECT-switch check in DisconnectAsync, not by this flag.
+                if (p.State == PropertyState.Alert && HasPendingOperationFor("CONNECTION"))
                 {
                     _connectionAttemptFailed = true;
                     Logger.Warning($"Device '{DeviceName}' connection attempt failed (Alert state)");
@@ -1059,13 +1157,7 @@ namespace NINA.INDI.Devices
                 var connectSwitch = p.Switches.FirstOrDefault(s => s.Name == "CONNECT");
                 if (connectSwitch != null && !connectSwitch.Value && _connected)
                 {
-                    bool hasPendingConnectionOp;
-                    lock (_asyncOperationsLock)
-                    {
-                        hasPendingConnectionOp = _pendingAsyncOperations.Keys
-                            .Any(k => k.StartsWith("CONNECTION_"));
-                    }
-                    if (!hasPendingConnectionOp)
+                    if (!HasPendingOperationFor("CONNECTION"))
                     {
                         Logger.Warning($"Device '{DeviceName}' CONNECTION property shows DISCONNECT while we " +
                                        "thought it was connected — marking as externally disconnected");
@@ -1079,13 +1171,13 @@ namespace NINA.INDI.Devices
             {
                 // Find all pending operations for this property
                 var operationsForProperty = _pendingAsyncOperations
-                    .Where(kvp => kvp.Key.StartsWith(p.Name + "_"))
+                    .Where(kvp => kvp.Value.PropertyName == p.Name)
                     .ToList();
 
                 foreach (var kvp in operationsForProperty)
                 {
                     var operationId = kvp.Key;
-                    var (tcs, preSendTimestamp, desiredReached) = kvp.Value;
+                    var (tcs, _, preSendTimestamp, desiredReached) = kvp.Value;
 
                     // Resolve based on property state:
                     // - Busy: server has acknowledged the command and is processing it
@@ -1165,13 +1257,13 @@ namespace NINA.INDI.Devices
             {
                 // Find all pending operations for this property
                 var operationsForProperty = _pendingAsyncOperations
-                    .Where(kvp => kvp.Key.StartsWith(p.Name + "_"))
+                    .Where(kvp => kvp.Value.PropertyName == p.Name)
                     .ToList();
 
                 foreach (var kvp in operationsForProperty)
                 {
                     var operationId = kvp.Key;
-                    var (tcs, preSendTimestamp, desiredReached) = kvp.Value;
+                    var (tcs, _, preSendTimestamp, desiredReached) = kvp.Value;
 
                     // Resolve based on property state:
                     // - Busy: server has acknowledged the command and is processing it
@@ -1245,13 +1337,13 @@ namespace NINA.INDI.Devices
             {
                 // Find all pending operations for this property
                 var operationsForProperty = _pendingAsyncOperations
-                    .Where(kvp => kvp.Key.StartsWith(p.Name + "_"))
+                    .Where(kvp => kvp.Value.PropertyName == p.Name)
                     .ToList();
 
                 foreach (var kvp in operationsForProperty)
                 {
                     var operationId = kvp.Key;
-                    var (tcs, preSendTimestamp, desiredReached) = kvp.Value;
+                    var (tcs, _, preSendTimestamp, desiredReached) = kvp.Value;
 
                     // Resolve based on property state:
                     // - Busy: server has acknowledged the command and is processing it
@@ -1375,10 +1467,20 @@ namespace NINA.INDI.Devices
                 return _lx200Stream;
             }
             _lx200Client?.Dispose();
+            _lx200Client = null;
+            _lx200Stream = null;
             var client = new TcpClient();
-            client.SendTimeout = 3000;
-            client.ReceiveTimeout = 3000;
-            client.Connect(_address, GetTcpPort());
+            try
+            {
+                client.SendTimeout = 3000;
+                client.ReceiveTimeout = 3000;
+                client.Connect(_address, GetTcpPort());
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
             _lx200Client = client;
             _lx200Stream = client.GetStream();
             return _lx200Stream;
@@ -1451,7 +1553,13 @@ namespace NINA.INDI.Devices
             }
             catch (Exception)
             {
-                DisposeLx200Connection();
+                // Take the lock: another thread may be mid-command on the same stream, and
+                // disposing under it would turn its failure into an ObjectDisposedException
+                // at a random point instead of a clean send/receive error.
+                lock (_lx200Lock)
+                {
+                    DisposeLx200Connection();
+                }
                 throw;
             }
         }
@@ -1468,7 +1576,13 @@ namespace NINA.INDI.Devices
             }
             catch (Exception)
             {
-                DisposeLx200Connection();
+                // Take the lock: another thread may be mid-command on the same stream, and
+                // disposing under it would turn its failure into an ObjectDisposedException
+                // at a random point instead of a clean send/receive error.
+                lock (_lx200Lock)
+                {
+                    DisposeLx200Connection();
+                }
                 throw;
             }
         }
@@ -1485,7 +1599,13 @@ namespace NINA.INDI.Devices
             }
             catch (Exception)
             {
-                DisposeLx200Connection();
+                // Take the lock: another thread may be mid-command on the same stream, and
+                // disposing under it would turn its failure into an ObjectDisposedException
+                // at a random point instead of a clean send/receive error.
+                lock (_lx200Lock)
+                {
+                    DisposeLx200Connection();
+                }
                 throw;
             }
         }

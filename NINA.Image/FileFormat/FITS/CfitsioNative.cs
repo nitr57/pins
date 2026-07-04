@@ -234,7 +234,9 @@ namespace NINA.Image.FileFormat.FITS {
         }
 
         public static DATATYPE GetDataType(Type T) {
-            if (T == typeof(ushort)) {
+            if (T == typeof(byte)) {
+                return DATATYPE.TBYTE;
+            } else if (T == typeof(ushort)) {
                 return DATATYPE.TUSHORT;
             } else if (T == typeof(uint)) {
                 return DATATYPE.TUINT;

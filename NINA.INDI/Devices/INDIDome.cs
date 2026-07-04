@@ -45,11 +45,15 @@ namespace NINA.INDI.Devices {
         }
 
         public override void OnSwitchPropertyUpdated(INDISwitchProperty p) {
-            base.OnSwitchPropertyUpdated(p);
-
+            // Device-local state must be updated BEFORE base resolves pending async acks:
+            // TCS continuations run asynchronously, so a waiter (OpenShutter/CloseShutter)
+            // can resume the moment base calls TrySetResult — updating _shutterState after
+            // base would let it observe the pre-update state and skip its wait loop.
             if (p.Name == "DOME_SHUTTER") {
                 UpdateShutterState(p);
             }
+
+            base.OnSwitchPropertyUpdated(p);
         }
 
         public override void OnBlobPropertyUpdated(INDIBlobProperty p) {
@@ -60,7 +64,9 @@ namespace NINA.INDI.Devices {
 
         public bool CanSetShutter => GetSwitchProperty("DOME_SHUTTER") != null;
         public bool CanSetAzimuth => GetNumberProperty("ABS_DOME_POSITION") != null;
-        public bool CanSetPark => GetSwitchProperty("DOME_PARK") != null;
+        // Keyed on DOME_PARK_OPTION (what SetPark actually writes), not DOME_PARK — a driver
+        // exposing only the latter would advertise a set-park capability that is a silent no-op.
+        public bool CanSetPark => GetSwitchProperty("DOME_PARK_OPTION") != null;
         public bool CanSyncAzimuth => GetNumberProperty("DOME_SYNC") != null;
         public bool CanPark => GetSwitchProperty("DOME_PARK") != null;
         public bool CanFindHome {
@@ -91,7 +97,11 @@ namespace NINA.INDI.Devices {
 
         public double Azimuth => GetNumberPropertyValue("ABS_DOME_POSITION", "DOME_ABSOLUTE_POSITION") ?? double.NaN;
 
-        public bool AtPark => GetSwitchPropertyValue("DOME_PARK", "PARK") ?? false;
+        // PARK=On alone is the TARGET, not the position: drivers publish it with state=Busy
+        // while the park motion is still running (see INDITelescope.AtPark).
+        public bool AtPark =>
+            (GetSwitchPropertyValue("DOME_PARK", "PARK") ?? false)
+            && GetProperty("DOME_PARK")?.State != PropertyState.Busy;
 
         public bool AtHome {
             get {
@@ -128,12 +138,23 @@ namespace NINA.INDI.Devices {
 
         // ── Operations ────────────────────────────────────────────────────────────
 
+        // Ceiling for the motion poll loops below (azimuth slew, shutter, park). All of
+        // them are cleared only by driver updates, so a driver that stops replying
+        // mid-motion would otherwise leave the caller polling forever with only its own
+        // cancellation token as a way out.
+        private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(5);
+
         public async Task SlewToAzimuth(double azimuth, CancellationToken ct) {
             if (!Connected || !CanSetAzimuth) return;
             await SetNumberValuesAsync("ABS_DOME_POSITION", TimeSpan.FromSeconds(10),
                 ("DOME_ABSOLUTE_POSITION", azimuth));
             // Wait until motion stops
+            var started = DateTime.UtcNow;
             while (Slewing && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MoveTimeout) {
+                    Logger.Warning($"Dome did not report slew completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
                 await Task.Delay(500, ct);
             }
         }
@@ -141,24 +162,57 @@ namespace NINA.INDI.Devices {
         public async Task OpenShutter(CancellationToken ct) {
             if (!Connected || !CanSetShutter) return;
             await SetSwitchValueAsync("DOME_SHUTTER", "SHUTTER_OPEN", true, TimeSpan.FromSeconds(10));
-            while (_shutterState == ShutterState.ShutterOpening && !ct.IsCancellationRequested) {
+
+            // Gate on the property's own Busy state as well as the derived _shutterState:
+            // if the ack timed out (a driver that flips to Busy late), _shutterState may
+            // never have been set to Opening and the derived state alone would return while
+            // the shutter is still moving (mirrors Park's state-based gating).
+            var started = DateTime.UtcNow;
+            var shutterProp = GetProperty("DOME_SHUTTER");
+            while ((_shutterState == ShutterState.ShutterOpening || shutterProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MoveTimeout) {
+                    Logger.Warning($"Dome did not report shutter-open completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
                 await Task.Delay(500, ct);
+                shutterProp = GetProperty("DOME_SHUTTER");
             }
         }
 
         public async Task CloseShutter(CancellationToken ct) {
             if (!Connected || !CanSetShutter) return;
             await SetSwitchValueAsync("DOME_SHUTTER", "SHUTTER_CLOSE", true, TimeSpan.FromSeconds(10));
-            while (_shutterState == ShutterState.ShutterClosing && !ct.IsCancellationRequested) {
+
+            // See OpenShutter for why this also watches the property's own Busy state.
+            var started = DateTime.UtcNow;
+            var shutterProp = GetProperty("DOME_SHUTTER");
+            while ((_shutterState == ShutterState.ShutterClosing || shutterProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MoveTimeout) {
+                    Logger.Warning($"Dome did not report shutter-close completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
                 await Task.Delay(500, ct);
+                shutterProp = GetProperty("DOME_SHUTTER");
             }
         }
 
         public async Task Park(CancellationToken ct) {
             if (!Connected || !CanPark) return;
             await SetSwitchValueAsync("DOME_PARK", "PARK", true, TimeSpan.FromSeconds(10));
-            while (!AtPark && !ct.IsCancellationRequested) {
+
+            // Wait for the park motion itself to finish, not just for the PARK switch value
+            // to read true — libindi sets DOME_PARK's PARK switch ON with state=Busy as soon
+            // as parking starts, so gating on the switch VALUE alone (AtPark) can return while
+            // the dome is still moving. Mirrors INDITelescope.ParkAsync's state-based gating.
+            var started = DateTime.UtcNow;
+            var parkProp = GetProperty("DOME_PARK");
+            while ((Slewing || parkProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MoveTimeout) {
+                    Logger.Warning($"Dome did not report park completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
                 await Task.Delay(500, ct);
+                parkProp = GetProperty("DOME_PARK");
             }
         }
 
@@ -177,7 +231,11 @@ namespace NINA.INDI.Devices {
         public void SetPark() {
             if (!Connected) return;
             try {
-                SetSwitchValue("DOME_PARK", "DOME_PARK_WRITE", true);
+                // libindi's dome park-option vector is DOME_PARK_OPTION with PARK_CURRENT /
+                // PARK_DEFAULT / PARK_WRITE_DATA (mirroring TELESCOPE_PARK_OPTION). The
+                // previous DOME_PARK.DOME_PARK_WRITE target exists in no driver, so this
+                // silently never worked.
+                SetSwitchValue("DOME_PARK_OPTION", "PARK_CURRENT", true);
             } catch (ArgumentException ex) {
                 Logger.Warning($"INDIDome: Cannot set park position — {ex.Message}");
             }
@@ -201,26 +259,7 @@ namespace NINA.INDI.Devices {
             }
         }
 
-        #region Unsupported
-
-        public IList<string> SupportedActions { get; } = new List<string>();
-
-        public string Action(string actionName, string actionParameters) {
-            throw new NotImplementedException();
-        }
-
-        public void CommandBlind(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public bool CommandBool(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public string CommandString(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        #endregion
+        // Action/Command* are inherited from INDIDevice — the redeclarations that used to
+        // live here hid the base virtuals (CS0114) without changing behavior.
     }
 }

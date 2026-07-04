@@ -15,6 +15,7 @@
 using NINA.Core.Enum;
 using NINA.Core.Model.Equipment;
 using NINA.INDI.Enums;
+using NINA.INDI.Model;
 using System;
 using System.Collections.Generic;
 using System.Threading;
@@ -59,10 +60,47 @@ namespace NINA.INDI.Interfaces {
         IAxisRates AxisRates(TelescopeAxes axis);
         void ConfigureJNOW();
         void MoveAxis(TelescopeAxes axis, double rate);
+
+        /// <summary>
+        /// Direction-only manual slew: starts motion on <paramref name="axis"/> toward
+        /// <paramref name="sign"/> (Primary +East/-West, Secondary +North/-South; 0 stops the
+        /// axis) without changing the slew rate. The rate is controlled separately via
+        /// <see cref="SetSlewRateIndex"/>/<see cref="SetSlewRateValue"/> so a chosen discrete
+        /// step is not overwritten on every keepalive.
+        /// </summary>
+        void MoveAxisDirection(TelescopeAxes axis, int sign);
+
+        /// <summary>
+        /// Introspects the connected driver and reports how it lets a client choose the
+        /// manual slew rate (discrete switch steps, a continuous numeric range, or none).
+        /// Read live from the property store; safe to call repeatedly.
+        /// </summary>
+        SlewRateCapability GetSlewRateCapability();
+
+        /// <summary>
+        /// Selects a discrete slew rate by its <see cref="SlewRateOption.Index"/>.
+        /// No-op (logged) when the driver does not expose <c>TELESCOPE_SLEW_RATE</c>.
+        /// </summary>
+        void SetSlewRateIndex(int index);
+
+        /// <summary>
+        /// Sets a continuous slew rate in °/s. No-op (logged) when the driver does not
+        /// expose <c>TELESCOPE_MOTION_RATE</c>.
+        /// </summary>
+        void SetSlewRateValue(double rateDps);
         void PulseGuide(GuideDirections direction, int duration);
         Task ParkAsync(CancellationToken ct = default);
         void SetPark();
         void SetTrackingMode(TrackingMode mode);
+
+        /// <summary>
+        /// Enables sidereal tracking and waits for the driver to acknowledge before returning
+        /// (no-op when already tracking). A fire-and-forget <see cref="Tracking"/> write races a
+        /// goto issued immediately after - e.g. the first slew right after connect, while the
+        /// mount is not yet tracking - and OnStep (and similar) reject that goto as "below the
+        /// horizon limit" until the tracking transition settles. Awaiting the switch closes the race.
+        /// </summary>
+        Task<bool> EnableTrackingAsync(CancellationToken ct = default);
         TrackingMode GetTrackingMode();
         IList<TrackingMode> GetSupportedTrackingModes();
         Task SlewToCoordinates(double ra, double dec);

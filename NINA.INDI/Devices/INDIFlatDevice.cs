@@ -84,7 +84,17 @@ namespace NINA.INDI.Devices {
             }
         }
 
-        public bool IsParked => GetSwitchPropertyValue("CAP_PARK", "PARK") ?? false;
+        // PARK=On alone is the TARGET, not the position: drivers publish it with state=Busy
+        // while the cover is still moving (see INDITelescope.AtPark).
+        public bool IsParked =>
+            (GetSwitchPropertyValue("CAP_PARK", "PARK") ?? false)
+            && GetProperty("CAP_PARK")?.State != PropertyState.Busy;
+
+        // Ceiling for Open/Close's poll loops. coverState is only ever advanced by a driver
+        // update (CAP_PARK leaving Busy state), so a driver that stops replying mid-motion
+        // would otherwise leave the caller polling forever with only its own cancellation
+        // token as a way out.
+        private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(2);
 
         public async Task<bool> Open(CancellationToken ct, int delay = 300) {
             if (!Connected || !SupportsOpenClose) {
@@ -96,7 +106,12 @@ namespace NINA.INDI.Devices {
             SetSwitchValue("CAP_PARK", "UNPARK", true);
             Logger.Info("Commanded flat device to unpark");
 
+            var started = DateTime.UtcNow;
             while (coverState == CoverState.NeitherOpenNorClosed && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MoveTimeout) {
+                    Logger.Warning($"Flat device did not report unpark completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
                 await Task.Delay(delay, ct);
             }
 
@@ -115,7 +130,12 @@ namespace NINA.INDI.Devices {
             SetSwitchValue("CAP_PARK", "PARK", true);
             Logger.Info("Commanded flat device to park");
 
+            var started = DateTime.UtcNow;
             while (coverState == CoverState.NeitherOpenNorClosed && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MoveTimeout) {
+                    Logger.Warning($"Flat device did not report park completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
                 await Task.Delay(delay, ct);
             }
 
@@ -141,8 +161,8 @@ namespace NINA.INDI.Devices {
                         } else {
                             SetSwitchValue("FLAT_LIGHT_CONTROL", "FLAT_LIGHT_OFF", true);
                         }
-                    } catch (ArgumentException) {
-                        throw new NotImplementedException();
+                    } catch (ArgumentException ex) {
+                        throw new NotImplementedException(ex.Message, ex);
                     }
                 }
             }
@@ -150,45 +170,26 @@ namespace NINA.INDI.Devices {
 
         public bool CanSetBrightness {
             get {
-                var prop = GetNumberPropertyValue("FLAT_LIGHT_INTENSITY", "FLAT_LIGHT_INTENSITY_VALUE");
-                return prop != null;
+                var value = GetNumberPropertyValue("FLAT_LIGHT_INTENSITY", "FLAT_LIGHT_INTENSITY_VALUE");
+                return value != null;
             }
         }
 
         public int Brightness {
-            get => (int)GetNumberPropertyValue("FLAT_LIGHT_INTENSITY", "FLAT_LIGHT_INTENSITY_VALUE");
+            get => (int)(GetNumberPropertyValue("FLAT_LIGHT_INTENSITY", "FLAT_LIGHT_INTENSITY_VALUE") ?? 0);
             set {
                 if (CanSetBrightness && Connected) {
                     try {
                         SetNumberValue("FLAT_LIGHT_INTENSITY", "FLAT_LIGHT_INTENSITY_VALUE", value);
                         Logger.Info($"Set brightness to {value}");
-                    } catch (ArgumentException) {
-                        throw new NotImplementedException();
+                    } catch (ArgumentException ex) {
+                        throw new NotImplementedException(ex.Message, ex);
                     }
                 }
             }
         }
 
-        #region Unsupported
-
-        public IList<string> SupportedActions { get; }
-
-        public string Action(string actionName, string actionParameters) {
-            throw new NotImplementedException();
-        }
-
-        public void CommandBlind(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public bool CommandBool(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public string CommandString(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        #endregion
+        // Action/Command* are inherited from INDIDevice — the redeclarations that used to
+        // live here hid the base virtuals (CS0114) without changing behavior.
     }
 }

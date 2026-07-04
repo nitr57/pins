@@ -35,6 +35,17 @@ namespace NINA.INDI.Devices {
         private double _temperatureSetPoint = double.NaN;
         private bool _coolerOn;
 
+        // INDI's setBLOBVector carries no per-exposure correlation id, so a BLOB the driver had
+        // already buffered before an abort can still arrive after the next StartExposure has
+        // armed a new _exposureReady, delivering the old frame as the new one. There is no way
+        // to positively identify such a BLOB on receipt, so StartExposure instead debounces: if
+        // it's called shortly after an abort, it waits out the rest of the window first, giving
+        // an already-buffered stale BLOB a chance to arrive (and be silently dropped, since
+        // _exposureReady is null / stale until the wait completes) before arming. This is a
+        // best-effort mitigation, not a guarantee.
+        private static readonly TimeSpan StaleBlobDebounce = TimeSpan.FromMilliseconds(500);
+        private DateTime? _lastAbortAt;
+
         // Profile values to apply the first time each switch property arrives.
         // Populated by IndiCamera.PostConnect() before properties are guaranteed
         // to have arrived; applied (and removed) in OnSwitchPropertyUpdated on
@@ -54,10 +65,16 @@ namespace NINA.INDI.Devices {
                 var blob = p.Blobs.FirstOrDefault();
                 Logger.Info($"[{DeviceName}] BLOB received: name={p.Name} format={blob?.Format} size={blob?.Data?.Length}");
                 if (blob != null && blob.Data?.Length > 0) {
+                    // Residual-risk diagnostic: even after StartExposure's debounce, a BLOB
+                    // arriving very shortly after an abort could still be leftover data from
+                    // the aborted exposure rather than this one — INDI gives no way to tell.
+                    if (_lastAbortAt is { } abortedAt && DateTime.UtcNow - abortedAt < StaleBlobDebounce) {
+                        Logger.Warning($"[{DeviceName}] BLOB arrived {(DateTime.UtcNow - abortedAt).TotalMilliseconds:F0}ms after an abort — may be stale data from the aborted exposure (accepted anyway, INDI cannot confirm origin)");
+                    }
                     _lastBlobData = blob.Data;
                     _lastBlobFormat = blob.Format;
                     // TrySetResult is idempotent (duplicate BLOB updates can arrive from
-                    // parallel dispatch) and the TCS is null when no exposure is in flight.
+                    // re-broadcasts) and the TCS is null when no exposure is in flight.
                     _exposureReady?.TrySetResult(true);
                 }
             }
@@ -91,9 +108,13 @@ namespace NINA.INDI.Devices {
 
             // Apply any queued profile value on first receipt of a deferred switch.
             // Remove before applying so a driver echo of the change doesn't loop.
+            // Dispatched off-thread: this callback runs on the receive thread while
+            // INDIClient's _lock is held, and SetIndiEnabled does a blocking socket write —
+            // same rationale as INDISwitchHub.NotifyValuesUpdated.
             if (_pendingProfileSwitches.TryRemove(p.Name, out var pendingEnable)) {
                 Logger.Debug($"[{DeviceName}] Applying deferred profile switch {p.Name}={pendingEnable}");
-                SetIndiEnabled(p.Name, pendingEnable);
+                var propertyName = p.Name;
+                Task.Run(() => SetIndiEnabled(propertyName, pendingEnable));
             }
         }
 
@@ -127,6 +148,19 @@ namespace NINA.INDI.Devices {
 
         public void StartExposure(double exposureTime, short binX, short binY, bool enableSubSample, int subSampleX, int subSampleY, int subSampleWidth, int subSampleHeight, int gain, int offset) {
             Logger.Info($"[{DeviceName}] StartExposure called: {exposureTime}s");
+
+            // See StaleBlobDebounce: if we just aborted, wait out the remainder of the debounce
+            // window before arming so an already-buffered stale BLOB from the aborted exposure
+            // is more likely to arrive (and be silently dropped, since _exposureReady is still
+            // null/stale here) before it can be mistaken for this exposure's frame.
+            if (_lastAbortAt is { } abortedAt) {
+                var remaining = StaleBlobDebounce - (DateTime.UtcNow - abortedAt);
+                if (remaining > TimeSpan.Zero) {
+                    Logger.Warning($"[{DeviceName}] StartExposure following a recent abort — waiting {remaining.TotalMilliseconds:F0}ms so a stale BLOB from the aborted exposure can flush first");
+                    Thread.Sleep(remaining);
+                }
+            }
+
             // Invalidate any stale BLOB and arm a fresh completion for this exposure.
             // Order matters: clear the data before swapping the TCS so a late BLOB
             // arriving in between resolves the abandoned TCS, not the new one.
@@ -178,6 +212,12 @@ namespace NINA.INDI.Devices {
                 Logger.Info($"[{DeviceName}] Started INDI exposure: {exposureTime}s bin={binX}x{binY}");
             } catch (Exception ex) {
                 Logger.Error($"[{DeviceName}] Failed to set CCD_EXPOSURE: {ex.Message}");
+                // Fail fast, mirroring AbortExposure: no BLOB will ever arrive, so wake any
+                // waiter now (it finds no BLOB data and reports a failed download) instead of
+                // leaving the armed TCS to park it until the camera timeout expires.
+                var pending = _exposureReady;
+                _exposureReady = null;
+                pending?.TrySetResult(true);
             }
         }
 
@@ -195,6 +235,7 @@ namespace NINA.INDI.Devices {
             // the aborted exposure is ignored instead of being mistaken for the next frame.
             var pending = _exposureReady;
             _exposureReady = null;
+            _lastAbortAt = DateTime.UtcNow;
             try {
                 SetSwitchValue("CCD_ABORT_EXPOSURE", "ABORT", true);
                 Logger.Info($"[{DeviceName}] Sent CCD_ABORT_EXPOSURE");
@@ -288,7 +329,12 @@ namespace NINA.INDI.Devices {
             }
         }
 
-        public bool CanSetTemperature => GetSwitchProperty("CCD_COOLER") != null;
+        // The actual capability is a writable temperature setpoint, not the presence of the
+        // CCD_COOLER switch (a camera can expose a writable CCD_TEMPERATURE without one).
+        // Fall back to the cooler switch for drivers that keep CCD_TEMPERATURE read-only.
+        public bool CanSetTemperature =>
+            (GetNumberProperty("CCD_TEMPERATURE") is { } p && p.Permission != PropertyPermission.ReadOnly)
+            || GetSwitchProperty("CCD_COOLER") != null;
 
         public bool CoolerOn {
             // CCD_COOLER is perm="wo" on many drivers (its switch values are definition

@@ -60,26 +60,7 @@ namespace NINA.INDI.Devices {
         /// </summary>
         public bool IsSafe => GetLightPropertyState("WEATHER_STATUS") == PropertyState.Ok;
 
-        #region Unsupported
-
-        public IList<string> SupportedActions { get; } = new List<string>();
-
-        public string Action(string actionName, string actionParameters) {
-            throw new NotImplementedException();
-        }
-
-        public void CommandBlind(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public bool CommandBool(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public string CommandString(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        #endregion
+        // Action/Command* are inherited from INDIDevice — the redeclarations that used to
+        // live here hid the base virtuals (CS0114) without changing behavior.
     }
 }

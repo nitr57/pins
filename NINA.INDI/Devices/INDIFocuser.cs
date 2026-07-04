@@ -117,8 +117,8 @@ namespace NINA.INDI.Devices {
                         } else {
                             SetSwitchValue("FOCUS_REVERSE_MOTION", "INDI_DISABLED", true);
                         }
-                    } catch (ArgumentException) {
-                        throw new NotImplementedException();
+                    } catch (ArgumentException ex) {
+                        throw new NotImplementedException(ex.Message, ex);
                     }
                 }
             }
@@ -132,8 +132,8 @@ namespace NINA.INDI.Devices {
         public void Halt() {
             try {
                 SetSwitchValue("FOCUS_ABORT_MOTION", "ABORT", true);
-            } catch (ArgumentException) {
-                throw new NotImplementedException();
+            } catch (ArgumentException ex) {
+                throw new NotImplementedException(ex.Message, ex);
             }
         }
 
@@ -147,6 +147,12 @@ namespace NINA.INDI.Devices {
             Logger.Info($"Commanded focuser to move to position {position}");
         }
 
+        // Ceiling for MoveAsync's poll loop. IsMoving is only ever cleared by a driver update
+        // (ABS_FOCUS_POSITION leaving Busy state), so a driver that stops replying mid-move
+        // (crash, cable pull) would otherwise leave the caller polling forever with only its
+        // own cancellation token as a way out.
+        private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(5);
+
         public async Task MoveAsync(int position, CancellationToken ct = default) {
             if (!Connected) {
                 throw new InvalidOperationException("Cannot move focuser: not connected");
@@ -155,33 +161,19 @@ namespace NINA.INDI.Devices {
             // Initiate the move
             Move(position);
 
+            var started = DateTime.UtcNow;
             while (IsMoving && !ct.IsCancellationRequested) {
+                if (DateTime.UtcNow - started > MoveTimeout) {
+                    Logger.Warning($"Focuser did not report move completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    break;
+                }
                 await Task.Delay(100, ct);
             }
 
             Logger.Debug($"Focuser reached position {Position}");
         }
 
-        #region Unsupported
-
-        public IList<string> SupportedActions { get; }
-
-        public string Action(string actionName, string actionParameters) {
-            throw new NotImplementedException();
-        }
-
-        public void CommandBlind(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public bool CommandBool(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public string CommandString(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        #endregion
+        // Action/Command* are inherited from INDIDevice — the redeclarations that used to
+        // live here hid the base virtuals (CS0114) without changing behavior.
     }
 }

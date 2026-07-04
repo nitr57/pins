@@ -61,6 +61,11 @@ namespace NINA.INDI {
         private Task _receiveTask;
         private CancellationTokenSource _cts;
         private TaskCompletionSource<bool> _driverTcs;
+        // The driver exec name LoadDriver is currently waiting on. Guards _driverTcs completion
+        // in CheckForNewDevice so a DRIVER_INFO re-broadcast from an unrelated, already-loaded
+        // driver can't complete a DIFFERENT in-flight LoadDriver prematurely (guarded by
+        // _driverLock, same as _driverTcs).
+        private string _pendingLoadDriverExec;
         private readonly object _operationLock = new();
         private readonly object _driverLock = new();
         private readonly SemaphoreSlim _getDriversSemaphore = new(1, 1);
@@ -75,10 +80,11 @@ namespace NINA.INDI {
         // from one role is correctly reflected in the other.
         private readonly Dictionary<string, List<INDIDevice>> _registeredDevices = [];
 
-        // Maps driver executable name → set of DeviceInterfaces it is currently serving.
-        // A single driver (e.g. indi_lx200generic) can expose devices for multiple interfaces
-        // (telescope + focuser). The driver process is only stopped when ALL interfaces are removed.
-        private readonly Dictionary<string, HashSet<DeviceInterface>> _loadedDrivers = [];
+        // Driver executable names currently running under indiserver. A single driver (e.g.
+        // indi_lx200generic) can expose devices for multiple interfaces (telescope + focuser);
+        // eviction is scoped by NINA device-type category (_lastDriverPerCategory) rather than
+        // by interface, so a rescan of one category never stops a driver still serving another.
+        private readonly HashSet<string> _loadedDrivers = [];
 
         // Maps NINA device-type category name (e.g. "WeatherData", "SafetyMonitor") to the
         // driver that was last loaded for that category.  Eviction during a rescan only touches
@@ -101,7 +107,9 @@ namespace NINA.INDI {
         private readonly List<INDIMessage> _messages = [];
         private readonly object _messagesLock = new();
 
-        public INDIClient(int port) {
+        // Private: the class manages a machine-wide indiserver (pkill on start, a fixed FIFO
+        // path), so a second instance would fight the first. Use INDIClient.Instance.
+        private INDIClient(int port) {
             if (port < 1 || port > 65535) {
                 throw new ArgumentOutOfRangeException(nameof(port), "Port must be between 1 and 65535.");
             }
@@ -127,8 +135,16 @@ namespace NINA.INDI {
                 await _tcpClient.ConnectAsync("localhost", _port, ct);
                 _stream = _tcpClient.GetStream();
 
+                // Any previous session's CTS was cancelled by Disconnect (or its loop already
+                // exited on a read fault); dispose it before replacing.
+                _cts?.Dispose();
                 _cts = new CancellationTokenSource();
-                _receiveTask = Task.Run(() => ReceiveLoop(_cts.Token));
+                // Hand the loop ITS stream as a parameter — it must never re-read the _stream
+                // field, or a stale loop from a previous session could read the new session's
+                // stream (two concurrent readers) after a quick Disconnect→Connect cycle.
+                var stream = _stream;
+                var token = _cts.Token;
+                _receiveTask = Task.Run(() => ReceiveLoop(stream, token));
 
                 // Request all properties from all devices
                 GetProperties();
@@ -141,9 +157,16 @@ namespace NINA.INDI {
                 return IsConnected;
             } catch (OperationCanceledException) {
                 Logger.Warning("INDI bus client attachment was cancelled");
+                _tcpClient?.Dispose();
+                _tcpClient = null;
+                _stream = null;
                 return false;
             } catch (Exception ex) {
                 Logger.Error($"Exception attaching INDI bus client: {ex.Message}");
+                // Dispose the failed client so startup retries don't leak one socket per attempt.
+                _tcpClient?.Dispose();
+                _tcpClient = null;
+                _stream = null;
                 return false;
             }
         }
@@ -158,12 +181,23 @@ namespace NINA.INDI {
                 // Unload drivers - devices will see IsConnected=false and skip waiting
                 // Only try to gracefully unload drivers if server process is still alive
                 if (_process != null && !_process.HasExited) {
-                    foreach (var driver in _loadedDrivers.ToList()) {
-                        UnloadDriver(driver.Key);
+                    List<string> driversToUnload;
+                    lock (_driverLock) {
+                        driversToUnload = _loadedDrivers.ToList();
+                    }
+                    foreach (var driverName in driversToUnload) {
+                        UnloadDriver(driverName);
                     }
                 } else {
                     Logger.Debug("INDI server process not running, skipping graceful driver unload");
-                    _loadedDrivers.Clear();
+                    lock (_driverLock) {
+                        _loadedDrivers.Clear();
+                        // The server is gone, so no delProperty will ever evict these. Leaving
+                        // them would make IsDeviceKnown keep returning true, which defeats the
+                        // driver-was-unloaded bail-out in INDIDevice.DisconnectAsync and costs
+                        // a full DISCONNECT timeout per device on shutdown after a server crash.
+                        _discoveredDevices.Clear();
+                    }
                 }
 
                 // Cancel receive loop and close connection FIRST
@@ -173,6 +207,20 @@ namespace NINA.INDI {
                 _tcpClient?.Close();
                 _stream = null;
                 _tcpClient = null;
+
+                // Wait (bounded) for the receive loop to actually exit: it may still be
+                // draining a large buffered element, and ProcessXmlMessage writes the shared
+                // big-tag scanner state — a Connect issued right after this Disconnect must
+                // not race those writes (the new loop resets that state on entry).
+                var receiveTask = _receiveTask;
+                _receiveTask = null;
+                if (receiveTask != null && !receiveTask.IsCompleted) {
+                    try {
+                        receiveTask.Wait(TimeSpan.FromSeconds(2));
+                    } catch (AggregateException) {
+                        // Faulted or cancelled — either way it has exited, which is all we need.
+                    }
+                }
 
                 // Drop the cached property snapshot — once the receive loop is cancelled no more
                 // delProperty messages will arrive to evict stale devices from the control panel.
@@ -197,21 +245,35 @@ namespace NINA.INDI {
                 return true;
             }
 
-            if (_loadedDrivers.ContainsKey(driverName)) {
+            bool alreadyLoaded;
+            lock (_driverLock) {
+                alreadyLoaded = _loadedDrivers.Contains(driverName);
+            }
+            if (alreadyLoaded) {
                 // Do nothing
                 return true;
             }
 
             try {
                 lock (_driverLock) {
-                    _driverTcs = new TaskCompletionSource<bool>();
+                    _driverTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _pendingLoadDriverExec = driverName;
+                }
 
-                    ct.ThrowIfCancellationRequested();
+                ct.ThrowIfCancellationRequested();
 
-                    using var fs = new FileStream(_fifoPath, FileMode.Open, FileAccess.Write);
-                    using var writer = new StreamWriter(fs);
-                    writer.WriteLine($"start {driverName}");
-                    writer.Flush();
+                if (!WriteFifoCommand($"start {driverName}", TimeSpan.FromSeconds(5))) {
+                    return false;
+                }
+
+                // The start command is irrevocably sent at this point — track the driver as
+                // loaded NOW, not only once it describes itself. A slow driver (camera SDK
+                // enumeration can exceed the wait below) is running even when the DRIVER_INFO
+                // wait times out; leaving it untracked made every rescan write another "start"
+                // to the FIFO (duplicate driver instance risk) and skipped it during graceful
+                // unload. The wait below is purely "did it describe itself in time".
+                lock (_driverLock) {
+                    _loadedDrivers.Add(driverName);
                 }
 
                 // Wait for the driver to be loaded with timeout and cancellation support
@@ -225,13 +287,12 @@ namespace NINA.INDI {
                         Logger.Warning($"INDI loading driver {driverName} was cancelled");
                         return false;
                     }
-                    Logger.Error($"INDI loading driver {driverName} timed out");
+                    Logger.Error($"INDI loading driver {driverName} timed out waiting for DRIVER_INFO (driver stays tracked as loaded — the start command was already sent)");
                     return false;
                 }
 
                 bool success = await _driverTcs.Task;
                 if (success) {
-                    _loadedDrivers[driverName] = [deviceInterface];
                     Logger.Info($"Loaded driver '{driverName}' ({deviceInterface})");
                 }
 
@@ -245,81 +306,78 @@ namespace NINA.INDI {
             }
         }
 
-        private void UnloadDriver(DeviceInterface deviceInterface) {
-            Logger.Info($"Trying to unload interface {deviceInterface}");
-            lock (_driverLock) {
-                // Collect drivers that serve this interface
-                var driversWithInterface = _loadedDrivers
-                    .Where(d => d.Value.Contains(deviceInterface))
-                    .Select(d => d.Key)
-                    .ToList();
-
-                foreach (var driverName in driversWithInterface) {
-                    var interfaces = _loadedDrivers[driverName];
-                    interfaces.Remove(deviceInterface);
-
-                    if (interfaces.Count > 0) {
-                        // Driver still needed for other interfaces — keep it running
-                        Logger.Info($"Driver '{driverName}' still serving [{string.Join(", ", interfaces)}] — not stopping");
-                        continue;
-                    }
-
-                    // No interfaces left — stop the driver process
-                    try {
-                        Logger.Debug($"Removing driver '{driverName}'");
-
-                        using var fs = new FileStream(_fifoPath, FileMode.Open, FileAccess.Write);
-                        using var writer = new StreamWriter(fs);
-                        writer.WriteLine($"stop {driverName}");
-                        writer.Flush();
-
-                        _loadedDrivers.Remove(driverName);
-
-                        // Remove devices associated with this driver
-                        var devicesToRemove = _discoveredDevices.Where(d => d.Value.Driver == driverName).Select(d => d.Key).ToList();
-                        foreach (var deviceKey in devicesToRemove) {
-                            _discoveredDevices.Remove(deviceKey);
-                            Logger.Debug($"Removed device '{deviceKey}' (driver: {driverName})");
-                        }
-                        Logger.Info($"Unloaded driver '{driverName}'");
-                    } catch (Exception ex) {
-                        Logger.Error(ex.Message);
-                    }
-                }
-            }
-        }
-
         private void UnloadDriver(string driverName) {
             // We explicitly allow empty string to NOT load/unload any driver
             if (string.IsNullOrEmpty(driverName) || driverName.Equals("None")) {
                 return;
             }
 
+            bool isLoaded;
             lock (_driverLock) {
-                if (_loadedDrivers.ContainsKey(driverName)) {
-                    try {
-                        Logger.Debug($"Removing driver '{driverName}'");
+                isLoaded = _loadedDrivers.Contains(driverName);
+            }
 
-                        using var fs = new FileStream(_fifoPath, FileMode.Open, FileAccess.Write);
-                        using var writer = new StreamWriter(fs);
-                        writer.WriteLine($"stop {driverName}");
-                        writer.Flush();
+            if (!isLoaded) {
+                Logger.Warning($"Driver '{driverName}' is not loaded");
+                return;
+            }
 
-                        _loadedDrivers.Remove(driverName);
+            Logger.Debug($"Removing driver '{driverName}'");
 
-                        // Remove devices associated with this driver
-                        var devicesToRemove = _discoveredDevices.Where(d => d.Value.Driver == driverName).Select(d => d.Key).ToList();
-                        foreach (var deviceKey in devicesToRemove) {
-                            _discoveredDevices.Remove(deviceKey);
-                            Logger.Debug($"Removed device '{deviceKey}' (driver: {driverName})");
-                        }
-                        Logger.Info($"Unloaded driver '{driverName}'");
-                    } catch (Exception ex) {
-                        Logger.Error(ex.Message);
-                    }
-                } else {
-                    Logger.Warning($"Driver '{driverName}' is not loaded");
+            // Write to the FIFO outside _driverLock — see WriteFifoCommand for why the
+            // blocking open() must be bounded and must never run while a lock is held.
+            if (!WriteFifoCommand($"stop {driverName}", TimeSpan.FromSeconds(5))) {
+                return;
+            }
+
+            lock (_driverLock) {
+                _loadedDrivers.Remove(driverName);
+
+                // Remove devices associated with this driver
+                var devicesToRemove = _discoveredDevices.Where(d => d.Value.Driver == driverName).Select(d => d.Key).ToList();
+                foreach (var deviceKey in devicesToRemove) {
+                    _discoveredDevices.Remove(deviceKey);
+                    Logger.Debug($"Removed device '{deviceKey}' (driver: {driverName})");
                 }
+            }
+            Logger.Info($"Unloaded driver '{driverName}'");
+        }
+
+        /// <summary>
+        /// Writes a single "start &lt;driver&gt;" / "stop &lt;driver&gt;" command line to the
+        /// indiserver FIFO. On Linux, opening a FIFO write-only blocks in the underlying open()
+        /// syscall until a reader is present; if indiserver has hung or died, that open never
+        /// returns. Runs the open+write on a background task and bounds the wait with a timeout
+        /// so a dead server can never freeze the caller (or, more importantly, any lock it holds).
+        /// </summary>
+        private bool WriteFifoCommand(string command, TimeSpan timeout) {
+            try {
+                // When the open() blocks past the timeout the task is abandoned but stays
+                // stuck in the syscall. If a reader appears much later (indiserver restart),
+                // the open would then succeed and write a command the caller gave up on long
+                // ago — e.g. starting a driver the user has since deselected. The abandoned
+                // flag makes the late writer discard the command instead.
+                var abandoned = new bool[1];
+                var writeTask = Task.Run(() => {
+                    using var fs = new FileStream(_fifoPath, FileMode.Open, FileAccess.Write);
+                    if (Volatile.Read(ref abandoned[0])) {
+                        Logger.Warning($"Discarding stale INDI FIFO command '{command}' — the FIFO only became writable after the command had already timed out");
+                        return;
+                    }
+                    using var writer = new StreamWriter(fs);
+                    writer.WriteLine(command);
+                    writer.Flush();
+                });
+
+                if (!writeTask.Wait(timeout)) {
+                    Volatile.Write(ref abandoned[0], true);
+                    Logger.Error($"Timed out writing '{command}' to INDI FIFO ({_fifoPath}) after {timeout.TotalSeconds:F0}s — indiserver may be hung");
+                    return false;
+                }
+                return true;
+            } catch (Exception ex) {
+                Logger.Error($"Failed writing '{command}' to INDI FIFO: {ex.Message}");
+                return false;
             }
         }
 
@@ -345,6 +403,24 @@ namespace NINA.INDI {
                     }
                     Logger.Debug($"Unregistered device: '{device.Id}'");
                 }
+            }
+        }
+
+        /// <summary>
+        /// Returns the live registered device of type <typeparamref name="T"/> (e.g.
+        /// <c>INDITelescope</c>), or null when none is registered. When
+        /// <paramref name="deviceName"/> is supplied, only a device whose name matches
+        /// (case-insensitive) is returned. Gives callers outside NINA.INDI a handle to the
+        /// concrete device adapter so they can use its typed API rather than the raw
+        /// property store.
+        /// </summary>
+        public T GetRegisteredDevice<T>(string deviceName = null) where T : INDIDevice {
+            lock (_lock) {
+                return _registeredDevices.Values
+                    .SelectMany(list => list)
+                    .OfType<T>()
+                    .FirstOrDefault(d => string.IsNullOrWhiteSpace(deviceName)
+                        || string.Equals(d.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase));
             }
         }
 
@@ -410,24 +486,50 @@ namespace NINA.INDI {
         private string _pendingBigTagName = null;
         private int _pendingBigTagSearchFrom = 0;
 
-        private async Task ReceiveLoop(CancellationToken ct) {
+        // The stream is a parameter on purpose: this loop must only ever read the stream it
+        // was started with. Re-reading the _stream field would let a loop from a previous
+        // session pick up (and corrupt) the NEW session's stream after a fast
+        // Disconnect→Connect cycle.
+        private async Task ReceiveLoop(NetworkStream stream, CancellationToken ct) {
+            if (stream == null) return;
+
+            // The scanner state below is per-connection, but lives in instance fields (the
+            // xmlBuffer is local). If the previous connection died mid-large-element, stale
+            // big-tag state would make this session wait for an end tag (and a buffer offset)
+            // belonging to the old stream — buffering everything and delivering nothing.
+            _pendingBigTagName = null;
+            _pendingBigTagSearchFrom = 0;
+
             var buffer = new byte[1024 * 1024]; // 1 MB — fewer iterations for multi-MB BLOBs
             var xmlBuffer = new StringBuilder();
+            // A stateful decoder carries an incomplete multi-byte sequence across reads.
+            // Encoding.UTF8.GetString per-chunk would turn a character split across two TCP
+            // reads (driver labels/messages with °, µ, non-English text) into replacement
+            // characters, which can corrupt XML structure if it lands inside a tag.
+            var decoder = Encoding.UTF8.GetDecoder();
+            // Reused decode buffer — allocating a fresh char[] per read churned up to 2 MB
+            // of garbage per iteration during BLOB transfers (noticeable on a Pi).
+            var charBuffer = new char[Encoding.UTF8.GetMaxCharCount(buffer.Length)];
 
-            while (!ct.IsCancellationRequested && _stream != null) {
+            while (!ct.IsCancellationRequested) {
                 try {
-                    var bytesRead = await _stream.ReadAsync(buffer, ct);
+                    var bytesRead = await stream.ReadAsync(buffer, ct);
                     if (bytesRead == 0) {
                         Logger.Error("Server disconnected");
                         break;
                     }
 
-                    var message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    xmlBuffer.Append(TrimXml(message));
+                    var charCount = decoder.GetChars(buffer, 0, bytesRead, charBuffer, 0);
+                    AppendValidXmlChars(xmlBuffer, charBuffer, charCount);
 
                     // Process complete XML elements
                     ProcessXmlMessage(xmlBuffer);
                 } catch (Exception ex) when (ex is not OperationCanceledException) {
+                    if (ct.IsCancellationRequested) {
+                        // Normal Disconnect: the stream was closed under us, so the read
+                        // faulted (ObjectDisposedException etc.) — not a receive error.
+                        break;
+                    }
                     Logger.Error($"Receive error: {ex.Message}");
                     break;
                 }
@@ -460,7 +562,11 @@ namespace NINA.INDI {
                     // was previously loaded for THIS specific NINA device-type category.
                     // This prevents a SafetyMonitor rescan from evicting a WeatherData driver
                     // even though both share WEATHER_INTERFACE.
-                    if (!_loadedDrivers.ContainsKey(driver)) {
+                    bool driverAlreadyLoaded;
+                    lock (_driverLock) {
+                        driverAlreadyLoaded = _loadedDrivers.Contains(driver);
+                    }
+                    if (!driverAlreadyLoaded) {
                         if (deviceTypeCategory != null
                             && _lastDriverPerCategory.TryGetValue(deviceTypeCategory, out string oldDriver)
                             && oldDriver != driver) {
@@ -473,19 +579,16 @@ namespace NINA.INDI {
 
                         ct.ThrowIfCancellationRequested();
 
-                        await LoadDriver(driver, deviceInterface, TimeSpan.FromSeconds(3), ct);
+                        // Use LoadDriver's default (15s) DRIVER_INFO wait. A 3s override used
+                        // to live here, but camera drivers doing SDK enumeration routinely
+                        // exceed that, which made the first scan come up empty.
+                        await LoadDriver(driver, deviceInterface, ct: ct);
 
                         // Give multi-device drivers (e.g. indi_lx200generic which exposes both
                         // a telescope AND a focuser) a moment to deliver all their DRIVER_INFO
                         // messages.  The _driverTcs fires on the first DRIVER_INFO, so without
                         // this delay the loop below might not yet see the second device.
                         await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
-                    } else {
-                        // Driver already running — record this interface so UnloadDriver(DeviceInterface)
-                        // does not prematurely stop the shared driver process.
-                        lock (_driverLock) {
-                            _loadedDrivers[driver].Add(deviceInterface);
-                        }
                     }
 
                     // Fetch all discovered devices. Hold _driverLock while enumerating —
@@ -568,12 +671,14 @@ namespace NINA.INDI {
                 // Device enumeration
                 if (t.Name == "DRIVER_INFO") {
                     lock (_driverLock) {
+                        string exec;
+
                         // Track this device
                         if (!_discoveredDevices.ContainsKey(t.DeviceName)) {
                             var id = p.DeviceName;
 
                             var name = string.Empty;
-                            var exec = string.Empty;
+                            exec = string.Empty;
                             var version = string.Empty;
                             var deviceInterface = 0;
 
@@ -605,10 +710,17 @@ namespace NINA.INDI {
                                 Version = version,
                                 Driver = exec
                             });
+                        } else {
+                            // Duplicate/re-broadcast DRIVER_INFO for an already-known device.
+                            exec = _discoveredDevices[t.DeviceName].Driver;
                         }
 
-                        // Release tcs (moved outside to handle duplicate DRIVER_INFO messages)
-                        if (_driverTcs != null && !_driverTcs.Task.IsCompleted) {
+                        // Release tcs (moved outside to handle duplicate DRIVER_INFO messages) —
+                        // but only if this DRIVER_INFO actually belongs to the driver LoadDriver
+                        // is waiting on. Without this check, a re-broadcast from an unrelated,
+                        // already-loaded driver (e.g. a second connected device) could complete
+                        // a DIFFERENT in-flight LoadDriver prematurely.
+                        if (_driverTcs != null && !_driverTcs.Task.IsCompleted && exec == _pendingLoadDriverExec) {
                             _driverTcs.SetResult(true);
                             Logger.Debug($"LoadDriver operation completed for {t.DeviceName}");
                         }
@@ -819,6 +931,18 @@ namespace NINA.INDI {
                 }
             }
 
+            // Enforce the vector's rule before mutating anything: multiple ons would make the
+            // radio branch below enable them all, and a OneOfMany request with no on element
+            // would fall into the else branch and could switch the active element off,
+            // producing an illegal all-off vector.
+            var onCount = elements.Values.Count(ToBool);
+            if (sp.Rule == SwitchRule.OneOfMany && onCount != 1) {
+                throw new ArgumentException($"Rule OneOfMany requires exactly one element to be on, got {onCount}");
+            }
+            if (sp.Rule == SwitchRule.AtMostOne && onCount > 1) {
+                throw new ArgumentException($"Rule AtMostOne allows at most one element to be on, got {onCount}");
+            }
+
             bool turningOn = elements.Values.Any(ToBool);
 
             if ((sp.Rule == SwitchRule.OneOfMany || sp.Rule == SwitchRule.AtMostOne) && turningOn) {
@@ -852,17 +976,36 @@ namespace NINA.INDI {
 
         #region XML
 
-        private static string TrimXml(string xmlString) {
-            if (string.IsNullOrEmpty(xmlString)) {
-                return string.Empty;
+        // Appends the decoded chunk, dropping characters that are invalid in XML. The clean
+        // scan-then-bulk-append covers the overwhelmingly common case (INDI traffic is ASCII
+        // XML + base64 BLOB data) without per-character appends. Surrogate pairs must be
+        // handled as pairs: XmlConvert.IsXmlChar is false for each half of a VALID pair, so a
+        // naive per-char filter would mangle supplementary characters in device labels. The
+        // UTF-8 decoder never splits a pair across chunks (a 4-byte sequence decodes
+        // atomically), so pair-wise inspection within one chunk is sufficient.
+        private static void AppendValidXmlChars(StringBuilder target, char[] chars, int count) {
+            var clean = true;
+            for (int i = 0; i < count; i++) {
+                var c = chars[i];
+                if (char.IsSurrogate(c) || !XmlConvert.IsXmlChar(c)) {
+                    clean = false;
+                    break;
+                }
+            }
+            if (clean) {
+                target.Append(chars, 0, count);
+                return;
             }
 
-            // Avoid allocation for the common case where every character is already valid.
-            // INDI traffic (ASCII XML + base64 BLOB data) almost never contains invalid chars.
-            foreach (char c in xmlString)
-                if (!XmlConvert.IsXmlChar(c))
-                    return new string(xmlString.Where(XmlConvert.IsXmlChar).ToArray());
-            return xmlString;
+            for (int i = 0; i < count; i++) {
+                var c = chars[i];
+                if (char.IsHighSurrogate(c) && i + 1 < count && XmlConvert.IsXmlSurrogatePair(chars[i + 1], c)) {
+                    target.Append(c).Append(chars[i + 1]);
+                    i++;
+                } else if (!char.IsSurrogate(c) && XmlConvert.IsXmlChar(c)) {
+                    target.Append(c);
+                }
+            }
         }
 
         private void ProcessXmlMessage(StringBuilder message) {
@@ -894,12 +1037,18 @@ namespace NINA.INDI {
                 _pendingBigTagName = null;
                 _pendingBigTagSearchFrom = 0;
 
-                try { ProcessElement(XElement.Parse(xmlText)); } catch (System.Xml.XmlException ex) {
-                    if (!ex.Message.Contains("Unexpected end of file") &&
-                        !ex.Message.Contains("Unexpected end tag") &&
-                        !ex.Message.Contains("not closed"))
-                        Logger.Error($"XML parse error in large element: {ex.Message}");
-                } catch (Exception ex) {
+                // Give the BLOB-sized capacity back: chars are 2 bytes, so a 32 MB base64
+                // payload would otherwise keep ~85 MB pinned in this builder for the rest
+                // of the session — significant on Raspberry Pi class hardware.
+                if (message.Capacity > 4 * 1024 * 1024 && message.Length < 64 * 1024) {
+                    message.Capacity = Math.Max(message.Length, 64 * 1024);
+                }
+
+                // The scanner only hands over elements whose end tag was found, so any parse
+                // failure here is genuine corruption worth logging. (An earlier version
+                // filtered by exception message text, which is locale-dependent and silently
+                // swallowed real errors on non-English .NET locales.)
+                try { ProcessElement(XElement.Parse(xmlText)); } catch (Exception ex) {
                     Logger.Error($"Error processing large element: {ex.Message}");
                 }
 
@@ -932,15 +1081,40 @@ namespace NINA.INDI {
 
                 var tagName = xmlString.Substring(startTag + 1, tagNameLength);
 
-                // Self-closing tag check (most common for INDI property updates)
-                var scEnd = xmlString.IndexOf("/>", startTag, StringComparison.Ordinal);
-                if (scEnd != -1) {
-                    var nextOpen = xmlString.IndexOf('<', startTag + 1);
-                    if (nextOpen == -1 || scEnd < nextOpen) {
-                        elementsToProcess.Add(xmlString.Substring(startTag, scEnd + 2 - startTag));
-                        lastProcessed = scEnd + 2;
+                // Find the true end of this opening/self-closing tag, tracking quoted attribute
+                // values so a literal "/>" inside one (e.g. a driver <message message="…/> …"/>)
+                // isn't mistaken for the tag's own terminator and doesn't truncate the element.
+                var tagCloseEnd = -1;
+                var isSelfClosing = false;
+                char? quoteChar = null;
+                for (int i = tagNameEnd; i < xmlString.Length; i++) {
+                    var c = xmlString[i];
+                    if (quoteChar != null) {
+                        if (c == quoteChar) quoteChar = null;
                         continue;
                     }
+                    if (c == '"' || c == '\'') { quoteChar = c; continue; }
+                    if (c == '>') {
+                        tagCloseEnd = i;
+                        isSelfClosing = i > 0 && xmlString[i - 1] == '/';
+                        break;
+                    }
+                }
+
+                if (isSelfClosing) {
+                    elementsToProcess.Add(xmlString.Substring(startTag, tagCloseEnd + 1 - startTag));
+                    lastProcessed = tagCloseEnd + 1;
+                    continue;
+                }
+
+                if (tagCloseEnd == -1) {
+                    // The opening tag itself is cut off at the buffer end (a TCP read boundary
+                    // landed inside the tag). Do NOT enter big-tag mode here: the element may
+                    // turn out to be self-closing (<message/>, <delProperty/>), whose closing
+                    // tag would never arrive and would stall the receive stream forever. Leave
+                    // the fragment in the buffer and re-scan once more data has arrived.
+                    lastProcessed = startTag;
+                    break;
                 }
 
                 var endTagStr = "</" + tagName + ">";
@@ -967,18 +1141,18 @@ namespace NINA.INDI {
             }
 
             if (elementsToProcess.Count > 0) {
-                Parallel.ForEach(elementsToProcess, xmlText => {
+                // Must stay sequential: INDI is a stateful, ordered stream (e.g. a defXxxVector
+                // must be applied before the setXxxVector that follows it in the same batch).
+                // The scanner only emits elements whose closing tag was found, so parse errors
+                // here are genuine corruption and always logged (no filtering on the exception
+                // message — that text is locale-dependent).
+                foreach (var xmlText in elementsToProcess) {
                     try {
                         ProcessElement(XElement.Parse(xmlText));
-                    } catch (System.Xml.XmlException ex) {
-                        if (!ex.Message.Contains("Unexpected end of file") &&
-                            !ex.Message.Contains("Unexpected end tag") &&
-                            !ex.Message.Contains("not closed"))
-                            Logger.Error($"XML parse error: {ex.Message}");
                     } catch (Exception ex) {
                         Logger.Error($"Error processing element: {ex.Message}");
                     }
-                });
+                }
             }
         }
 
@@ -1195,18 +1369,32 @@ namespace NINA.INDI {
 
                     // Store the process reference for cleanup on app exit
                     _process = process;
+
+                    // indiserver -v forwards every driver's stderr too, so this can be very
+                    // chatty. Drain both streams regardless: if nobody reads them, the ~64 KB
+                    // pipe buffer fills and indiserver blocks on write(), hanging the whole stack.
+                    process.OutputDataReceived += (s, e) => {
+                        if (!string.IsNullOrEmpty(e.Data)) Logger.Debug($"[indiserver] {e.Data}");
+                    };
+                    process.ErrorDataReceived += (s, e) => {
+                        if (!string.IsNullOrEmpty(e.Data)) Logger.Debug($"[indiserver] {e.Data}");
+                    };
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
                 } else {
                     Logger.Error("Failed to start INDI server");
                     _serverReadyTcs.SetResult(false);
                     return;
                 }
 
-                // Wait for server to be ready with retries
+                // Wait for server to be ready with retries. Connect THIS instance — going
+                // through INDIClient.Instance would lazily construct the 7624 singleton
+                // (spawning a second server start) if this instance was created directly.
                 bool connected = false;
                 for (int attempt = 1; attempt <= 10; attempt++) {
                     await Task.Delay(100 * attempt); // Exponential backoff: 100ms, 200ms, 300ms...
 
-                    if (await INDIClient.Instance.Connect()) {
+                    if (await Connect()) {
                         connected = true;
                         Logger.Info($"Connected to INDI server on attempt {attempt}");
                         break;

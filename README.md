@@ -65,6 +65,14 @@ PI.N.S. supports a wide range of astronomy equipment. Here is a list of tested d
 
 ---
 
+## 💬 Community & Support
+
+Questions or need help? Join the [Touch-N-Stars Discord](https://discord.com/invite/4gZJEMWFcN) — the frontend used by PI.N.S. — for support and discussion.
+
+[![](https://dcbadge.limes.pink/api/server/4gZJEMWFcN)](https://discord.com/invite/4gZJEMWFcN)
+
+---
+
 ## 🤝 Contributing
 
 Contributions, bug reports, and feature requests are welcome! Please open an issue or pull request on GitHub.

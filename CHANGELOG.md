@@ -4,6 +4,79 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.46 - 2026-07-03
+### Fixed
+- INDI: Drain indiserver's stdout/stderr so a chatty driver can no longer fill the pipe buffer and hang the server
+- INDI: Process incoming XML elements sequentially instead of in parallel, preserving protocol ordering (a def/set pair or a Busy/Ok pair could previously be applied out of order)
+- INDI: Fix pending async-operation matching so a property update no longer resolves an unrelated pending operation on a same-prefixed property (e.g. CCD_EXPOSURE vs. CCD_EXPOSURE_ABORT, CONNECTION vs. CONNECTION_MODE)
+- INDI: Fix AtMostOne switch rule never being recognized due to a parser typo
+- INDI: Fix CanMoveAxis always reporting true regardless of whether the driver exposes motion properties
+- INDI: FIFO writes for driver load/unload no longer block indefinitely while holding the driver lock if indiserver is hung
+- INDI: Async operation completions now resume off the receive thread instead of inline, avoiding added latency and deadlock risk from continuations running inside internal locks
+- INDI: UTF-8 characters split across TCP reads no longer get corrupted into replacement characters
+- INDI Dome: Park now waits for the park motion to actually finish instead of returning as soon as the PARK switch value flips on
+- INDI Camera: Debounce StartExposure after an abort (and warn) to reduce the chance a stale BLOB from the aborted exposure is delivered as the next frame
+- INDI: Tolerant number parsing for sexagesimal/empty values instead of throwing and dropping the whole property vector
+- INDI: Focuser/rotator/filter-wheel moves now time out instead of polling forever if the driver never reports completion
+- INDI Flat Panel: Fixed a crash reading Brightness before FLAT_LIGHT_INTENSITY has arrived
+- INDI: Guarded remaining unsynchronized access to the loaded-driver table
+- INDI: Fixed a rare XML parsing edge case where a driver message containing a literal "/>" could truncate the element
+- INDI: Fixed a rare receive-stream stall when a TCP read boundary landed inside a self-closing element (e.g. <message/>): the parser would wait forever for a closing tag that never arrives
+- INDI: A DRIVER_INFO re-broadcast from an unrelated driver can no longer complete a different in-flight driver load
+- INDI: Misc robustness fixes (pulse-guiding state tracking, UTC date parsing culture, duplicate constants, non-reentrant AxisRates enumerator, LX200 socket cleanup on dispose, clearer NotImplementedException messages)
+- INDI: BLOB base64 decoding no longer copies the multi-megabyte payload twice per frame (noticeable on Raspberry Pi class hardware)
+- INDI Flat Panel/Dome: cover, shutter, azimuth and park waits now time out instead of polling forever if the driver never reports completion (matching the earlier focuser/rotator/filter-wheel fix)
+- INDI: Setting a switch element that does not exist on the vector no longer sends an illegal all-off OneOfMany update (e.g. a profile baud rate matching no DEVICE_BAUD_RATE element)
+- INDI Switch Hub: value-update notifications are now dispatched off the receive thread instead of running equipment-layer handlers inside the client's internal lock
+- INDI: A re-broadcast stale CONNECTION Alert no longer marks a fresh connection attempt as failed
+- INDI: Removed SupportedActions declarations that hid the base implementation with a null value; removed dead COM-era ErrorCodes utility
+- INDI: A device whose driver acknowledged CONNECT but then failed to connect (e.g. a TCP mount whose socket connect times out) is no longer reported as connected — the CONNECTION switch is re-checked after the ack
+- INDI Telescope: Setting a tracking mode the mount does not support (e.g. King without TRACK_CUSTOM) no longer sends an illegal all-off TELESCOPE_TRACK_MODE update; switch-rule validation now checks the vector's actual elements everywhere
+- INDI Telescope: Park/unpark/home waits now time out instead of polling forever if the mount never reports completion, and park/unpark wait for the driver's acknowledgement before polling (matching the earlier dome/focuser fixes)
+- INDI: After an indiserver crash, disconnecting no longer waits a full DISCONNECT timeout per device (stale discovered devices are cleared)
+- INDI Dome: Set park position now targets the correct DOME_PARK_OPTION property (previously a silent no-op)
+- INDI: A FIFO driver command that timed out can no longer be delivered belatedly after indiserver becomes reachable again
+- INDI: XML parse errors are now always logged (the previous filter matched locale-dependent exception text); misc cleanup (LX200 socket disposal race, leaked sockets on connect retries, spurious receive-error log on disconnect, CanSetTemperature now keyed on a writable CCD_TEMPERATURE, removed CommandAction redeclarations that hid base virtuals)
+- INDI: A connection that died mid-BLOB no longer poisons the XML scanner state of the next connection (which would buffer everything and deliver nothing)
+- INDI: Drivers slow to describe themselves (e.g. camera SDK enumeration) are no longer treated as failed loads — the enumeration wait was raised from 3s to 15s and a started driver is tracked as loaded immediately, so rescans no longer write duplicate "start" commands to the FIFO
+- INDI Dome: Open/close shutter can no longer report completion while the shutter is still moving (ack-ordering race and late-Busy drivers are both handled; waits now also watch the property's own Busy state)
+- INDI Telescope: Find home no longer returns immediately (claiming the mount is home) when the mount takes more than a second to start moving, and no longer claims home after giving up or being cancelled
+- INDI Telescope: Turning tracking on/off on a mount without TELESCOPE_TRACK_STATE now reports "not implemented" instead of throwing an internal error
+- INDI Camera: A failed exposure start now wakes the waiting capture immediately instead of parking it until the camera timeout; deferred profile switches are applied off the receive thread
+- INDI Dome: The set-park-position capability is now keyed on the property it actually writes (DOME_PARK_OPTION)
+- INDI: zlib-compressed BLOBs (".fits.z", sent when a device's CCD_COMPRESSION is enabled) are now inflated on receipt instead of being passed through as compressed garbage
+- INDI: Reduced receive-path memory churn and footprint on Raspberry Pi class hardware (reused decode buffer, BLOB-sized string builder capacity is released after the frame); supplementary Unicode characters in device labels are no longer stripped
+- INDI: A fast disconnect/reconnect cycle can no longer end up with the old receive loop reading the new connection's stream or clobbering the XML scanner state (the loop is now bound to its own stream and disconnect waits for it to exit)
+- INDI Telescope: Slew completion waits (equatorial and AltAz) now give up with a warning after 5 minutes instead of polling forever, and the AltAz wait no longer returns early on drivers that take more than a second to start reporting motion (also unblocks AltAz mounts that hold HORIZONTAL_COORD busy while tracking)
+- INDI: IINDIDevice now extends IDisposable so device adapters participate in standard disposal
+- INDI Telescope: An AltAz slew is no longer falsely reported as rejected when the mount's coordinate property still carried an Alert state from an earlier failed operation, and a slew to the current position completes immediately instead of waiting out a fallback timeout
+- INDI: Async property writes targeting an element the driver does not expose (e.g. a profile connection mode or baud rate this device lacks) now fail immediately with a clear warning instead of burning the full acknowledgement timeout (or being resolved as a false success by an unrelated re-broadcast)
+- INDI Telescope: Abort slew now actually stops the mount — the command targeted a non-existent element name (ABORT_MOTION instead of the standard ABORT) and was silently skipped
+- INDI Telescope: Find home now detects homing motion via the mount's actual position in addition to the reported slew state (OnStep firmwares home without ever reporting a slew), waits for the position to settle before declaring home, and reports an error when the driver refuses the home command (e.g. while parked) instead of pretending the mount is home
+- INDI Telescope: The Slewing state itself now also detects motion from the mount's reported coordinates, so movement that no property state reflects (e.g. OnStep homing) shows up as slewing in the UI and sequencer; syncs are exempted so a platesolve sync's coordinate jump does not read as motion
+- INDI Telescope: Park is no longer reported complete seconds too early on drivers that publish TELESCOPE_PARK as Ok while the mount is still slewing to its park position (observed on lx200_OnStep): pins now waits for the park motion to start and stop, and a driver-reported park failure surfaces as an error instead of "parked"
+- INDI Telescope: Unpark now waits for the mount to actually report unparked instead of trusting the command acknowledgement — OnStep can reject the unpark reply on a serial hiccup while the controller unparks anyway, which previously made pins return early and fire the follow-up tracking command against a still-parked driver ("Telescope is Parked, Unpark before tracking"); a mount that genuinely stays parked now surfaces an error after 60s
+- INDI: AtPark/IsParked (telescope, dome, flat panel) no longer read true the moment a park is commanded — the PARK switch shows the target while the vector state shows progress, so "at park" now additionally requires the park operation to no longer be in progress
+
+## 1.1.45 - 2026-07-02
+### Changed
+- Updated NINA to 3.3.0.1048-nightly
+
+## 1.1.44 - 2026-07-01
+### Fixed
+- INDI: Explicitly enable tracking after slew on AltAz mounts
+- INDI: Fix first slew after connect being rejected as "below the horizon limit" (e.g. TPPA right after connecting) by awaiting the tracking-enable transition before the goto
+- Fixes Cfitsio with byte array
+
+## 1.1.43 - 2026-06-29
+### Fixed
+- Fixed Auto Restore Calibration option in phd2 guiding
+- Fixed issue where max slew rate required mount reconnect
+
+## 1.1.42 - 2026-06-24
+### Added
+- SequenceItem to slew to phd2 calibration position
+
 ## 1.1.41 - 2026-06-22
 ### Fixed
 - INDI: Fix for direct USB connection

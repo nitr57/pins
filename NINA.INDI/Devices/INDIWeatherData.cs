@@ -75,26 +75,7 @@ namespace NINA.INDI.Devices {
         public double WindGust => GetNumberPropertyValue("WEATHER_PARAMETERS", "WEATHER_WIND_GUST") ?? double.NaN;
         public double WindSpeed => GetNumberPropertyValue("WEATHER_PARAMETERS", "WEATHER_WIND_SPEED") ?? double.NaN;
 
-        #region Unsupported
-
-        public IList<string> SupportedActions { get; }
-
-        public string Action(string actionName, string actionParameters) {
-            throw new NotImplementedException();
-        }
-
-        public void CommandBlind(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public bool CommandBool(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        public string CommandString(string command, bool raw = false) {
-            throw new NotImplementedException();
-        }
-
-        #endregion
+        // Action/Command* are inherited from INDIDevice — the redeclarations that used to
+        // live here hid the base virtuals (CS0114) without changing behavior.
     }
 }

@@ -16,6 +16,7 @@ using NINA.INDI.Enums;
 using NINA.INDI.Interfaces;
 using NINA.INDI.Protocol;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace NINA.INDI.Devices
 {
@@ -143,8 +144,7 @@ namespace NINA.INDI.Devices
                 }
             }
 
-            // Notify the equipment layer that values for this property changed.
-            ValuesUpdated?.Invoke(p.Name);
+            NotifyValuesUpdated(p.Name);
         }
 
         public override void OnNumberPropertyUpdated(INDINumberProperty p)
@@ -177,8 +177,24 @@ namespace NINA.INDI.Devices
                 }
             }
 
-            // Notify the equipment layer that values for this property changed.
-            ValuesUpdated?.Invoke(p.Name);
+            NotifyValuesUpdated(p.Name);
+        }
+
+        /// <summary>
+        /// Notifies the equipment layer that values for a property changed. Dispatched to
+        /// the thread pool because the On*PropertyUpdated callbacks run on the receive
+        /// thread while INDIClient's _lock is held — invoking handlers inline would execute
+        /// arbitrary equipment-layer code inside that lock scope (deadlock-prone) and stall
+        /// the receive loop. Handlers only re-poll current state, so ordering between
+        /// successive notifications does not matter.
+        /// </summary>
+        private void NotifyValuesUpdated(string propertyName)
+        {
+            var handler = ValuesUpdated;
+            if (handler != null)
+            {
+                Task.Run(() => handler(propertyName));
+            }
         }
 
         public override void OnTextPropertyUpdated(INDITextProperty p)
@@ -191,19 +207,7 @@ namespace NINA.INDI.Devices
             base.OnBlobPropertyUpdated(p);
         }
 
-        // -------------------------------------------------------------------
-        // Unsupported IINDIDevice actions
-        // -------------------------------------------------------------------
-
-        #region Unsupported
-
-        public System.Collections.Generic.IList<string> SupportedActions { get; } = new List<string>();
-
-        public string Action(string actionName, string actionParameters) => throw new System.NotImplementedException();
-        public void CommandBlind(string command, bool raw = false) => throw new System.NotImplementedException();
-        public bool CommandBool(string command, bool raw = false) => throw new System.NotImplementedException();
-        public string CommandString(string command, bool raw = false) => throw new System.NotImplementedException();
-
-        #endregion
+        // Action/Command* are inherited from INDIDevice — the redeclarations that used to
+        // live here hid the base virtuals (CS0114) without changing behavior.
     }
 }
