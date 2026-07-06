@@ -55,7 +55,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private const int BulbFileEventTimeoutMs = 20000;
         private static readonly string[] ShutterSpeedProperties = { "shutterspeed", "shutterspeed2" };
         private static readonly string[] IsoProperties = { "iso", "iso2", "isospeed" };
-        private string bulbShutterSpeedChoice;
+        private static readonly string[] RawFormatTokens = {
+            "RAW", "NEF", "NRW", "CR3", "CR2", "ARW", "RAF", "ORF", "RW2", "PEF", "SRF", "SR2"
+        };
+        private (string Property, string Choice)? bulbShutterSpeed;
         private string shutterSpeedProperty = "shutterspeed";
         private string isoProperty = "iso";
         private BulbExposureControl activeBulbExposureControl = BulbExposureControl.None;
@@ -405,7 +408,8 @@ namespace NINA.Equipment.Equipment.MyCamera {
             GetBatteryLevel();
             ConfigureCaptureTarget();
             if (!SetRawFormat()) {
-                Logger.Warning("libgphoto2: Could not switch camera to a RAW image format; continuing with the camera's current image format");
+                Logger.Error("libgphoto2: Could not switch camera to a RAW image format");
+                return false;
             }
 
             _cameraResolution = GetCameraResolution();
@@ -437,10 +441,15 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     }
                     Logger.Warning($"libgphoto2: Could not set {property} to '{rawFormat}': {result}");
                 }
+
+                // If choices were available, trust them. Blind token writes here only
+                // create slow failing round-trips and noisy logs on cameras that do not
+                // offer RAW through this widget.
+                return false;
             }
 
             // Fallback for cameras that accept a RAW token but do not report choices.
-            foreach (var fmt in new[] { "RAW", "NEF", "NRW", "CR3", "CR2", "ARW", "RAF", "ORF", "RW2", "PEF", "SRF", "SR2" }) {
+            foreach (var fmt in RawFormatTokens) {
                 if (SetProperty(property, fmt) == GP_ERROR_CODE.GP_OK) {
                     Logger.Info($"libgphoto2: {property} set to RAW format '{fmt}'");
                     return true;
@@ -451,6 +460,14 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         private static string SelectRawFormat(IList<string> formats) {
+            foreach (var token in RawFormatTokens) {
+                string exactMatch = formats.FirstOrDefault(f =>
+                    string.Equals(f?.Trim(), token, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(exactMatch)) {
+                    return exactMatch;
+                }
+            }
+
             string rawOnly = formats.FirstOrDefault(f => IsRawFormatChoice(f) && !IsJpegFormatChoice(f));
             if (!string.IsNullOrEmpty(rawOnly)) {
                 return rawOnly;
@@ -530,7 +547,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         private void GetShutterSpeeds() {
             ShutterSpeeds.Clear();
-            bulbShutterSpeedChoice = null;
+            bulbShutterSpeed = null;
             shutterSpeedProperty = ShutterSpeedProperties[0];
 
             foreach (var property in ShutterSpeedProperties) {
@@ -541,8 +558,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 bool parsedAnyChoice = false;
                 foreach (var prop in list) {
                     if (IsBulbShutterSpeedChoice(prop)) {
-                        bulbShutterSpeedChoice ??= prop;
-                        shutterSpeedProperty = property;
+                        bulbShutterSpeed ??= (property, prop);
                         continue;
                     }
 
@@ -616,8 +632,6 @@ namespace NINA.Equipment.Equipment.MyCamera {
             // Use plain status checks so cameras without a shutter-speed widget do not spam error logs.
             foreach (var property in ShutterSpeedProperties) {
                 if (GetProperty(property, out var shutterspeed) == GP_ERROR_CODE.GP_OK && IsBulbShutterSpeedChoice(shutterspeed)) {
-                    bulbShutterSpeedChoice ??= shutterspeed;
-                    shutterSpeedProperty = property;
                     return true;
                 }
             }
@@ -1002,13 +1016,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     throw new Exception("Camera requires manual BULB mode for exposures > 30s");
                 }
 
-                // Nikon/libgphoto2 cameras commonly expose Bulb as a shutter-speed choice,
-                // so select that before using the bulb toggle exposure path.
-                if (IsKnownNikonCamera() && HasProperty("bulb")) {
-                    // Some Nikon bodies report Manual even when the body is in Bulb-capable
-                    // state. Prefer the explicit bulb property over rejecting the exposure.
-                    TryPrepareBulbShutterSpeed();
-                } else if (!TryPrepareBulbShutterSpeed()) {
+                // Some libgphoto2 cameras expose Bulb as a shutter-speed choice, so
+                // select it before using the bulb toggle exposure path.
+                if (!TryPrepareBulbShutterSpeed()) {
                     Notification.ShowError("For exposures > 30s, please switch the camera to BULB mode manually.");
                     Logger.Error($"Exposure time {exposureTime}s > 30s requested, but no usable bulb shutter speed could be selected");
                     throw new Exception("Camera requires BULB mode for exposures > 30s");
@@ -1034,22 +1044,23 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 return true;
             }
 
-            if (string.IsNullOrEmpty(bulbShutterSpeedChoice)) {
+            if (bulbShutterSpeed == null) {
                 GetShutterSpeeds();
             }
 
-            if (string.IsNullOrEmpty(bulbShutterSpeedChoice)) {
+            if (bulbShutterSpeed == null) {
                 Logger.Warning("libgphoto2: Camera did not report a bulb shutter-speed choice");
                 return false;
             }
 
-            var result = SetProperty(shutterSpeedProperty, bulbShutterSpeedChoice);
+            var bulb = bulbShutterSpeed.Value;
+            var result = SetProperty(bulb.Property, bulb.Choice);
             if (result == GP_ERROR_CODE.GP_OK) {
-                Logger.Info($"libgphoto2: {shutterSpeedProperty} set to bulb choice '{bulbShutterSpeedChoice}'");
+                Logger.Info($"libgphoto2: {bulb.Property} set to bulb choice '{bulb.Choice}'");
                 return true;
             }
 
-            Logger.Warning($"libgphoto2: Could not set {shutterSpeedProperty} to bulb choice '{bulbShutterSpeedChoice}': {result}");
+            Logger.Warning($"libgphoto2: Could not set {bulb.Property} to bulb choice '{bulb.Choice}': {result}");
             return false;
         }
 
@@ -1329,7 +1340,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
             return activeBulbExposureControl switch {
                 BulbExposureControl.BulbToggle => TryReleaseBulbToggle(),
                 BulbExposureControl.EosRemoteRelease => TryReleaseEosRemoteRelease(),
-                _ => TryReleaseBulbToggle() || TryReleaseEosRemoteRelease()
+                _ => TryReleaseEosRemoteRelease() || TryReleaseBulbToggle()
             };
         }
 
