@@ -1395,6 +1395,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 return "pef";
             }
 
+            Logger.Warning("libgphoto2: No known vendor match; falling back to a generic 'raw' extension. The captured file type may not be recognized by the RAW pipeline.");
             return "raw";
         }
 
