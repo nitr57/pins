@@ -171,7 +171,11 @@ namespace NINA.Equipment.Equipment.MyFocuser {
 
                 var relativeOffsetRemaining = position - this.Position;
                 while (relativeOffsetRemaining != 0 && !ct.IsCancellationRequested) {
-                    var moveAmount = Math.Min(MaxIncrement, Math.Abs(relativeOffsetRemaining));
+                    // MaxIncrement <= 0 means "no known per-move cap" (e.g. no FOCUS_MAX on the
+                    // INDI driver), not "cap every move to zero steps" - move the full remaining
+                    // offset in one shot in that case instead of spinning forever at 0.
+                    var stepCap = MaxIncrement > 0 ? MaxIncrement : Math.Abs(relativeOffsetRemaining);
+                    var moveAmount = Math.Min(stepCap, Math.Abs(relativeOffsetRemaining));
                     if (relativeOffsetRemaining < 0) {
                         moveAmount *= -1;
                     }

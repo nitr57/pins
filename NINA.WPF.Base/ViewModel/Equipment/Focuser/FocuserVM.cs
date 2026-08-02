@@ -212,7 +212,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 position = 0;
             }
 
-            if (position > Focuser.MaxStep) {
+            // MaxStep == -1 means "unknown/no limit" (e.g. focusers without a FOCUS_MAX INDI
+            // property), not a literal ceiling of -1 - only clamp when a real max is known.
+            if (Focuser.MaxStep > 0 && position > Focuser.MaxStep) {
                 Logger.Warning($"Requested to move to position {position}, which higher than max position. Moving to {Focuser.MaxStep} instead.");
                 position = Focuser.MaxStep;
             }

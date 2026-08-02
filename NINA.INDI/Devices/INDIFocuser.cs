@@ -45,6 +45,15 @@ namespace NINA.INDI.Devices {
                     // Check if moving based on state
                     IsMoving = p.State == PropertyState.Busy;
                     break;
+                case "REL_FOCUS_POSITION":
+                    // Relative-only focusers (e.g. HitecAstro DC) never send ABS_FOCUS_POSITION,
+                    // so Absolute stays false and motion must be tracked from this property's
+                    // state instead. Guarded on !Absolute so it doesn't override the absolute
+                    // path for drivers that expose both properties.
+                    if (!Absolute) {
+                        IsMoving = p.State == PropertyState.Busy;
+                    }
+                    break;
             }
         }
 
@@ -82,7 +91,11 @@ namespace NINA.INDI.Devices {
         }
 
         public int MaxStep {
-            get => (int)(GetNumberPropertyValue("FOCUS_MAX", "FOCUS_MAX_VALUE") ?? 0.0);
+            // -1 (not 0) signals "no known limit" when FOCUS_MAX is absent, matching the
+            // sentinel that CanSetMaxStep-gated callers already expect (e.g. IndiFocuser.MaxStep).
+            // A 0 default here previously made relative-move step chunking collapse to 0 and
+            // spin forever on focusers without FOCUS_MAX (e.g. HitecAstro DC).
+            get => (int)(GetNumberPropertyValue("FOCUS_MAX", "FOCUS_MAX_VALUE") ?? -1.0);
             set {
                 if (!Connected) {
                     Logger.Warning("Cannot set MaxStep: not connected");
@@ -142,9 +155,32 @@ namespace NINA.INDI.Devices {
                 Logger.Warning("Cannot move focuser: not connected");
                 return;
             }
+
             IsMoving = true;
-            SetNumberValue("ABS_FOCUS_POSITION", "FOCUS_ABSOLUTE_POSITION", position);
-            Logger.Info($"Commanded focuser to move to position {position}");
+            try {
+                if (Absolute) {
+                    SetNumberValue("ABS_FOCUS_POSITION", "FOCUS_ABSOLUTE_POSITION", position);
+                    Logger.Info($"Commanded focuser to move to position {position}");
+                } else {
+                    // Relative-only focuser (no ABS_FOCUS_POSITION, e.g. HitecAstro DC).
+                    // IndiFocuser.MoveInternalRelative already computes "position" as a signed
+                    // step delta in this case, not an absolute target - see its Math.Min/sign
+                    // handling. Translate that into this driver's two relative-move properties:
+                    // a direction switch plus an unsigned step count.
+                    if (position == 0) {
+                        IsMoving = false;
+                        return;
+                    }
+                    SetSwitchValue("FOCUS_MOTION", position > 0 ? "FOCUS_OUTWARD" : "FOCUS_INWARD", true);
+                    SetNumberValue("REL_FOCUS_POSITION", "FOCUS_RELATIVE_POSITION", Math.Abs(position));
+                    Logger.Info($"Commanded focuser to move {Math.Abs(position)} steps {(position > 0 ? "outward" : "inward")}");
+                }
+            } catch {
+                // Don't strand IsMoving = true forever if the property write itself fails -
+                // MoveAsync's poll loop has no other way to learn the move never started.
+                IsMoving = false;
+                throw;
+            }
         }
 
         // Ceiling for MoveAsync's poll loop. IsMoving is only ever cleared by a driver update
