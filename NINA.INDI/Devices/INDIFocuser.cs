@@ -81,7 +81,21 @@ namespace NINA.INDI.Devices {
 
         public bool Absolute { get; private set; }
         public bool IsMoving { get; private set; }
-        public int MaxIncrement => MaxStep;
+
+        public int MaxIncrement {
+            get {
+                if (MaxStep > 0) {
+                    return MaxStep;
+                }
+                // No FOCUS_MAX (MaxStep is the -1 "unknown" sentinel) doesn't mean a
+                // relative move can safely be any size - REL_FOCUS_POSITION carries its
+                // own driver-reported bound (e.g. a HitecAstro DC's own min/max step
+                // range), and IUUpdateNumber rejects writes outside it. Use that instead
+                // of leaving relative-move chunking uncapped.
+                var relMax = GetNumberPropertyMax("REL_FOCUS_POSITION", "FOCUS_RELATIVE_POSITION");
+                return relMax > 0 ? (int)relMax.Value : -1;
+            }
+        }
 
         public bool CanSetMaxStep {
             get {

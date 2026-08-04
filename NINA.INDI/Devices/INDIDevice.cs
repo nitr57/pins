@@ -187,6 +187,12 @@ namespace NINA.INDI.Devices
             return prop?.Numbers.FirstOrDefault(n => n.Name == elementName)?.Value;
         }
 
+        public double? GetNumberPropertyMax(string propertyName, string elementName)
+        {
+            var prop = GetNumberProperty(propertyName);
+            return prop?.Numbers.FirstOrDefault(n => n.Name == elementName)?.Max;
+        }
+
         public bool? GetSwitchPropertyValue(string propertyName, string elementName)
         {
             var prop = GetSwitchProperty(propertyName);

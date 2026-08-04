@@ -213,7 +213,20 @@ namespace NINA.Equipment.Equipment.MyFocuser {
 
         private void Initialize() {
             var maxStep = device.MaxStep;
-            internalPosition = maxStep > 0 ? maxStep / 2 : 0;
+            if (maxStep > 0) {
+                internalPosition = maxStep / 2;
+            } else {
+                // MaxStep unknown (no FOCUS_MAX, e.g. a HitecAstro DC) - starting at 0
+                // pins every inward move at 0 too, since MoveFocuserInternal clamps
+                // negative targets back to 0: a fresh connect could move outward but
+                // never inward. Seed a synthetic midpoint instead, using half of
+                // MaxIncrement (which for INDI focusers derives from REL_FOCUS_POSITION's
+                // own reported max when FOCUS_MAX is absent - see INDIFocuser.MaxIncrement)
+                // so there's room to move both directions; fall back to a fixed synthetic
+                // midpoint if even that isn't available.
+                var maxIncrement = device.MaxIncrement;
+                internalPosition = maxIncrement > 0 ? maxIncrement / 2 : 5000;
+            }
             _isAbsolute = device.Absolute;
             if (!_isAbsolute) {
                 Logger.Info("The focuser is a relative focuser. Simulating absolute focuser behavior");
