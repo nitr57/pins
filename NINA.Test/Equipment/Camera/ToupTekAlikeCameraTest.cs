@@ -265,6 +265,76 @@ namespace NINA.Test.Equipment.Camera {
             h.Calls.Should().Equal("Trigger(0)");
         }
 
+
+        [Test]
+        public async Task StartExposure_AfterStopLiveView_FlushesLeftoverVideoFrame() {
+            // The frame that completes the pending live view source after StopLiveView is never pulled;
+            // without a flush it would be returned as the first exposure's image.
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartLiveView(CreateBiasSequence());
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            (await h.Camera.DownloadLiveView(default)).Should().NotBeNull(); // installs a fresh, uncompleted TCS
+
+            h.Camera.StopLiveView();
+            // The free-running frame the StopLiveView continuation is waiting on. Nobody pulls it.
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            await WaitUntilAsync(() => !h.Camera.LiveViewEnabled);
+            h.Calls.Should().Contain("OPTION_TRIGGER=1");
+            h.Calls.Clear();
+
+            h.Camera.StartExposure(CreateBiasSequence());
+
+            h.Calls.Should().ContainInOrder("OPTION_FLUSH=3", "Trigger(1)");
+        }
+
+        [Test]
+        public async Task StartExposure_StrayFrameBeforeTrigger_DoesNotCompleteExposure() {
+            var h = await ConnectExposableCameraAsync();
+            // Stray frame lands between the new TCS and the trigger (put_ExpoTime is one of the SDK
+            // round-trips in that window).
+            h.Sdk.Setup(x => x.put_ExpoTime(It.IsAny<uint>()))
+                .Callback<uint>(_ => h.Callback(ToupTekAlikeEvent.EVENT_IMAGE))
+                .Returns(true);
+
+            h.Camera.StartExposure(CreateBiasSequence());
+            var download = h.Camera.DownloadExposure(default);
+            await Task.Delay(200);
+
+            download.IsCompleted.Should().BeFalse("the stray frame must not satisfy the exposure that was triggered after it");
+            h.Calls.Should().ContainInOrder("OPTION_FLUSH=3", "Trigger(1)");
+
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            (await download).Should().NotBeNull();
+        }
+
+        [Test]
+        public async Task StartLiveView_StrayFrameBeforeVideoMode_DoesNotCompleteFirstLiveViewFrame() {
+            var h = await ConnectExposableCameraAsync();
+            h.Sdk.Setup(x => x.put_ExpoTime(It.IsAny<uint>()))
+                .Callback<uint>(_ => h.Callback(ToupTekAlikeEvent.EVENT_IMAGE))
+                .Returns(true);
+
+            h.Camera.StartLiveView(CreateBiasSequence());
+            var download = h.Camera.DownloadLiveView(default);
+            await Task.Delay(200);
+
+            download.IsCompleted.Should().BeFalse("the stray frame was flushed before video mode and must not satisfy the first live view frame");
+            h.Calls.Should().ContainInOrder("OPTION_FLUSH=3", "OPTION_TRIGGER=0");
+
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            (await download).Should().NotBeNull();
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMs = 2000) {
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (!condition()) {
+                if (DateTime.UtcNow > deadline) {
+                    throw new TimeoutException("condition not met");
+                }
+                await Task.Delay(10);
+            }
+        }
+
         private sealed class ExposureHarness {
             public Mock<IToupTekAlikeCameraSDK> Sdk = null!;
             public ToupTekAlikeCamera Camera = null!;

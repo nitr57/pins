@@ -355,7 +355,14 @@ namespace NINA.Equipment.Equipment.MyCamera {
         public int SubSampleWidth { get; set; }
         public int SubSampleHeight { get; set; }
         public bool CanShowLiveView => false;
-        public bool LiveViewEnabled { get; set; }
+        // Read on the SDK callback thread and the download thread, written by StartExposure/StartLiveView and
+        // the StopLiveView continuation; keep it volatile like the other mode flags below
+        private volatile bool liveViewEnabled;
+
+        public bool LiveViewEnabled {
+            get => liveViewEnabled;
+            set => liveViewEnabled = value;
+        }
 
         public bool HasBattery => false;
 
@@ -833,8 +840,13 @@ namespace NINA.Equipment.Equipment.MyCamera {
                         var id = tcs.Task.Id;
                         Logger.Trace($"{Category} - Setting DownloadExposure Result on Task {id}");
                         var success = tcs.TrySetResult(true);
-                        lastExposureEndTime = DateTime.UtcNow;
                         Logger.Trace($"{Category} - DownloadExposure Result on Task {id} set successfully: {success}");
+                        if (success) {
+                            lastExposureEndTime = DateTime.UtcNow;
+                        } else {
+                            // The exposure was cancelled between the check above and here; the frame is in the deque anyway
+                            flushPending = true;
+                        }
                     } else {
                         // No exposure is waiting for this frame (e.g. a duplicate event from a buggy vendor SDK,
                         // or a frame that arrived after the exposure was aborted or timed out). Nothing pulls it,
@@ -1064,8 +1076,6 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 flushPending = true;
             }
             previous?.TrySetCanceled();
-            imageReadyTCS = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            Logger.Trace($"{Category} - created new downloadExposure Task with Id {imageReadyTCS.Task.Id}");
 
             ReadoutMode = sequence.ImageType == CaptureSequence.ImageTypes.SNAPSHOT ? ReadoutModeForSnapImages : ReadoutModeForNormalImages;
 
@@ -1095,11 +1105,19 @@ namespace NINA.Equipment.Equipment.MyCamera {
             if (flushPending) {
                 // Something is (or may be) left in the SDK frame deque: a stray frame, an aborted exposure, a failed
                 // pull. Nothing is in flight right now, so this is the one point where a discard is always safe.
+                // Clear the flag first: a frame arriving during the flush sets it again and is discarded next time,
+                // clearing afterwards would lose that.
+                flushPending = false;
                 if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 3)) {
                     Logger.Error($"{Category} - Unable to flush camera before exposure");
                 }
-                flushPending = false;
             }
+
+            // Arm the completion source as late as possible: while it is armed, any EVENT_IMAGE is taken as this
+            // exposure's frame. A stray frame arriving during the SDK calls above finds the previous (completed)
+            // source instead and is marked for discard.
+            imageReadyTCS = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Logger.Trace($"{Category} - created new downloadExposure Task with Id {imageReadyTCS.Task.Id}");
 
             lastExposureStartTime = DateTime.UtcNow;
             if (!sdk.Trigger(1)) {
@@ -1133,8 +1151,6 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         public void StartLiveView(CaptureSequence sequence) {
             imageReadyTCS?.TrySetCanceled();
-            imageReadyTCS = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            Logger.Trace($"{Category} - starting live view Task with Id {imageReadyTCS.Task.Id}");
 
             if (EnableSubSample) {
                 var rect = GetROI();
@@ -1153,10 +1169,15 @@ namespace NINA.Equipment.Equipment.MyCamera {
             SetExposureTime(sequence.ExposureTime);
 
             // Drop anything left over from trigger mode; it may even have a different ROI than the live view frames
+            flushPending = false;
             if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 3)) {
                 Logger.Error($"{Category} - Unable to flush camera before live view");
             }
-            flushPending = false;
+
+            // Armed after the flush so a stray trigger mode frame cannot be taken as the first live view frame,
+            // and before the mode switch so the first video frame is not missed
+            imageReadyTCS = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Logger.Trace($"{Category} - starting live view Task with Id {imageReadyTCS.Task.Id}");
             LiveViewEnabled = true;
 
             softwareTriggerArmed = false;
@@ -1184,6 +1205,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         public void StopLiveView() {
+            // The camera keeps streaming until the continuation below switches the mode back. The frame that
+            // completes the pending source (and any after it) is never pulled, so the next exposure has to flush
+            flushPending = true;
             imageReadyTCS.Task.ContinueWith((Task<bool> o) => {
                 if (!LiveViewEnabled) {
                     // StartExposure already took over the switch back to trigger mode
