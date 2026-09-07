@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.56 - 2026-09-07
+### Fixed
+- ToupTek-alike cameras (ToupTek, Altair, Omegon, SVBony, Ogma, ...) could stop delivering images during fast exposure series such as bias frames, or stay unresponsive after an aborted exposure, until they were reconnected. Frames that arrive while no exposure is waiting for them (duplicate image events, frames from aborted or timed-out exposures) are now discarded right before the next exposure is triggered instead of after every download, a failed download and a stopped exposure flush the SDK frame queue, and the software trigger mode is re-armed after an exposure was stopped. Live view keeps discarding stale frames after every pull
+
 ## 1.1.55 - 2026-08-05
 ### Fixed
 - Relative-only INDI focusers (open-loop DC focusers with no absolute-position feedback, e.g. HitecAstro DC) failed every move with `Number property 'ABS_FOCUS_POSITION' not found`: the low-level move always wrote the absolute position instead of `FOCUS_MOTION`/`REL_FOCUS_POSITION`, movement state was tracked from a property such devices never send, a missing `FOCUS_MAX` was treated as a real limit of 0/-1 (clamping every target position or collapsing the per-step chunking), and a failed move left the focuser stuck reporting "moving" forever. Absolute focusers are unaffected

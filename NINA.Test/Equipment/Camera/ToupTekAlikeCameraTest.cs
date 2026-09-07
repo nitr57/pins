@@ -18,11 +18,14 @@ using NINA.Core.Model.Equipment;
 using NINA.Equipment.Equipment.MyCamera;
 using NINA.Equipment.Equipment.MyCamera.ToupTekAlike;
 using NINA.Equipment.Interfaces;
+using NINA.Equipment.Model;
 using NINA.Image.ImageData;
 using NINA.Profile.Interfaces;
 using NUnit.Framework;
 using System;
+using System.Collections.Generic;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using ToupTek;
 
@@ -123,6 +126,192 @@ namespace NINA.Test.Equipment.Camera {
             ToupTekAlikeOption.OPTION_RAW.ToToupTek().Should().Be(ToupCam.eOPTION.OPTION_RAW);
             ToupTekAlikeAAF.AAF_GETPOSITION.ToToupTek().Should().Be(ToupCam.eAAF.AAF_GETPOSITION);
             ToupCam.eEVENT.EVENT_IMAGE.ToEvent().Should().Be(ToupTekAlikeEvent.EVENT_IMAGE);
+        }
+
+        [Test]
+        public async Task StartExposure_AfterStrayFrame_FlushesBeforeTrigger() {
+            // A frame that arrives while no exposure is waiting would otherwise sit in the SDK deque
+            // and be returned as the next exposure's image.
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartExposure(CreateBiasSequence());
+            await CompleteExposureAsync(h);
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            h.Calls.Clear();
+
+            h.Camera.StartExposure(CreateBiasSequence());
+
+            h.Calls.Should().ContainSingle(c => c == "OPTION_FLUSH=3");
+            h.Calls.Should().ContainInOrder("OPTION_FLUSH=3", "Trigger(1)");
+            h.Calls.Should().NotContain(c => c.StartsWith("OPTION_TRIGGER="));
+        }
+
+        [Test]
+        public async Task StartExposure_AfterCleanExposure_DoesNotFlushOrRearm() {
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartExposure(CreateBiasSequence());
+            await CompleteExposureAsync(h);
+            h.Calls.Clear();
+
+            h.Camera.StartExposure(CreateBiasSequence());
+
+            h.Calls.Should().NotContain(c => c.StartsWith("OPTION_FLUSH="));
+            h.Calls.Should().NotContain(c => c.StartsWith("OPTION_TRIGGER="));
+            h.Calls.Should().ContainSingle(c => c == "Trigger(1)");
+        }
+
+        [Test]
+        public async Task DownloadExposure_AfterSuccessfulPull_DoesNotFlush() {
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartExposure(CreateBiasSequence());
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            h.Calls.Clear();
+
+            var data = await h.Camera.DownloadExposure(default);
+
+            data.Should().NotBeNull();
+            h.Calls.Should().NotContain(c => c.StartsWith("OPTION_FLUSH="));
+        }
+
+        [Test]
+        public async Task DownloadExposure_WhenPullFails_FlushesCamera() {
+            var h = await ConnectExposableCameraAsync();
+            var frameInfo = new ToupTekAlikeFrameInfo();
+            h.Sdk.Setup(x => x.PullImage(It.IsAny<ushort[]>(), It.IsAny<int>(), out frameInfo)).Returns(false);
+            h.Camera.StartExposure(CreateBiasSequence());
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            h.Calls.Clear();
+
+            var data = await h.Camera.DownloadExposure(default);
+
+            data.Should().BeNull();
+            h.Calls.Should().ContainSingle(c => c == "OPTION_FLUSH=3");
+        }
+
+        [Test]
+        public async Task DownloadExposure_WhenAbortRacesDownload_ThrowsOperationCanceled() {
+            // Abort landed after the image event but before the pull: the frame was flushed away.
+            // That must surface as a cancellation, not as a failed download.
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartExposure(CreateBiasSequence());
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            var frameInfo = new ToupTekAlikeFrameInfo();
+            h.Sdk.Setup(x => x.PullImage(It.IsAny<ushort[]>(), It.IsAny<int>(), out frameInfo)).Returns(false);
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            Func<Task> act = () => h.Camera.DownloadExposure(cts.Token);
+
+            await act.Should().ThrowAsync<OperationCanceledException>();
+        }
+
+        [Test]
+        public async Task StopExposure_FlushesAndNextStartExposureRearmsTriggerOnce() {
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartExposure(CreateBiasSequence());
+            h.Calls.Clear();
+
+            h.Camera.StopExposure();
+
+            h.Calls.Should().ContainInOrder("Trigger(0)", "OPTION_FLUSH=3");
+            h.Calls.Should().NotContain(c => c.StartsWith("OPTION_TRIGGER="));
+
+            h.Calls.Clear();
+            h.Camera.StartExposure(CreateBiasSequence());
+
+            h.Calls.Should().ContainSingle(c => c == "OPTION_TRIGGER=1");
+            h.Calls.Should().ContainInOrder("OPTION_TRIGGER=1", "OPTION_FLUSH=3", "Trigger(1)");
+
+            await CompleteExposureAsync(h);
+            h.Calls.Clear();
+            h.Camera.StartExposure(CreateBiasSequence());
+
+            h.Calls.Should().NotContain(c => c.StartsWith("OPTION_TRIGGER="));
+        }
+
+        [Test]
+        public async Task DownloadLiveView_KeepsSoftFlushAfterPull() {
+            // In video mode frames keep arriving between pulls; without the flush every pull
+            // returns the oldest queued frame.
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartLiveView(CreateBiasSequence());
+            h.Calls.Clear();
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+
+            var data = await h.Camera.DownloadLiveView(default);
+
+            data.Should().NotBeNull();
+            h.Calls.Should().ContainSingle(c => c == "OPTION_FLUSH=2");
+            h.Calls.Should().NotContain(c => c == "OPTION_FLUSH=3");
+        }
+
+        [Test]
+        public async Task StartLiveView_FlushesBeforeSwitchingToVideoMode() {
+            var h = await ConnectExposableCameraAsync();
+            h.Calls.Clear();
+
+            h.Camera.StartLiveView(CreateBiasSequence());
+
+            h.Calls.Should().ContainInOrder("OPTION_FLUSH=3", "OPTION_TRIGGER=0");
+        }
+
+        [Test]
+        public async Task StopExposure_InLiveView_OnlyCancelsTrigger() {
+            var h = await ConnectExposableCameraAsync();
+            h.Camera.StartLiveView(CreateBiasSequence());
+            h.Calls.Clear();
+
+            h.Camera.StopExposure();
+
+            h.Calls.Should().Equal("Trigger(0)");
+        }
+
+        private sealed class ExposureHarness {
+            public Mock<IToupTekAlikeCameraSDK> Sdk = null!;
+            public ToupTekAlikeCamera Camera = null!;
+            public ToupTekAlikeCallback Callback = null!;
+            public List<string> Calls = new List<string>();
+        }
+
+        private async Task<ExposureHarness> ConnectExposableCameraAsync() {
+            var h = new ExposureHarness();
+            h.Sdk = CreateExposableSdk(h.Calls, cb => h.Callback = cb);
+            h.Camera = CreateCamera(h.Sdk.Object, CreateProfileService().Object);
+            (await h.Camera.Connect(default)).Should().BeTrue();
+            h.Callback.Should().NotBeNull();
+            h.Calls.Clear();
+            return h;
+        }
+
+        private static async Task CompleteExposureAsync(ExposureHarness h) {
+            h.Callback(ToupTekAlikeEvent.EVENT_IMAGE);
+            (await h.Camera.DownloadExposure(default)).Should().NotBeNull();
+        }
+
+        private static CaptureSequence CreateBiasSequence() {
+            return new CaptureSequence(0.001, CaptureSequence.ImageTypes.BIAS, null, new BinningMode(1, 1), 1);
+        }
+
+        private static Mock<IToupTekAlikeCameraSDK> CreateExposableSdk(List<string> calls, Action<ToupTekAlikeCallback> captureCallback) {
+            var sdk = CreateConnectableSdk();
+            sdk.Setup(x => x.put_Option(It.IsAny<ToupTekAlikeOption>(), It.IsAny<int>()))
+                .Callback<ToupTekAlikeOption, int>((option, value) => calls.Add($"{option}={value}"))
+                .Returns(true);
+            sdk.Setup(x => x.Trigger(It.IsAny<ushort>()))
+                .Callback<ushort>(count => calls.Add($"Trigger({count})"))
+                .Returns(true);
+            sdk.Setup(x => x.put_ROI(It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<uint>(), It.IsAny<uint>())).Returns(true);
+            sdk.Setup(x => x.put_ExpoTime(It.IsAny<uint>())).Returns(true);
+            sdk.Setup(x => x.StartPullModeWithCallback(It.IsAny<ToupTekAlikeCallback>()))
+                .Callback<ToupTekAlikeCallback>(cb => captureCallback(cb))
+                .Returns(true);
+
+            // BinX reads back from the SDK, and PullImage divides the frame size by it.
+            var binning = 1;
+            sdk.Setup(x => x.get_Option(ToupTekAlikeOption.OPTION_BINNING, out binning));
+
+            var frameInfo = new ToupTekAlikeFrameInfo();
+            sdk.Setup(x => x.PullImage(It.IsAny<ushort[]>(), It.IsAny<int>(), out frameInfo)).Returns(true);
+            return sdk;
         }
 
         private ToupTekAlikeCamera CreateCamera(

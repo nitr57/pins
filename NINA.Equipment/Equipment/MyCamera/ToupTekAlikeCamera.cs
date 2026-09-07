@@ -681,6 +681,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     if (!sdk.put_Option(ToupTekAlikeOption.OPTION_TRIGGER, 1)) {
                         throw new Exception($"{Category} - Could not set Trigger manual mode");
                     }
+                    softwareTriggerArmed = true;
+                    flushPending = false;
+                    LiveViewEnabled = false;
 
                     if (!sdk.StartPullModeWithCallback(new ToupTekAlikeCallback(OnEventCallback))) {
                         throw new Exception($"{Category} - Could not start pull mode");
@@ -823,16 +826,28 @@ namespace NINA.Equipment.Equipment.MyCamera {
             switch (nEvent) {
                 // We should get an EVENT_IMAGE every time that the camera tells us an image is ready
                 case ToupTekAlikeEvent.EVENT_IMAGE:
-                    var id = imageReadyTCS?.Task?.Id ?? -1;
-                    if (id != -1) {
+                    // Read the field once: this runs on the SDK callback thread while StartExposure may be
+                    // swapping in a new source on another thread.
+                    var tcs = imageReadyTCS;
+                    if (tcs != null && !tcs.Task.IsCompleted) {
+                        var id = tcs.Task.Id;
                         Logger.Trace($"{Category} - Setting DownloadExposure Result on Task {id}");
-                        var success = imageReadyTCS?.TrySetResult(true);
+                        var success = tcs.TrySetResult(true);
                         lastExposureEndTime = DateTime.UtcNow;
                         Logger.Trace($"{Category} - DownloadExposure Result on Task {id} set successfully: {success}");
                     } else {
-                        Logger.Trace($"{Category} - unexpected EVENT_IMAGE returned by camera, likely buggy vendor SDK");
-                        // retrieve the data and ignore it -- workaround for 269C
-                        PullImage();
+                        // No exposure is waiting for this frame (e.g. a duplicate event from a buggy vendor SDK,
+                        // or a frame that arrived after the exposure was aborted or timed out). Nothing pulls it,
+                        // so it would stay in the SDK frame deque and be returned as the next exposure's image.
+                        // Keep the callback minimal (no pull, no flush - a pull here would race a concurrent
+                        // DownloadExposure): mark it and discard it before the next trigger instead. In live view
+                        // this is expected between pull and the next wait.
+                        flushPending = true;
+                        if (LiveViewEnabled) {
+                            Logger.Trace($"{Category} - EVENT_IMAGE without a pending live view frame");
+                        } else {
+                            Logger.Warning($"{Category} - unexpected EVENT_IMAGE with no exposure pending, frame will be discarded before the next exposure");
+                        }
                     }
                     break;
 
@@ -883,11 +898,21 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
             if (!sdk.PullImage(data, nativeBitDepth, out var info)) {
                 Logger.Error($"{Category} - Failed to pull image");
+                // Discard whatever the SDK still holds so the camera is not left stuck on it
+                if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 3)) {
+                    Logger.Error($"{Category} - Unable to flush camera after failed pull");
+                }
+                flushPending = true;
                 return null;
             }
 
-            if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 2)) {
-                Logger.Error($"{Category} - Unable to flush camera");
+            // In video mode frames keep arriving between this pull and the next wait; discard them so every
+            // live view pull returns a fresh frame instead of the oldest queued one. In trigger mode nothing
+            // else is expected after the pull, and a stray frame is discarded before the next trigger instead.
+            if (LiveViewEnabled) {
+                if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 2)) {
+                    Logger.Error($"{Category} - Unable to flush camera");
+                }
             }
 
             var bitScaling = this.profileService.ActiveProfile.CameraSettings.BitScaling;
@@ -962,6 +987,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     }
                 }
             }
+            if (exposureData == null) {
+                // An abort that landed between the image event and the pull has flushed the frame away
+                token.ThrowIfCancellationRequested();
+            }
             if (LiveViewEnabled) {
                 imageReadyTCS?.TrySetCanceled();
                 imageReadyTCS = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1016,7 +1045,25 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private Rectangle? roiInfo;
 
         public void StartExposure(CaptureSequence sequence) {
-            imageReadyTCS?.TrySetCanceled();
+            if (LiveViewEnabled) {
+                // StopLiveView switches back to trigger mode asynchronously; take over here so its continuation
+                // does not change the trigger mode again after the trigger below has been issued
+                Logger.Debug($"{Category} - StartExposure while live view is still winding down");
+                LiveViewEnabled = false;
+                softwareTriggerArmed = false;
+                flushPending = true;
+            }
+
+            var previous = imageReadyTCS;
+            if (previous != null && !previous.Task.IsCompleted) {
+                // The previous exposure is still running; cancel it before triggering again
+                Logger.Warning($"{Category} - StartExposure while a previous exposure is still pending, cancelling it");
+                if (!sdk.Trigger(0)) {
+                    Logger.Warning($"{Category} - Could not cancel previous exposure");
+                }
+                flushPending = true;
+            }
+            previous?.TrySetCanceled();
             imageReadyTCS = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             Logger.Trace($"{Category} - created new downloadExposure Task with Id {imageReadyTCS.Task.Id}");
 
@@ -1038,13 +1085,40 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
             SetExposureTime(sequence.ExposureTime);
 
+            if (!softwareTriggerArmed) {
+                if (!sdk.put_Option(ToupTekAlikeOption.OPTION_TRIGGER, 1)) {
+                    throw new Exception($"{Category} - Could not set Trigger manual mode");
+                }
+                softwareTriggerArmed = true;
+            }
+
+            if (flushPending) {
+                // Something is (or may be) left in the SDK frame deque: a stray frame, an aborted exposure, a failed
+                // pull. Nothing is in flight right now, so this is the one point where a discard is always safe.
+                if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 3)) {
+                    Logger.Error($"{Category} - Unable to flush camera before exposure");
+                }
+                flushPending = false;
+            }
+
             lastExposureStartTime = DateTime.UtcNow;
             if (!sdk.Trigger(1)) {
                 throw new Exception($"{Category} - Failed to trigger camera");
             }
         }
 
-        private TaskCompletionSource<bool> imageReadyTCS;
+        private volatile TaskCompletionSource<bool> imageReadyTCS;
+
+        // Set whenever a frame may be left in the SDK frame deque without an exposure waiting for it. Only cleared
+        // after the deque has been flushed with nothing in flight (connect, right before a trigger, entering live
+        // view). Written from the SDK callback thread.
+        private volatile bool flushPending;
+
+        // Tracks whether the camera is in software trigger mode. It is set at connect and after live view, and
+        // cleared when an exposure is stopped so the next StartExposure re-arms it. The SDK does not document
+        // Trigger(0) leaving trigger mode; the re-arm is a cheap safeguard for cameras observed to stay
+        // unresponsive after an abort.
+        private volatile bool softwareTriggerArmed;
         private int nativeBitDepth;
         private DateTime lastExposureStartTime;
         private DateTime lastExposureEndTime;
@@ -1077,8 +1151,15 @@ namespace NINA.Equipment.Equipment.MyCamera {
             }
 
             SetExposureTime(sequence.ExposureTime);
+
+            // Drop anything left over from trigger mode; it may even have a different ROI than the live view frames
+            if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 3)) {
+                Logger.Error($"{Category} - Unable to flush camera before live view");
+            }
+            flushPending = false;
             LiveViewEnabled = true;
 
+            softwareTriggerArmed = false;
             if (!sdk.put_Option(ToupTekAlikeOption.OPTION_TRIGGER, 0)) {
                 throw new Exception("Could not set Trigger video mode");
             }
@@ -1089,14 +1170,30 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 Logger.Warning($"{Category} - Could not stop exposure");
             }
             imageReadyTCS?.TrySetCanceled();
+
+            if (!LiveViewEnabled) {
+                // The cancelled exposure may still deliver a frame (or already has). Discard it so it cannot be
+                // returned by the next exposure, and let the next StartExposure re-arm the trigger mode.
+                if (!sdk.put_Option(ToupTekAlikeOption.OPTION_FLUSH, 3)) {
+                    Logger.Error($"{Category} - Unable to flush camera after stopping the exposure");
+                }
+                // A frame from the cancelled exposure can still arrive after this flush; flush again before the next trigger
+                flushPending = true;
+                softwareTriggerArmed = false;
+            }
         }
 
         public void StopLiveView() {
             imageReadyTCS.Task.ContinueWith((Task<bool> o) => {
+                if (!LiveViewEnabled) {
+                    // StartExposure already took over the switch back to trigger mode
+                    return;
+                }
                 if (!sdk.put_Option(ToupTekAlikeOption.OPTION_TRIGGER, 1)) {
                     Disconnect();
                     throw new Exception("Could not set Trigger manual mode. Reconnect Camera!");
                 }
+                softwareTriggerArmed = true;
                 LiveViewEnabled = false;
             });
         }
