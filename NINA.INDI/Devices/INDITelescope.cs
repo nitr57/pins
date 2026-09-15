@@ -109,6 +109,18 @@ namespace NINA.INDI.Devices {
         // since a mount that just stopped simply ceases to send coordinate updates.
         private static readonly TimeSpan CoordMotionWindow = TimeSpan.FromSeconds(3);
 
+        // The goto currently waiting for the driver's reply, fed from the receive thread below.
+        // Written with Volatile/Interlocked by the slew, read with Volatile.Read on the receive thread.
+        private GotoAcknowledgement _pendingGoto;
+
+        // Longest wait for the driver's reply to a goto. Drivers built on libindi's INDI::Telescope
+        // answer within one command round trip (Busy or Alert); OnStep echoes TARGET_EOD_COORD and
+        // follows with its next status poll. Only a driver outside both patterns runs this out.
+        private static readonly TimeSpan GotoAcknowledgementTimeout = TimeSpan.FromSeconds(5);
+
+        // Ceiling for waiting until an unacknowledged goto starts moving, same bound as parking uses.
+        private static readonly TimeSpan GotoMotionStartTimeout = TimeSpan.FromSeconds(10);
+
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
             base.OnNumberPropertyUpdated(p);
 
@@ -120,7 +132,11 @@ namespace NINA.INDI.Devices {
                     _isPulseGuidingWE = p.State == PropertyState.Busy;
                     break;
                 case "EQUATORIAL_EOD_COORD":
+                    Volatile.Read(ref _pendingGoto)?.Observe(p);
                     TrackCoordinateMotion(p);
+                    break;
+                case "TARGET_EOD_COORD":
+                    Volatile.Read(ref _pendingGoto)?.Observe(p);
                     break;
             }
         }
@@ -966,6 +982,21 @@ namespace NINA.INDI.Devices {
         }
 
         public async Task SlewToCoordinates(double ra, double dec) {
+            await SendGotoAsync(ra, dec);
+        }
+
+        private readonly record struct GotoSent(GotoAcknowledgementKind Kind, bool TargetEchoed, DateTime SentAt, string PreSendTimestamp);
+
+        /// <summary>
+        /// Sends the goto and waits for the driver's reply to it, identified by
+        /// <see cref="GotoAcknowledgement"/> rather than by the generic SetNumberValuesAsync rule, which
+        /// would also accept a status poll's Ok update that happens to arrive first.
+        ///
+        /// Throws "Mount rejected coordinates" only for a real refusal. When no reply can be identified the
+        /// goto is returned as unacknowledged instead: throwing there would make the caller's retry send a
+        /// second goto into a slew that may well be running.
+        /// </summary>
+        private async Task<GotoSent> SendGotoAsync(double ra, double dec) {
             try {
                 // Check mount state before slewing
                 if (AtPark) {
@@ -978,10 +1009,57 @@ namespace NINA.INDI.Devices {
                 // Enable slewing mode
                 SetSwitchValue("ON_COORD_SET", "SLEW", true);
 
-                // Send coordinates and wait for server acknowledgement (Busy state)
-                if (!await SetNumberValuesAsync("EQUATORIAL_EOD_COORD", TimeSpan.FromSeconds(30), ("RA", ra), ("DEC", dec))) {
+                // Failures before and during the send end as "Mount rejected coordinates", as they did when
+                // SetNumberValuesAsync swallowed them and returned false: that keeps the caller's single retry,
+                // and a NotImplementedException here would switch IndiTelescope to its non-async slew path for
+                // good. With neither RA nor DEC present the write would send the vector unchanged, a silent
+                // no-op the driver would happily confirm.
+                var coordinates = GetNumberProperty("EQUATORIAL_EOD_COORD");
+                if (coordinates == null || !coordinates.Numbers.Any(n => n.Name == "RA" || n.Name == "DEC")) {
+                    Logger.Warning($"[{DeviceName}] EQUATORIAL_EOD_COORD with RA/DEC is not available - cannot send the goto");
                     throw new InvalidOperationException("Mount rejected coordinates");
                 }
+
+                var preSendTimestamp = coordinates.Timestamp ?? string.Empty;
+                var acknowledgement = new GotoAcknowledgement(DeviceName, ra, dec, preSendTimestamp);
+                Logger.Info($"[{DeviceName}] Goto sending RA={ra:F5}h Dec={dec:F5}°; pre-send state={coordinates.State}, " +
+                            $"timestamp={(string.IsNullOrEmpty(preSendTimestamp) ? "n/a" : preSendTimestamp)}");
+
+                // Registered before sending, so no reply can slip past it.
+                Volatile.Write(ref _pendingGoto, acknowledgement);
+                var sentAt = DateTime.UtcNow;
+                GotoAcknowledgementKind kind;
+                try {
+                    try {
+                        SetNumberValues("EQUATORIAL_EOD_COORD", ("RA", ra), ("DEC", dec));
+                    } catch (Exception ex) {
+                        Logger.Error($"[{DeviceName}] Sending the goto failed: {ex.Message}");
+                        throw new InvalidOperationException("Mount rejected coordinates", ex);
+                    }
+                    var replied = await Task.WhenAny(acknowledgement.Completion, Task.Delay(GotoAcknowledgementTimeout)) == acknowledgement.Completion;
+                    kind = replied ? await acknowledgement.Completion : GotoAcknowledgementKind.None;
+                } finally {
+                    Interlocked.CompareExchange(ref _pendingGoto, null, acknowledgement);
+                }
+
+                var elapsedMs = (DateTime.UtcNow - sentAt).TotalMilliseconds;
+                var ignored = acknowledgement.IgnoredStatusUpdates;
+                var targetEchoed = acknowledgement.TargetEchoed;
+                if (kind == GotoAcknowledgementKind.Rejected) {
+                    Logger.Error($"[{DeviceName}] Goto rejected by the mount (EQUATORIAL_EOD_COORD Alert) after {elapsedMs:F0} ms");
+                    throw new InvalidOperationException("Mount rejected coordinates");
+                }
+                if (kind != GotoAcknowledgementKind.None) {
+                    Logger.Info($"[{DeviceName}] Goto acknowledged via {kind} after {elapsedMs:F0} ms ({ignored} earlier status update(s) ignored)");
+                } else if (targetEchoed) {
+                    Logger.Info($"[{DeviceName}] Goto accepted: TARGET_EOD_COORD echoed the target, but no EQUATORIAL_EOD_COORD update followed " +
+                                $"within {GotoAcknowledgementTimeout.TotalSeconds:F0} s ({ignored} earlier status update(s) ignored) - proceeding");
+                } else {
+                    Logger.Warning($"[{DeviceName}] Goto got no Busy, Alert or TARGET_EOD_COORD reply within {GotoAcknowledgementTimeout.TotalSeconds:F0} s " +
+                                   $"({ignored} status update(s) ignored) - waiting for the mount to start moving instead of trusting its state");
+                }
+
+                return new GotoSent(kind, targetEchoed, sentAt, preSendTimestamp);
             } catch (ArgumentException ex) {
                 throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
@@ -990,12 +1068,43 @@ namespace NINA.INDI.Devices {
             }
         }
 
+        /// <summary>
+        /// Runs only for a goto without an identifiable reply. The completion wait takes "not Busy and no
+        /// motion" as arrival, which is also exactly what a mount looks like before it starts, so first wait
+        /// (bounded) for evidence that the slew began: EQUATORIAL_EOD_COORD Busy, or coordinate motion seen
+        /// after the goto was sent. The cached RA/DEC cannot serve as that evidence the way it does for
+        /// parking: SetNumberValues writes the target into the cache before sending, so the cache differs
+        /// from the mount position until the driver's next update. A mount already at the target
+        /// legitimately never moves; that case continues after the timeout.
+        /// </summary>
+        private async Task WaitForGotoMotionStartAsync(GotoSent sent, CancellationToken ct) {
+            var started = DateTime.UtcNow;
+            while (!ct.IsCancellationRequested) {
+                var coordinates = GetProperty("EQUATORIAL_EOD_COORD");
+                if (coordinates?.State == PropertyState.Alert
+                    && (string.IsNullOrEmpty(sent.PreSendTimestamp) || coordinates.Timestamp != sent.PreSendTimestamp)) {
+                    Logger.Error($"[{DeviceName}] EQUATORIAL_EOD_COORD turned Alert before the unacknowledged goto started moving - slew rejected by mount");
+                    throw new InvalidOperationException("Slew rejected by mount - check mount limits and target accessibility");
+                }
+                if (coordinates?.State == PropertyState.Busy || _lastCoordMotionAt > sent.SentAt) {
+                    Logger.Info($"[{DeviceName}] Mount started moving {(DateTime.UtcNow - sent.SentAt).TotalMilliseconds:F0} ms after the unacknowledged goto");
+                    return;
+                }
+                if (DateTime.UtcNow - started > GotoMotionStartTimeout) {
+                    Logger.Warning($"[{DeviceName}] No motion within {GotoMotionStartTimeout.TotalSeconds:F0} s of the unacknowledged goto - assuming the mount was already at the target");
+                    return;
+                }
+                await Task.Delay(500, ct);
+            }
+        }
+
         public async Task SlewToCoordinatesTaskAsync(double ra, double dec, CancellationToken ct = default) {
             const int maxSlewAttempts = 2;
             try {
+                GotoSent sent = default;
                 for (int attempt = 1; ; attempt++) {
                     try {
-                        await SlewToCoordinates(ra, dec);
+                        sent = await SendGotoAsync(ra, dec);
                         break;
                     } catch (InvalidOperationException) when (attempt < maxSlewAttempts && !ct.IsCancellationRequested && !AtPark) {
                         // Mounts like OnStep transiently reject a goto issued while their state is
@@ -1007,6 +1116,10 @@ namespace NINA.INDI.Devices {
                     }
                 }
 
+                if (sent.Kind == GotoAcknowledgementKind.None && !sent.TargetEchoed) {
+                    await WaitForGotoMotionStartAsync(sent, ct);
+                }
+
                 // Watch EQUATORIAL_EOD_COORD.State, but also fall back to the coordinate-motion
                 // heuristic (via Slewing) rather than the raw state alone: OnStep frequently
                 // acks a goto with Ok/Idle instead of Busy — especially for short slews between
@@ -1014,6 +1127,7 @@ namespace NINA.INDI.Devices {
                 // loop exit while the mount is still physically moving. HORIZONTAL_COORD is
                 // excluded from Slewing already, so AltAz tracking still cannot interfere here.
                 var started = DateTime.UtcNow;
+                var polls = 0;
                 while (!ct.IsCancellationRequested) {
                     var coordState = GetProperty("EQUATORIAL_EOD_COORD")?.State;
                     if (coordState == PropertyState.Alert) {
@@ -1021,6 +1135,7 @@ namespace NINA.INDI.Devices {
                         throw new InvalidOperationException("Slew rejected by mount - check mount limits and target accessibility");
                     }
                     if (coordState != PropertyState.Busy && !Slewing) {
+                        LogSlewWaitOutcome(ra, dec, started, polls, coordState);
                         break;
                     }
                     if (DateTime.UtcNow - started > MotionTimeout) {
@@ -1028,6 +1143,7 @@ namespace NINA.INDI.Devices {
                         break;
                     }
 
+                    ++polls;
                     await Task.Delay(500, ct);
                 }
             } catch (ArgumentException ex) {
@@ -1036,6 +1152,59 @@ namespace NINA.INDI.Devices {
                 Logger.Error($"Error in SlewToCoordinatesTaskAsync: {ex.Message}");
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Records how the slew wait ended, so a premature exit can be told apart from a real one
+        /// after the fact. Two independent signals make that call: how long the loop ran, and how
+        /// far the mount still is from the target when it claimed to be done.
+        ///
+        /// The failure this is looking for: the wait can only exit when EQUATORIAL_EOD_COORD is
+        /// not Busy AND Slewing is false. Both hold for a mount that has not started moving yet,
+        /// because Slewing's coordinate-motion fallback needs motion it has ALREADY observed. The
+        /// goto acknowledgement (<see cref="GotoAcknowledgement"/>) no longer lets a status poll's
+        /// Ok count as the reply, but a driver can still report Ok before motion on its own (OnStep's
+        /// Ok instead of Busy, or an LX200 slew-complete check that reads true before the mount
+        /// departs). A wait that ends on the first poll with the mount still degrees away from the
+        /// target is that case; the exposure then starts mid-slew and the frame trails.
+        /// </summary>
+        private void LogSlewWaitOutcome(double targetRa, double targetDec, DateTime started, int polls, PropertyState? coordState) {
+            var elapsedMs = (DateTime.UtcNow - started).TotalMilliseconds;
+            var currentRa = RightAscension;
+            var currentDec = Declination;
+            var separation = AngularSeparationDegrees(targetRa, targetDec, currentRa, currentDec);
+            var detail = $"[{DeviceName}] Slew wait ended after {elapsedMs:F0}ms / {polls} poll(s); " +
+                         $"state={coordState?.ToString() ?? "null"}, " +
+                         $"target RA={targetRa:F5}h Dec={targetDec:F5}°, " +
+                         $"actual RA={currentRa:F5}h Dec={currentDec:F5}°, " +
+                         $"separation={(double.IsNaN(separation) ? "n/a" : $"{separation:F3}°")}";
+
+            // 0.5 deg is far beyond any pointing error a goto leaves behind, so it can only mean the
+            // mount had not arrived yet. Either signal alone is enough to flag the frame.
+            if (polls == 0 || (!double.IsNaN(separation) && separation > 0.5)) {
+                Logger.Warning($"Slew wait may have ended early - an exposure started now would trail. {detail}");
+            } else {
+                Logger.Info(detail);
+            }
+        }
+
+        /// <summary>Great-circle separation in degrees; RA is in hours. NaN if either side is unknown.</summary>
+        private static double AngularSeparationDegrees(double ra1Hours, double dec1Deg, double ra2Hours, double dec2Deg) {
+            if (double.IsNaN(ra1Hours) || double.IsNaN(dec1Deg) || double.IsNaN(ra2Hours) || double.IsNaN(dec2Deg)) {
+                return double.NaN;
+            }
+
+            const double DegToRad = Math.PI / 180.0;
+            var ra1 = ra1Hours * 15.0 * DegToRad;
+            var ra2 = ra2Hours * 15.0 * DegToRad;
+            var dec1 = dec1Deg * DegToRad;
+            var dec2 = dec2Deg * DegToRad;
+            // Haversine: stays accurate for the small separations a completed goto leaves behind,
+            // where the spherical law of cosines loses precision.
+            var sinDDec = Math.Sin((dec2 - dec1) / 2.0);
+            var sinDRa = Math.Sin((ra2 - ra1) / 2.0);
+            var a = sinDDec * sinDDec + Math.Cos(dec1) * Math.Cos(dec2) * sinDRa * sinDRa;
+            return 2.0 * Math.Asin(Math.Min(1.0, Math.Sqrt(a))) / DegToRad;
         }
 
         public void SlewToAltAz(double azimuth, double altitude) {

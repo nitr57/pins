@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.57 - 2026-09-15
+### Fixed
+- INDI mounts: an exposure could start while the mount was still slewing, giving trailed frames — during a 10micron model build about one point in twenty, each ending as a failed plate solve. When a goto reached the driver while it was busy with its regular status poll, that poll's ordinary position update (state Ok, new timestamp) arrived first and was taken as the driver's reply, so the slew wait saw a mount that had not moved yet and returned at once. A goto now only counts as acknowledged by the driver's actual reply: EQUATORIAL_EOD_COORD turning Busy, a new Alert, or TARGET_EOD_COORD echoing the requested coordinates followed by the next position update (how OnStep answers). Status updates that arrive before the reply are ignored and logged. When no reply can be identified within 5 s the goto is no longer reported as rejected — which used to send a second goto into the running slew — and the slew wait first waits up to 10 s for the mount to start moving
+### Changed
+- `NINA.Test` no longer compiles `SimpleDSOContainerViewTest`, which binds to the simple sequencer's XAML view (`DataGrid`) and cannot build against the headless shim, so the solution builds again
+
 ## 1.1.56 - 2026-09-07
 ### Fixed
 - ToupTek-alike cameras (ToupTek, Altair, Omegon, SVBony, Ogma, ...) could stop delivering images during fast exposure series such as bias frames, or stay unresponsive after an aborted exposure, until they were reconnected. Frames that arrive while no exposure is waiting for them (duplicate image events, frames from aborted or timed-out exposures) are now discarded right before the next exposure is triggered instead of after every download, a failed download and a stopped exposure flush the SDK frame queue, and the software trigger mode is re-armed after an exposure was stopped. Live view keeps discarding stale frames after every pull
