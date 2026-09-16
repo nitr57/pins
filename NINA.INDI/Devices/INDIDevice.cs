@@ -1439,11 +1439,23 @@ namespace NINA.INDI.Devices
             _preConnectDelay = delay < TimeSpan.Zero ? TimeSpan.Zero : delay;
         }
 
-        #region Unsupported
-        public virtual IList<string> SupportedActions => new List<string>();
+        #region Actions
+        /// <summary>
+        /// Sends several raw LX200 commands in one write and returns their replies concatenated.
+        /// Every command in the batch must answer with a '#'-terminated reply: the number of
+        /// replies read is the number of '#' in the batch.
+        /// </summary>
+        public const string RawCommandBatchAction = "rawCommandBatch";
+
+        public virtual IList<string> SupportedActions =>
+            IsRawTcpConfigured ? new List<string> { RawCommandBatchAction } : new List<string>();
 
         public virtual string Action(string actionName, string actionParameters)
         {
+            if (actionName == RawCommandBatchAction)
+            {
+                return CommandBatch(actionParameters);
+            }
             throw new NotImplementedException();
         }
         #endregion
@@ -1546,6 +1558,62 @@ namespace NINA.INDI.Devices
                     if (ch == '#') break;
                 }
                 return response.ToString();
+            }
+        }
+
+        private string SendRawTcpBatch(string commands)
+        {
+            int expectedReplies = commands.Count(c => c == '#');
+            lock (_lx200Lock)
+            {
+                var stream = EnsureLx200Stream();
+                var bytes = Encoding.ASCII.GetBytes(commands);
+                stream.Write(bytes, 0, bytes.Length);
+                stream.Flush();
+                var response = new StringBuilder();
+                int replies = 0;
+                while (replies < expectedReplies)
+                {
+                    int b = stream.ReadByte();
+                    // Unlike a single command, a partial batch must not be returned: the caller
+                    // matches replies to commands by position.
+                    if (b == -1)
+                    {
+                        throw new System.IO.IOException($"Connection closed after {replies} of {expectedReplies} batch replies");
+                    }
+                    var ch = (char)b;
+                    response.Append(ch);
+                    if (ch == '#') replies++;
+                }
+                return response.ToString();
+            }
+        }
+
+        private bool IsRawTcpConfigured => !string.IsNullOrEmpty(_address) && _connectionMode == "CONNECTION_TCP";
+
+        private string CommandBatch(string commands)
+        {
+            if (!IsRawTcpConfigured)
+            {
+                throw new NotImplementedException();
+            }
+            if (string.IsNullOrEmpty(commands))
+            {
+                return string.Empty;
+            }
+            try
+            {
+                return SendRawTcpBatch(commands);
+            }
+            catch (Exception)
+            {
+                // Same as the single commands: never leave unread replies on the stream, or
+                // they would be handed to the next command as its answer.
+                lock (_lx200Lock)
+                {
+                    DisposeLx200Connection();
+                }
+                throw;
             }
         }
 

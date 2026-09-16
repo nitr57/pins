@@ -440,12 +440,12 @@ namespace NINA.Equipment.Equipment {
         }
 
         public bool HasSetupDialog => !Connected;
-        public IList<string> SupportedActions => new List<string>();
+        public IList<string> SupportedActions => device?.SupportedActions ?? new List<string>();
         public void SetupDialog() {
         }
 
         public string Action(string actionName, string actionParameters) {
-            throw new System.NotImplementedException();
+            return device.Action(actionName, actionParameters);
         }
         public void SendCommandBlind(string command, bool raw = true) {
             device.CommandBlind(command, raw);
