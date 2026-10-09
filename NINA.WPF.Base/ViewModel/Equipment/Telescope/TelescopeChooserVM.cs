@@ -60,6 +60,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Telescope {
                     Logger.Error(ex);
                 }
 
+                /* OnStepX over USB serial, on the port in the profile, named after the model it reports */
+                devices.Add(await OnStepXTelescope.Discover(profileService));
+
                 /* INDIGO telescopes */
                 /*                try {
                                     var indigoInteraction = new INDIGOInteraction(profileService);

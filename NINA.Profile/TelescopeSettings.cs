@@ -48,6 +48,7 @@ namespace NINA.Profile {
             indiBaudRate = 9600;
             indiDriver = "None";
             indiMaxSlewRateDps = 4.0;
+            serialPort = string.Empty;
         }
 
         private string id;
@@ -310,6 +311,20 @@ namespace NINA.Profile {
                 if (value <= 0) return;
                 if (indiMaxSlewRateDps != value) {
                     indiMaxSlewRateDps = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string serialPort;
+
+        /// <summary>The serial port of a mount driven by pins directly (OnStepX), e.g. /dev/ttyUSB0.</summary>
+        [DataMember]
+        public string SerialPort {
+            get => serialPort;
+            set {
+                if (serialPort != value) {
+                    serialPort = value;
                     RaisePropertyChanged();
                 }
             }

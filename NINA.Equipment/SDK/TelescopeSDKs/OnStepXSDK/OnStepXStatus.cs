@@ -55,8 +55,8 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
     /// <summary>
     /// The controller status from :GU#: flag characters, then the pulse-guide rate index, the move rate index and the
-    /// error code as the last three characters. Only the flags INDI's LX200_OnStep acts on are decoded; INDI also reads
-    /// PEC flags that date from OnStep 3.x.
+    /// error code as the last three characters. Decoded as OnStepX 10.20a writes it (Status.command.cpp); INDI's
+    /// LX200_OnStep reads 'W' as a PEC state from OnStep 3.x, but in OnStepX it is the pier side.
     /// </summary>
     public sealed record OnStepXStatus {
 
@@ -75,8 +75,14 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
         public OnStepXParkState Park { get; private init; }
 
-        /// <summary>'H'.</summary>
+        /// <summary>'H': both axes within the home tolerance of the home position (Mount::isHome).</summary>
         public bool AtHome { get; private init; }
+
+        /// <summary>'h': moving to home (HS_HOMING), cleared when the controller has finished homing.</summary>
+        public bool Homing { get; private init; }
+
+        /// <summary>'G': a pulse guide is running.</summary>
+        public bool PulseGuiding { get; private init; }
 
         /// <summary>'w': paused at home during a goto, waiting to continue.</summary>
         public bool WaitingAtHome { get; private init; }
@@ -112,6 +118,8 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
                 Slewing = !flags.Contains('N'),
                 Park = park.Value,
                 AtHome = flags.Contains('H'),
+                Homing = flags.Contains('h'),
+                PulseGuiding = flags.Contains('G'),
                 WaitingAtHome = flags.Contains('w'),
                 MountType = MountTypeOf(flags),
                 PulseGuideRateIndex = DigitOf(reply[^3]),

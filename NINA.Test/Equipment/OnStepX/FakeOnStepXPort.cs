@@ -36,6 +36,12 @@ namespace NINA.Test.Equipment.OnStepX {
 
         public int Unread => incoming.Count;
 
+        /// <summary>The reply to a command not scripted; the firmware answers an unknown command with a bare "0".</summary>
+        public string? DefaultReply { get; set; } = "0";
+
+        /// <summary>Thrown by every write while set, like a port whose device was unplugged.</summary>
+        public Exception? FailWrites { get; set; }
+
         /// <summary>The replies to <paramref name="command"/> in order, the last one repeating; null is no reply.</summary>
         public FakeOnStepXPort On(string command, params string?[] replySequence) {
             replies[command] = new Queue<string?>(replySequence);
@@ -63,7 +69,17 @@ namespace NINA.Test.Equipment.OnStepX {
             .On(":GX90#", "1.00#")
             .On(":Pbvg#", "UMi17S|1.0.7#")
             .On(":Pbc#", "1#")
-            .On(":PbC#", "1#");
+            .On(":PbC#", "1#")
+            .On(":GA#", "+48*40:00#")
+            .On(":GZ#", "000*00:01#")
+            .On(":GS#", "22:43:54#")
+            .On(":GtH#", "+48*40:00.000#")
+            .On(":GgH#", "-008*14:00.000#")
+            .On(":GC#", "10/09/26#")
+            .On(":GL#", "22:57:00#")
+            .On(":GG#", "-02:00#")
+            .On(":GX97#", "3.5#")
+            .On(":hP#", "1");
 
         public void Open() => IsOpen = true;
 
@@ -73,9 +89,12 @@ namespace NINA.Test.Equipment.OnStepX {
             if (!IsOpen) {
                 throw new InvalidOperationException("port closed");
             }
+            if (FailWrites is { } failure) {
+                throw failure;
+            }
 
             Written.Add(text);
-            string? reply = "0";
+            string? reply = DefaultReply;
             if (replies.TryGetValue(text, out var sequence)) {
                 reply = sequence.Count > 1 ? sequence.Dequeue() : sequence.Peek();
             }

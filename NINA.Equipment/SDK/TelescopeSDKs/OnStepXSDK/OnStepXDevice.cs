@@ -50,7 +50,7 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
     /// OnStepX derives from this; <see cref="Connect(OnStepXTransport)"/> picks the class from what the controller
     /// reports.
     /// </summary>
-    public class OnStepXDevice : IDisposable {
+    public partial class OnStepXDevice : IDisposable {
 
         /// <summary>OnStepX version numbers start at 10.</summary>
         public const int MinMajorVersion = 10;

@@ -15,6 +15,8 @@
 #nullable enable
 
 using System;
+using System.Collections.Concurrent;
+using System.IO;
 using System.IO.Ports;
 using System.Text;
 
@@ -24,7 +26,11 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
     public sealed class OnStepXSerialPort : IOnStepXPort {
         public const int DefaultBaudRate = 9600;
 
+        /// <summary>The ports this process has open, by resolved device path, so a device scan leaves them alone.</summary>
+        private static readonly ConcurrentDictionary<string, byte> OpenPorts = new();
+
         private readonly SerialPort port;
+        private string? registeredAs;
 
         public OnStepXSerialPort(string portName, int baudRate = DefaultBaudRate) {
             port = new SerialPort(portName, baudRate, Parity.None, 8, StopBits.One) {
@@ -43,9 +49,19 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
         public bool IsOpen => port.IsOpen;
 
-        public void Open() => port.Open();
+        /// <summary>Whether this process has <paramref name="portName"/> open (also through another path to the same device).</summary>
+        public static bool IsOpenInProcess(string portName) => OpenPorts.ContainsKey(Resolve(portName));
 
-        public void Close() => port.Close();
+        public void Open() {
+            port.Open();
+            registeredAs = Resolve(port.PortName);
+            OpenPorts[registeredAs] = 0;
+        }
+
+        public void Close() {
+            port.Close();
+            Unregister();
+        }
 
         public void Write(string text) => port.Write(text);
 
@@ -60,6 +76,25 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
         public void DiscardInBuffer() => port.DiscardInBuffer();
 
-        public void Dispose() => port.Dispose();
+        public void Dispose() {
+            port.Dispose();
+            Unregister();
+        }
+
+        private void Unregister() {
+            if (registeredAs is { } key) {
+                OpenPorts.TryRemove(key, out _);
+                registeredAs = null;
+            }
+        }
+
+        /// <summary>/dev/serial/by-id/… and /dev/ttyUSB0 name the same device.</summary>
+        private static string Resolve(string portName) {
+            try {
+                return File.ResolveLinkTarget(portName, returnFinalTarget: true)?.FullName ?? portName;
+            } catch (Exception) {
+                return portName;
+            }
+        }
     }
 }

@@ -153,8 +153,9 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
     private static readonly TimeSpan BusyPollInterval = TimeSpan.FromMilliseconds(25);
 
     /// <summary>
-    /// The poll for an INDI mount, whose flag is pins' in-memory pulse tracker: reading it costs nothing. An ASCOM or
-    /// Alpaca mount keeps <see cref="BusyPollInterval"/>, as each read can be a call to the driver or an HTTP request.
+    /// The poll for an INDI or native OnStepX mount, whose flag is pins' in-memory pulse tracker: reading it costs
+    /// nothing. An ASCOM or Alpaca mount keeps <see cref="BusyPollInterval"/>, as each read can be a call to the driver
+    /// or an HTTP request.
     /// </summary>
     internal static readonly TimeSpan IndiBusyPollInterval = TimeSpan.FromMilliseconds(5);
 
@@ -202,7 +203,7 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
 
         var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(Math.Max(MinCompletionWaitMs, durationMs / 2));
         var device = telescope.GetDevice() as ITelescope;
-        var pollInterval = device is IndiTelescope ? IndiBusyPollInterval : BusyPollInterval;
+        var pollInterval = device is IndiTelescope or OnStepXTelescope ? IndiBusyPollInterval : BusyPollInterval;
         while (device is not null && DateTime.UtcNow < deadline)
         {
             bool busy;

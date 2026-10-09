@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 1.1.64 - 2026-10-10
+### Added
+- OnStepX mounts without INDI: a native mount driver for OnStepX controllers over USB serial, listed in the mount chooser as "OnStepX (serial)", or after the model the mount reports (e.g. "Proxisky UMi17S (OnStepX)") once its port is set: the scan asks the mount briefly, unless pins or another program has the port open. Set the port in the new profile setting `TelescopeSettings.SerialPort` (e.g. /dev/ttyUSB0; through the API `profile/change-value?settingpath=TelescopeSettings-SerialPort`). It uses the commands and replies of INDI's OnStep driver: goto, sync, abort, park/unpark/set park, find home, tracking (sidereal, lunar, solar), manual moves at OnStep's ten move rates, pulse guiding, site and time (synced to the mount when TimeSync is on) and the meridian flip as a goto. Proxisky UMi mounts (UMi17R, UMi17S, UMi20S) are recognized by their vendor commands and named after their model. The Touch-N-Stars plugin's manual moves (`/ws/mount-control`) and slew rate choice (`/api/indi/mount/slew-rates`, `/api/indi/mount/slew-rate`) drive it too, with OnStep's rates 0.25x to Max. Not yet: custom tracking rates. The driver never toggles DTR or RTS, since clearing DTR before RTS restarts an ESP32 controller.
+### Fixed
+- Touch-N-Stars manual moves ignored the profile's "primary reversed" and "secondary reversed" settings: the plugin's `/ws/mount-control` drives the mount directly, past NINA's TelescopeVM, which applies them. It now applies them itself, for INDI mounts and the native OnStepX driver.
+
 ## 1.1.63 - 2026-10-09
 ### Added
 - Internal guider: the guiding engine of André Duffeck's pins-guider, a C# port of PHD2 (star finding, multi-star tracking, calibration, guide algorithms, backlash compensation, settling, dithering, guide log) with its own extensions (Predictive algorithm, periodic error, Dec guide mode Drift, pulse model, safety monitors, Guiding Coach, incident recorder and a closed-loop simulator), as the new project `NINA.GuideEngine` with its tests in `NINA.GuideEngine.Test`. It is not yet selectable as a guider; the connection to the guide camera, the mount and the guider list follows.

@@ -84,17 +84,30 @@ The `Equipment/AscomDevice.cs` base class is the shared adapter foundation for m
 
 ### OnStepX (pins)
 
-`SDK/TelescopeSDKs/OnStepXSDK` talks to OnStepX mount controllers over USB serial without INDI. Commands and reply
-types follow INDI's `lx200_OnStep.cpp`; vendor firmware built on OnStepX derives from `OnStepXDevice`
-(`ProxiskyUmiDevice` adds the Proxisky `:P…` commands of INDI's `lx200_proxisky.cpp`), and `OnStepXDevice.Connect`
-picks the class from what the controller reports.
+`SDK/TelescopeSDKs/OnStepXSDK` talks to OnStepX mount controllers over USB serial without INDI. Commands, formats and
+reply types follow INDI's `lx200_OnStep.cpp` and `lx200driver.cpp`; vendor firmware built on OnStepX derives from
+`OnStepXDevice` (`ProxiskyUmiDevice` adds the Proxisky `:P…` commands of INDI's `lx200_proxisky.cpp`), and
+`OnStepXDevice.Connect` picks the class from what the controller reports.
+
+`Equipment/MyTelescope/OnStepXTelescope` is the `ITelescope` on top, listed by `TelescopeChooserVM` and connected on
+`TelescopeSettings.SerialPort`. `OnStepXTelescope.Discover` names the list entry after the model the mount reports: it
+opens the port briefly with short timeouts, but not one this process has open (`OnStepXSerialPort.IsOpenInProcess`);
+INDI holds its port exclusively, so the open fails there. `Id` and `Name` stay fixed for the profile's selection. It reads the mount's state as one set of reads at most every 250 ms (the UI polls about
+30 properties at a time), keeps guide pulses per axis by time like INDI, and handles the OnStep behaviours
+`INDITelescope` documents: a goto right after tracking was switched on is refused as below the horizon (one retry).
+Homing ends when the controller clears its homing flag `h` in `:GU#`; `H` only means the axes are within the home
+tolerance, which the UMi misses after a long slew. The `:GU#` flags are decoded as OnStepX 10.20a writes them
+(`src/telescope/mount/status/Status.command.cpp` of hjd1964/OnStepX at 79492e8, the base of the UMi firmware); INDI
+still reads some of them as OnStep 3.x did (e.g. `W`, the pier side, as a PEC state). Where the firmware answers a
+command INDI sends blind, the driver reads the answer: `:hP#` is `1` or `0` (OnStepX replies `1`/`0` without `#` unless
+a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`).
 
 - It does not use `NINA.Core.Utility.SerialCommunication.SerialSdk`: OnStepX replies end in `#`, are a single bare
   character, or are absent, and an unknown command is answered with a bare `0`.
 - ESP32 controllers reset while RTS is set and DTR is not. `OnStepXSerialPort` keeps both set, as Linux sets them on
   open, and never toggles them; clearing DTR before RTS restarts the mount (about 8 s without replies).
 - Tests: `NINA.Test/Equipment/OnStepX`, with a scripted fake port; `OnStepXHardwareTest` is explicit and read-only
-  against a real mount on `ONSTEPX_PORT`.
+  against a real mount on `ONSTEPX_PORT`. Motion is checked by hand on the mount.
 
 ## Special Integration: SBIG Camera Service
 

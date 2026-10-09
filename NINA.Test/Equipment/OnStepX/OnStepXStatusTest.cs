@@ -83,6 +83,19 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void TryParse_HomingAndPulseGuideFlags() {
+            var homing = Parse("nphET290");
+            var guiding = Parse("NpGEW260");
+
+            Assert.That(homing.Homing, Is.True);
+            Assert.That(homing.Slewing, Is.True);
+            Assert.That(homing.AtHome, Is.False);
+            Assert.That(homing.PulseGuiding, Is.False);
+            Assert.That(guiding.PulseGuiding, Is.True);
+            Assert.That(guiding.Homing, Is.False);
+        }
+
+        [Test]
         public void TryParse_TheTrailingDigitsAreNotReadAsFlags() {
             // error 15 is sent as '0' + 15 = '?', error 11 as ';'; a park state hidden in them must not count
             Assert.That(OnStepXStatus.TryParse("nN2P?", out _), Is.False);
