@@ -30,7 +30,7 @@ Build shape from `NINA.Equipment.csproj`:
   - `MyRotator`
   - `MySafetyMonitor`
 - `SDK/`
-  Native/vendor interop wrappers for camera, focuser, filter wheel, and flat device SDKs.
+  Native/vendor interop wrappers for camera, focuser, filter wheel, flat device, rotator and telescope SDKs.
 - `Utility/`
   Discovery and integration helpers such as `ASCOMInteraction` and `AlpacaInteraction`.
 - `Exceptions/` and `Model/`
@@ -81,6 +81,20 @@ The code supports multiple backends in parallel:
 - file-based or built-in utility devices like `FileCamera`
 
 The `Equipment/AscomDevice.cs` base class is the shared adapter foundation for many ASCOM/Alpaca implementations.
+
+### OnStepX (pins)
+
+`SDK/TelescopeSDKs/OnStepXSDK` talks to OnStepX mount controllers over USB serial without INDI. Commands and reply
+types follow INDI's `lx200_OnStep.cpp`; vendor firmware built on OnStepX derives from `OnStepXDevice`
+(`ProxiskyUmiDevice` adds the Proxisky `:P…` commands of INDI's `lx200_proxisky.cpp`), and `OnStepXDevice.Connect`
+picks the class from what the controller reports.
+
+- It does not use `NINA.Core.Utility.SerialCommunication.SerialSdk`: OnStepX replies end in `#`, are a single bare
+  character, or are absent, and an unknown command is answered with a bare `0`.
+- ESP32 controllers reset while RTS is set and DTR is not. `OnStepXSerialPort` keeps both set, as Linux sets them on
+  open, and never toggles them; clearing DTR before RTS restarts the mount (about 8 s without replies).
+- Tests: `NINA.Test/Equipment/OnStepX`, with a scripted fake port; `OnStepXHardwareTest` is explicit and read-only
+  against a real mount on `ONSTEPX_PORT`.
 
 ## Special Integration: SBIG Camera Service
 
