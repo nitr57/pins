@@ -219,7 +219,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     public string Id => DeviceId;
 
-    public string Name => "Internal Guider";
+    public string Name => "Native Guider";
 
     public string DisplayName => Name;
 
@@ -229,7 +229,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     public string Description => "Multi-star autoguider (PHD2-compatible algorithms) running inside pins, using the guide camera slot.";
 
-    public string DriverInfo => "Internal Guider";
+    public string DriverInfo => "Native Guider";
 
     public string DriverVersion => typeof(InternalGuider).Assembly.GetName().Version?.ToString() ?? "0.1";
 
@@ -2079,7 +2079,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             var night = DateTime.Now.AddHours(-12).Date;
             var path = Path.Combine(dir, IncidentArchive.GuideLogFileName(night));
             guideLogWriter = new StreamWriter(path, append: true) { AutoFlush = true };
-            guideLog = new GuidingLog(guideLogWriter, SystemClock.Instance, new GuidingLogOptions { AppVersion = "pins Internal Guider " + DriverVersion });
+            guideLog = new GuidingLog(guideLogWriter, SystemClock.Instance, new GuidingLogOptions { AppVersion = "pins Native Guider " + DriverVersion });
             guideLog.EnableLogging();
             guideLogBridge = new GuideLogBridge(g, guideLog, mount, () => new GuideLogContext
             {

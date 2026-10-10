@@ -1,7 +1,7 @@
-# Internal Guider — user guide
+# Native Guider — user guide
 
 The internal guider runs inside pins (no PHD2 process). It appears in the guider chooser as
-**Internal Guider** next to PHD2; switching back to PHD2 is just selecting PHD2 again.
+**Native Guider** next to PHD2; switching back to PHD2 is just selecting PHD2 again.
 
 ## 1. Requirements
 
@@ -15,7 +15,7 @@ The internal guider runs inside pins (no PHD2 process). It appears in the guider
 ## 2. First-time setup (Touch-N-Stars)
 
 1. Equipment → Guide camera: choose the guide camera. Connect the **mount**.
-2. Equipment → Guider: choose **Internal Guider** and press connect. Connecting the guider also connects the
+2. Equipment → Guider: choose **Native Guider** and press connect. Connecting the guider also connects the
    guide camera if it isn't connected yet; disconnecting the guider leaves it connected. While the guider is
    connected it has the guide camera to itself: other captures with it are refused.
 3. Open the **Guiding** page → Settings (or use the API, see below) and check the *basic* settings:
