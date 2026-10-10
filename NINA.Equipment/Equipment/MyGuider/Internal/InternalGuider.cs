@@ -715,6 +715,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 PixelScale = PixelScale,
                 FrameNumber = latestFrame?.FrameNumber ?? 0,
                 LastProcessingMs = lastStep?.ProcessingMs ?? 0,
+                Timing = ToDto(g?.Timing),
                 LockX = lockPos.IsValid ? lockPos.X : null,
                 LockY = lockPos.IsValid ? lockPos.Y : null,
                 PrimaryStar = primary is null ? null : ToDto(primary),
@@ -735,6 +736,25 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             };
         }
     }
+
+    private static AdvancedGuideTiming? ToDto(GuideTiming? timing) => timing is null ? null : new AdvancedGuideTiming
+    {
+        Fps = timing.FramesPerSecond,
+        Cycles = timing.Cycles,
+        CycleMs = timing.Median.CycleMs,
+        ExposureMs = timing.Median.ExposureMs,
+        CameraMs = timing.Median.CameraMs,
+        ProcessingMs = timing.Median.ProcessingMs,
+        FrameToPulseMs = timing.Median.FrameToPulseMs,
+        PulseMs = timing.Median.PulseMs,
+        OtherMs = timing.Median.OtherMs,
+        LastCycleMs = timing.Last.CycleMs,
+        LastCameraMs = timing.Last.CameraMs,
+        LastProcessingMs = timing.Last.ProcessingMs,
+        LastFrameToPulseMs = timing.Last.FrameToPulseMs,
+        LastPulseMs = timing.Last.PulseMs,
+        LastOtherMs = timing.Last.OtherMs,
+    };
 
     public IReadOnlyList<AdvancedGuideStep> GetRecentSteps(int maxCount)
     {
