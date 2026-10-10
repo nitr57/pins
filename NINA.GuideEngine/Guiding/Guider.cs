@@ -35,6 +35,9 @@ public sealed partial class Guider : IAsyncDisposable
 {
     private const string MountName = "Mount";
 
+    // guiding frames in a row with every secondary star lost before they are found again (about a minute at 2 s)
+    private const int SecondaryRefreshFrames = 30;
+
     // a Dec runaway this soon after a meridian flip inverts Dec once instead of stopping (ARCHITECTURE.md, "Calibration")
     private static readonly TimeSpan FlipRunawayWindow = TimeSpan.FromMinutes(15);
 
@@ -87,6 +90,12 @@ public sealed partial class Guider : IAsyncDisposable
 
     private bool autoSelectRequested;
     private int autoSelectAttemptsLeft;
+
+    // manual star selection waiting for the next looping frame
+    private (GuidePoint Position, TaskCompletionSource<StarSelectionResult> Completion)? manualSelect;
+
+    // guiding frames in a row with the primary found and every measured secondary star lost
+    private int secondariesLostFrames;
     private PendingOperation? pending;
     private bool startGuidingRequested;
     private bool forceCalibration;
@@ -275,6 +284,42 @@ public sealed partial class Guider : IAsyncDisposable
     }
 
     /// <summary>
+    /// Select the star nearest <paramref name="position"/> (frame px, within the search region) as the guide star on the
+    /// next frame, like clicking a star in PHD2; in multi-star mode its secondary stars are found around it. Only while
+    /// looping exposures without guiding: completes with <see cref="StarSelectionError.Busy"/> while guiding, calibrating,
+    /// starting to guide or running the Coach, and with <see cref="StarSelectionError.NotLooping"/> when not looping.
+    /// </summary>
+    public Task<StarSelectionResult> SelectStarAsync(GuidePoint position, CancellationToken ct = default)
+    {
+        var tcs = new TaskCompletionSource<StarSelectionResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Post(() =>
+        {
+            if (state.IsGuidingActive() || state == GuiderState.Calibrating || coachHook is not null || startGuidingRequested)
+            {
+                tcs.TrySetResult(StarSelectionResult.Failed(StarSelectionError.Busy));
+                return;
+            }
+
+            if (state is not (GuiderState.Looping or GuiderState.Selected))
+            {
+                tcs.TrySetResult(StarSelectionResult.Failed(StarSelectionError.NotLooping));
+                return;
+            }
+
+            CancelManualSelect();
+            manualSelect = (position, tcs);
+        });
+
+        // no loop to run the command: answer now
+        if (!IsLoopRunning)
+        {
+            DrainCommands();
+        }
+
+        return ct.CanBeCanceled ? tcs.Task.WaitAsync(ct) : tcs.Task;
+    }
+
+    /// <summary>
     /// Start guiding (PHD2 guide): selects a star if needed, calibrates if needed (or forced), starts guiding
     /// and completes once settled.
     /// </summary>
@@ -407,6 +452,13 @@ public sealed partial class Guider : IAsyncDisposable
         startGuidingRequested = false;
         autoSelectRequested = false;
         forceCalibration = false;
+        CancelManualSelect();
+    }
+
+    private void CancelManualSelect()
+    {
+        manualSelect?.Completion.TrySetResult(StarSelectionResult.Failed(StarSelectionError.Cancelled));
+        manualSelect = null;
     }
 
     /// <summary>Stops the current guiding/calibration run (without touching the pending operation) so it can be restarted.</summary>
@@ -873,6 +925,13 @@ public sealed partial class Guider : IAsyncDisposable
         pulses = [];
         Emit(new LoopingExposuresEvent(now, frame.FrameNumber));
 
+        if (manualSelect is { } request)
+        {
+            // then tracked on this frame too: the overlay shows the new stars at once, a failed choice keeps the old star
+            manualSelect = null;
+            request.Completion.TrySetResult(SelectStarCore(frame, request.Position, now));
+        }
+
         if (autoSelectRequested)
         {
             int edge = calibration is null ? CalibrationDistancePx(snapshot) : 0;
@@ -923,10 +982,99 @@ public sealed partial class Guider : IAsyncDisposable
         if (startGuidingRequested && r.StarFound)
         {
             startGuidingRequested = false;
+
+            // a star kept from before (e.g. after a failure or a slew) may not be the one its secondaries belong to
+            RefreshSecondaries(frame, force: false);
             BeginGuiding(r.Primary.Position, snapshot, now, out pulses);
         }
 
         return r;
+    }
+
+    private StarSelectionResult SelectStarCore(GuideFrame frame, GuidePoint position, DateTimeOffset now)
+    {
+        var sel = tracker.SelectStar(frame, position);
+        if (!sel.Success)
+        {
+            return sel;
+        }
+
+        // the explicit choice replaces a pending automatic selection
+        autoSelectRequested = false;
+        secondariesLostFrames = 0;
+        lastGoodMass = sel.Primary.Mass;
+        lastGoodSnr = sel.Primary.Snr;
+        Emit(new StarSelectedEvent(now, sel.Primary.Position.X, sel.Primary.Position.Y));
+        SetLockPositionCore(sel.Primary.Position);
+        SetState(GuiderState.Selected);
+        return sel;
+    }
+
+    /// <summary>
+    /// Extension: finds the secondary stars again around the primary (see <see cref="MultiStarTracker.RefreshSecondaryStars"/>);
+    /// alerts when it replaced secondaries that were lost.
+    /// </summary>
+    private void RefreshSecondaries(GuideFrame frame, bool force)
+    {
+        secondariesLostFrames = 0;
+        var r = tracker.RefreshSecondaryStars(frame, force);
+        if (r.Replaced && r.Before > 0)
+        {
+            Alert(GuideErrorCode.SecondaryStarsRefreshed, $"{r.Found} secondary stars (before: {r.Before})");
+        }
+    }
+
+    /// <summary>
+    /// Extension: a secondary star that is lost is only searched at its original offset from the primary, so when the
+    /// primary changes to a neighbouring star (clouds, a reacquisition) all secondaries stay lost and multi-star guiding
+    /// silently degrades to the primary alone. Finds them again after <see cref="SecondaryRefreshFrames"/> guiding frames
+    /// in a row with the primary found and every measured secondary lost.
+    /// </summary>
+    private void CheckSecondaryStars(GuideFrame frame, MultiStarFrameResult r)
+    {
+        if (r.Outcome != TrackerOutcome.Found)
+        {
+            // a lost or estimated primary says nothing about the secondaries
+            return;
+        }
+
+        int measured = 0;
+        int lost = 0;
+        foreach (var s in r.Stars)
+        {
+            if (s.Index == 0)
+            {
+                continue;
+            }
+
+            switch (s.Status)
+            {
+                case TrackedStarStatus.Lost:
+                    lost++;
+                    measured++;
+                    break;
+                case TrackedStarStatus.Used or TrackedStarStatus.Miss or TrackedStarStatus.ReferenceReset or TrackedStarStatus.Resnapped:
+                    measured++;
+                    break;
+            }
+        }
+
+        if (measured == 0)
+        {
+            // not measured this frame (settling, stabilising, paused, single star)
+            return;
+        }
+
+        if (lost < measured)
+        {
+            secondariesLostFrames = 0;
+            return;
+        }
+
+        if (++secondariesLostFrames >= SecondaryRefreshFrames)
+        {
+            RefreshSecondaries(frame, force: true);
+        }
     }
 
     private void BeginGuiding(GuidePoint starPosition, MountSnapshot snapshot, DateTimeOffset now, out IReadOnlyList<PulseCommand> pulses)
@@ -1153,6 +1301,7 @@ public sealed partial class Guider : IAsyncDisposable
 
     private void ResetGuidingRuntime()
     {
+        secondariesLostFrames = 0;
         runaway.Reset();
         response.Reset();
         reacquire.Reset();
@@ -1182,6 +1331,7 @@ public sealed partial class Guider : IAsyncDisposable
         // (PHD2's refinement gates are made for guiding near the lock position, not for unguided drift and test pulses)
         var ts = new TrackerState(IsGuiding: true, IsSettling: settle.IsActive, IsPaused: paused, RaOnly: raOnly, GuidingEnabled: !paused && !measuring);
         var r = tracker.ProcessFrame(frame, lockPosition, ts, now);
+        CheckSecondaryStars(frame, r);
         if (transform is not { } t)
         {
             Fail(GuideErrorCode.NotCalibrated, "no calibration while guiding");

@@ -69,6 +69,13 @@ namespace NINA.Equipment.Interfaces {
         Task<bool> DitherBy(double pixels, bool raOnly, CancellationToken ct);
 
         /// <summary>
+        /// Select the star nearest (<paramref name="x"/>, <paramref name="y"/>) (camera px as in <see cref="GetLatestFrame"/>, within the
+        /// search region) as the guide star, like clicking a star in PHD2; in multi-star mode its secondary stars are found around it.
+        /// Only while looping without guiding. Completes once the next frame was processed.
+        /// </summary>
+        Task<AdvancedStarSelectionResult> SelectGuideStar(double x, double y, CancellationToken ct);
+
+        /// <summary>
         /// Build a dark library for exposures between <paramref name="minExposureSeconds"/> and <paramref name="maxExposureSeconds"/>
         /// (PHD2's standard exposure steps), <paramref name="framesPerExposure"/> frames each. The guide scope must be covered and
         /// the guider stopped. Progress is reported through <see cref="AdvancedGuiderEvent"/> with type

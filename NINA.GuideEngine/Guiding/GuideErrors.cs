@@ -26,6 +26,7 @@ public enum GuideErrorCode
     LockPositionNearEdge = 106,
     PrimaryEstimatedFromSecondaries = 107,
     StarReacquired = 108,
+    SecondaryStarsRefreshed = 109,
 
     // Calibration 200-299
     CalibrationFailedRaNoMove = 200,
@@ -102,6 +103,9 @@ public static class GuideErrorCatalog
             "No action needed. Frequent occurrences suggest choosing a different primary."),
         E(GuideErrorCode.StarReacquired, GuideErrorSeverity.Info, "Guide star reacquired",
             "The guide star was found again and guiding resumed.", "No action needed."),
+        E(GuideErrorCode.SecondaryStarsRefreshed, GuideErrorSeverity.Info, "Secondary stars found again",
+            "The secondary guide stars were no longer where they were expected (the guide star may have changed to a neighbouring star, or the field moved), so they were found again around the guide star.",
+            "No action needed. If it happens often, check for clouds and that the guide star is not lost."),
         E(GuideErrorCode.CalibrationFailedRaNoMove, GuideErrorSeverity.Critical, "Calibration failed: RA did not move",
             "The star did not move far enough in RA during calibration.",
             "Check the guide output connection (mount/ST4), the guide rate, and that the mount is tracking and unparked."),
