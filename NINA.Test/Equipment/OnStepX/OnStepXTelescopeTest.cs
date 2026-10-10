@@ -892,6 +892,85 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task SetCustomTrackingRate_SendsOffsetsInOnStepXUnits() {
+            // RA 0.1 s of RA per sidereal second = 1.5"/s; Dec 2"/s per SI second = 1.994539"/s per sidereal second
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S()
+                .On(":GU#", Tracking).On(":SXTR,1.500000#", "1").On(":SXTD,1.994539#", "1"));
+
+            telescope.SetCustomTrackingRate(0.1, 2.0);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":SXTR,1.500000#", ":SXTD,1.994539#" }));
+            var rate = telescope.TrackingRate;
+            Assert.That(rate.TrackingMode, Is.EqualTo(TrackingMode.Custom));
+            Assert.That(rate.CustomRightAscensionRate, Is.EqualTo(0.1).Within(1e-9));
+            Assert.That(rate.CustomDeclinationRate, Is.EqualTo(2.0).Within(1e-9));
+            Assert.That(telescope.TrackingModes, Does.Contain(TrackingMode.Custom));
+            Assert.That(telescope.CanSetRightAscensionRate && telescope.CanSetDeclinationRate, Is.True);
+        }
+
+        [Test]
+        public async Task SetCustomTrackingRate_FromLunar_SelectsSiderealFirst() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", "Np(EW260#"));
+            port.DefaultReply = "1";
+
+            telescope.SetCustomTrackingRate(0.0, -0.5);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":TQ#", ":SXTR,0.000000#", ":SXTD,-0.498635#" }));
+        }
+
+        [Test]
+        public async Task SetCustomTrackingRate_NotTracking_StartsTracking() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", Idle));
+            port.DefaultReply = "1";
+
+            telescope.SetCustomTrackingRate(0.1, 0.0);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Te#", ":SXTR,1.500000#", ":SXTD,0.000000#" }));
+        }
+
+        [Test]
+        public async Task SetCustomTrackingRate_Zero_OnlyClearsTheOffsets() {
+            // TelescopeVM sends it after every tracking mode it sets
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S()
+                .On(":GU#", Tracking).On(":GXTR#", "1.50000000#"), timeSync: false);
+            port.DefaultReply = "1";
+
+            telescope.SetCustomTrackingRate(0, 0);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":SXTR,0.000000#", ":SXTD,0.000000#" }));
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Sidereal));
+        }
+
+        [Test]
+        public async Task Connect_ReadsTheControllersRateOffsets() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", Tracking).On(":GXTR#", "15.00000000#"));
+
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Custom));
+            Assert.That(telescope.TrackingRate.CustomRightAscensionRate, Is.EqualTo(1.0).Within(1e-9));
+        }
+
+        [Test]
+        public async Task FindHome_ReadsTheRateOffsetsAgain() {
+            // Home::reset clears them
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GXTR#", "15.00000000#", "0.00000000#"));
+            port.On(":GU#", Tracking, "nphET290#", "nNpHET290#");
+
+            await telescope.FindHome(CancellationToken.None);
+            port.On(":GU#", Tracking);
+            await Task.Delay(300);
+
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Sidereal));
+        }
+
+        [Test]
+        public async Task SetCustomTrackingRate_BeyondTheFirmwareLimit_Throws() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+
+            Assert.That(() => telescope.SetCustomTrackingRate(121, 0), Throws.InstanceOf<ArgumentOutOfRangeException>());
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.Empty);
+        }
+
+        [Test]
         public async Task PortFailure_EndsTheConnection() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
             port.FailWrites = new IOException("device unplugged");

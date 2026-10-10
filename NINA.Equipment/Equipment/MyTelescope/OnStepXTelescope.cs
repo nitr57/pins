@@ -138,6 +138,11 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private double slewSpeed = double.NaN;
         private AlignmentMode alignmentMode = AlignmentMode.GermanPolar;
         private OnStepXCompensation? compensationBeforeRateChange;
+
+        // The tracking rate offsets in OnStepX's units (arc-seconds per sidereal second), as last set or read: the
+        // controller changes them only on request and when homing.
+        private double raRateOffset;
+        private double decRateOffset;
         private DateTime firstStateFailureAt;
         private (double Ra, double Dec, DateTime At)? motionReference;
         private bool coordinatesMoving;
@@ -378,6 +383,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 _ => AlignmentMode.GermanPolar,
             };
             compensationBeforeRateChange = null;
+            ReadRateOffsets(d);
             int currentMoveRate = d.GetStatus().MoveRateIndex;
             selectedMoveRate = currentMoveRate is >= 0 and <= OnStepXDevice.MaxMoveRateIndex ? currentMoveRate : DefaultMoveRateIndex;
             Logger.Info($"OnStepX: site {siteLatitude:F4}, {siteLongitude:F4}, {siteElevation:F0} m, slew speed {slewSpeed:F2}°/s, guide rate {guideRate:F2}x, {alignmentMode}, preferred pier side {d.GetPreferredPierSide()?.ToString() ?? "unknown"}");
@@ -808,11 +814,17 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
-        public IList<TrackingMode> TrackingModes { get; } = ImmutableList.Create(TrackingMode.Sidereal, TrackingMode.Lunar, TrackingMode.Solar, TrackingMode.King, TrackingMode.Stopped);
+        public IList<TrackingMode> TrackingModes { get; } = ImmutableList.Create(TrackingMode.Sidereal, TrackingMode.Lunar, TrackingMode.Solar, TrackingMode.King, TrackingMode.Custom, TrackingMode.Stopped);
 
         /// <summary>From :GU# ('(' lunar, 'O' solar, 'k' King), so a rate set on the mount or by homing shows too.</summary>
         public TrackingRate TrackingRate => CurrentState?.Status is not { Tracking: true } status
             ? new TrackingRate { TrackingMode = TrackingMode.Stopped }
+            : HasRateOffsets
+            ? new TrackingRate {
+                TrackingMode = TrackingMode.Custom,
+                CustomRightAscensionRate = raRateOffset / 15.0,
+                CustomDeclinationRate = decRateOffset * SiderealShiftTrackingRate.SIDEREAL_SEC_PER_SI_SEC,
+            }
             : new TrackingRate {
                 TrackingMode = status.TrackingRate switch {
                     OnStepXTrackingRate.Lunar => TrackingMode.Lunar,
@@ -872,12 +884,61 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
-        public bool CanSetDeclinationRate => false;
+        public bool CanSetDeclinationRate => Connected;
 
-        public bool CanSetRightAscensionRate => false;
+        public bool CanSetRightAscensionRate => Connected;
 
-        public void SetCustomTrackingRate(double rightAscensionRate, double declinationRate) =>
-            throw new NotSupportedException("Custom tracking rate not supported");
+        private bool HasRateOffsets => Math.Abs(raRateOffset) > RateOffsetEpsilon || Math.Abs(decRateOffset) > RateOffsetEpsilon;
+
+        /// <summary>Below this an offset read back from the controller (8 decimals, float) counts as none.</summary>
+        private const double RateOffsetEpsilon = 1e-6;
+
+        /// <summary>
+        /// ASCOM's custom rates as offsets to the sidereal rate (:SXTR, :SXTD), which OnStepX takes in arc-seconds per
+        /// sidereal second: RA in seconds of RA per sidereal second times 15, Dec in arc-seconds per SI second divided by
+        /// 1.0027379 sidereal seconds per SI second. A rate other than zero selects the sidereal rate and starts tracking
+        /// first, as AscomTelescope does; zero only clears the offsets (TelescopeVM sends it after every tracking mode).
+        /// </summary>
+        public void SetCustomTrackingRate(double rightAscensionRate, double declinationRate) {
+            double ra = rightAscensionRate * 15.0;
+            double dec = declinationRate / SiderealShiftTrackingRate.SIDEREAL_SEC_PER_SI_SEC;
+            if (Math.Abs(ra) > OnStepXDevice.MaxTrackingRateOffset || Math.Abs(dec) > OnStepXDevice.MaxTrackingRateOffset) {
+                throw new ArgumentOutOfRangeException(nameof(rightAscensionRate),
+                    $"OnStepX takes custom rates up to {OnStepXDevice.MaxTrackingRateOffset / 15.0:F0} s/s in RA and {OnStepXDevice.MaxTrackingRateOffset:F0}\"/s in Dec");
+            }
+            if (!Connected) {
+                throw Failure("cannot set a custom tracking rate: not connected");
+            }
+
+            if (ra != 0 || dec != 0) {
+                if (CurrentState?.Status is { } status && status.TrackingRate != OnStepXTrackingRate.Sidereal) {
+                    TrackingMode = TrackingMode.Sidereal;
+                } else if (!TrackingEnabled) {
+                    TrackingEnabled = true;
+                }
+            }
+            RunOrThrow("set the custom tracking rate", d => d.SetTrackingRateOffsets(ra, dec));
+            raRateOffset = ra;
+            decRateOffset = dec;
+            Logger.Info($"OnStepX: tracking rate offsets RA {ra:0.000###}\"/s, Dec {dec:0.000###}\"/s per sidereal second (:SXTR, :SXTD)");
+            InvalidateState();
+            RaisePropertyChanged(nameof(TrackingMode));
+            RaisePropertyChanged(nameof(TrackingRate));
+        }
+
+        /// <summary>The controller's offsets; zero when it does not tell (they start at zero after power on).</summary>
+        private void ReadRateOffsets(OnStepXDevice d) {
+            (double Ra, double Dec)? offsets = null;
+            try {
+                offsets = d.GetTrackingRateOffsets();
+            } catch (OnStepXException ex) {
+                Logger.Debug($"OnStepX: reading the tracking rate offsets failed: {ex.Message}");
+            }
+            (raRateOffset, decRateOffset) = offsets ?? (0, 0);
+            if (HasRateOffsets) {
+                Logger.Info($"OnStepX: tracking rate offsets RA {raRateOffset:0.000###}\"/s, Dec {decRateOffset:0.000###}\"/s per sidereal second");
+            }
+        }
 
         #endregion Tracking
 
@@ -981,6 +1042,15 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             } catch (OperationCanceledException) {
                 AbortQuietly();
                 throw;
+            } finally {
+                // Home::reset clears the tracking rate offsets
+                if (Connected && device is { } d) {
+                    try {
+                        ReadRateOffsets(d);
+                    } catch (Exception ex) when (IsPortFailure(ex)) {
+                        Logger.Debug($"OnStepX: reading the tracking rate offsets after homing failed: {ex.Message}");
+                    }
+                }
             }
         }
 

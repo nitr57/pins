@@ -82,6 +82,8 @@ namespace NINA.Test.Equipment.OnStepX {
             .On(":GX97#", "3.5#")
             .On(":hP#", "1")
             .On(":GX96#", "E#")
+            .On(":GXTR#", "0.00000000#")
+            .On(":GXTD#", "0.00000000#")
             .On(":hC#", (string?)null)
             .On(":GE#", "00#");
 

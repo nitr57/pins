@@ -207,6 +207,35 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
             return Transport.SendBlindNow(string.Create(Inv, $":Mg{Letter(direction)}{Math.Min(durationMs, MaxPulseMs):0000}#"));
         }
 
+        /// <summary>The largest tracking rate offset OnStepX takes; it clamps larger ones (Mount.command.cpp).</summary>
+        public const double MaxTrackingRateOffset = 1800.0;
+
+        /// <summary>
+        /// The tracking rate offsets (:GXTR#, :GXTD#) in arc-seconds per sidereal second, RA counted in RA (15" per
+        /// second of RA), positive with RA or Dec increasing; null when unreadable. Homing clears them.
+        /// </summary>
+        public (double Ra, double Dec)? GetTrackingRateOffsets() {
+            var ra = Transport.SendForString(":GXTR#");
+            var dec = Transport.SendForString(":GXTD#");
+            return ra.Terminated && dec.Terminated
+                && double.TryParse(ra.Text, NumberStyles.Float, Inv, out double raOffset)
+                && double.TryParse(dec.Text, NumberStyles.Float, Inv, out double decOffset)
+                ? (raOffset, decOffset)
+                : null;
+        }
+
+        /// <summary>
+        /// :SXTR,n.n# and :SXTD,n.n#: offsets added to the tracking rate, in the units of
+        /// <see cref="GetTrackingRateOffsets"/>; each refused with the reason from :GE#.
+        /// </summary>
+        public void SetTrackingRateOffsets(double ra, double dec) {
+            if (Math.Abs(ra) > MaxTrackingRateOffset || Math.Abs(dec) > MaxTrackingRateOffset) {
+                throw new ArgumentOutOfRangeException(nameof(ra), $"tracking rate offsets are limited to ±{MaxTrackingRateOffset}\"/s");
+            }
+            SendExpectingAcceptance(string.Create(Inv, $":SXTR,{ra:0.000000}#"));
+            SendExpectingAcceptance(string.Create(Inv, $":SXTD,{dec:0.000000}#"));
+        }
+
         /// <summary>Site elevation in metres (:Gv#), NaN when unreadable.</summary>
         public double GetElevation() {
             var reply = Transport.SendForString(":Gv#");

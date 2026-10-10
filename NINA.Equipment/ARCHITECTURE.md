@@ -124,6 +124,11 @@ a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`
   (`Home::request`), and a fast move brakes after its stop as `GA_BREAK`, which `Guide::active()` leaves out. The driver
   counts `h` and, like `INDITelescope`, RA/Dec changing faster than 0.05°/s, taken over at least 0.5 s because `:GR#`
   has whole seconds.
+- Custom tracking rates are OnStepX's tracking rate offsets (`:SXTR,n.n#`, `:SXTD,n.n#`, `Mount.command.cpp`), in
+  arc-seconds per sidereal second with RA counted in RA: ASCOM's RA rate times 15, its Dec rate (per SI second)
+  divided by 1.0027379. `:GU#` does not show them, so the driver keeps what it set and reads `:GXTR#`/`:GXTD#` only at
+  connect and after homing, which clears them (`Home::reset`). INDI's `lx200_OnStep` sends `:RA`/`:RE` for this, which
+  OnStepX takes as guide rates.
 - Tracking rate and rate compensation come from `:GU#` (`(` lunar, `O` solar, `k` King; `r`/`t` with `s` for one
   axis). `:TL#`, `:TS#` and `:TK#` turn compensation off and `:TQ#` does not restore it, so the driver restores it on
   the way back to sidereal.

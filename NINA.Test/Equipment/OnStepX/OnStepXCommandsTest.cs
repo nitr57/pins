@@ -316,6 +316,48 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(port.Written, Is.EqualTo(new[] { command }));
         }
 
+        [Test]
+        public void SetTrackingRateOffsets() {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(":SXTR,1.500000#", "1").On(":SXTD,-0.250000#", "1"));
+
+            device.SetTrackingRateOffsets(1.5, -0.25);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":SXTR,1.500000#", ":SXTD,-0.250000#" }));
+        }
+
+        [Test]
+        public void SetTrackingRateOffsets_Refused_ThrowsTheReason() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":SXTR,1.500000#", "0").On(":GE#", "04#"));
+
+            var ex = Assert.Throws<OnStepXCommandRefusedException>(() => device.SetTrackingRateOffsets(1.5, 0));
+
+            Assert.That(ex!.Error, Is.EqualTo(OnStepXCommandError.ParameterRange));
+        }
+
+        [Test]
+        public void SetTrackingRateOffsets_BeyondTheFirmwareLimit_Throws() {
+            // OnStepX would clamp it to 1800 without saying so
+            var (device, port) = Connect();
+
+            Assert.That(() => device.SetTrackingRateOffsets(0, 1800.5), Throws.InstanceOf<ArgumentOutOfRangeException>());
+            Assert.That(port.Written, Is.Empty);
+        }
+
+        [TestCase("1.50000000#", "-0.25000000#", 1.5, -0.25)]
+        [TestCase("0.00000000#", "0.00000000#", 0.0, 0.0)]
+        public void GetTrackingRateOffsets(string ra, string dec, double expectedRa, double expectedDec) {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":GXTR#", ra).On(":GXTD#", dec));
+
+            Assert.That(device.GetTrackingRateOffsets(), Is.EqualTo((expectedRa, expectedDec)));
+        }
+
+        [Test]
+        public void GetTrackingRateOffsets_Unreadable_IsNull() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":GXTR#", "0"));
+
+            Assert.That(device.GetTrackingRateOffsets(), Is.Null);
+        }
+
         [TestCase("E#", OnStepXPreferredPierSide.East)]
         [TestCase("W#", OnStepXPreferredPierSide.West)]
         [TestCase("B#", OnStepXPreferredPierSide.Best)]
