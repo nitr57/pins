@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Internal guider, multi-star: after the guide star changed to a neighbouring star (clouds, a reacquisition, or a star kept from before a failure or a slew), every secondary star stayed lost, because a lost secondary is only searched at its old offset from the guide star, and guiding silently went on with the guide star alone (on a rig night 1 of 12 stars was used). The secondary stars are now found again around the guide star when guiding starts on a kept star whose secondaries are mostly gone, and after 30 guiding frames in a row with all of them lost (alert 109 *Secondary stars found again*). The old list is kept when fewer than half as many stars are found, e.g. under clouds
 - Touch-N-Stars manual moves ignored the profile's "primary reversed" and "secondary reversed" settings: the plugin's `/ws/mount-control` drives the mount directly, past NINA's TelescopeVM, which applies them. It now applies them itself, for INDI mounts and the native OnStepX driver.
+### Changed
+- Updated NINA to 3.3.0.1066-nightly
 
 ## 1.1.63 - 2026-10-09
 ### Added

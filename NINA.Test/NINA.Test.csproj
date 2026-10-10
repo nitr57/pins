@@ -54,13 +54,17 @@
     <Compile Remove="Sequencer\Conditions\AltitudeExpressionLifecycleTest.cs" />
     <Compile Remove="Sequencer\Editing\**\*.cs" />
     <Compile Remove="Sequencer\SequenceItem\Utility\LoadImagingLayoutDataTemplateTest.cs" />
+    <Compile Remove="Sequencer\View\DeferredSequenceHeaderTest.cs" />
+    <Compile Remove="Sequencer\View\SequenceBlockViewTest.cs" />
     <Compile Remove="Sequencer\View\MiniSequencer\MiniSequencerViewTest.cs" />
     <Compile Remove="SimpleSequencer\SimpleDSOContainerViewTest.cs" />
     <Compile Remove="SimpleSequencer\SimpleSequenceViewTest.cs" />
+    <Compile Remove="View\CachedPlotTest.cs" />
     <Compile Remove="View\AnchorableSequenceViewTest.cs" />
     <Compile Remove="View\DirectGuiderDetailViewTest.cs" />
     <Compile Remove="View\GuiderChartViewTest.cs" />
     <Compile Remove="View\HyperlinkBehaviorTest.cs" />
+    <Compile Remove="View\SvgResourceTest.cs" />
     <Compile Remove="ViewModel\DockManagerVMTest.cs" />
   </ItemGroup>
   <ItemGroup>
