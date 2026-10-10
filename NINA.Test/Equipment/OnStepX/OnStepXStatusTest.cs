@@ -60,10 +60,28 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(status.Park, Is.EqualTo(park));
         }
 
+        [TestCase("NpEW260", OnStepXTrackingRate.Sidereal)]
+        [TestCase("Np(EW260", OnStepXTrackingRate.Lunar)]
+        [TestCase("NpOEW260", OnStepXTrackingRate.Solar)]
+        [TestCase("NpkEW260", OnStepXTrackingRate.King)]
+        public void TryParse_TrackingRate(string reply, OnStepXTrackingRate rate) {
+            Assert.That(Parse(reply).TrackingRate, Is.EqualTo(rate));
+        }
+
+        [TestCase("NpEW260", OnStepXCompensation.None)]
+        [TestCase("NprEW260", OnStepXCompensation.RefractionDual)]
+        [TestCase("NprsEW260", OnStepXCompensation.Refraction)]
+        [TestCase("NptEW260", OnStepXCompensation.ModelDual)]
+        [TestCase("NptsEW260", OnStepXCompensation.Model)]
+        public void TryParse_Compensation(string reply, OnStepXCompensation compensation) {
+            Assert.That(Parse(reply).Compensation, Is.EqualTo(compensation));
+        }
+
         [TestCase("nNpE260", OnStepXMountType.GermanEquatorial)]
         [TestCase("nNpK260", OnStepXMountType.Fork)]
-        [TestCase("nNpk260", OnStepXMountType.ForkAlt)]
+        [TestCase("nNpk260", OnStepXMountType.Unknown)]
         [TestCase("nNpA260", OnStepXMountType.AltAz)]
+        [TestCase("nNpL260", OnStepXMountType.AltAlt)]
         [TestCase("nNp260", OnStepXMountType.Unknown)]
         public void TryParse_MountType(string reply, OnStepXMountType mountType) {
             var status = Parse(reply);

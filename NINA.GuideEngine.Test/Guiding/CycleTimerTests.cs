@@ -40,7 +40,9 @@ public class CycleTimerTests
         last.ProcessingMs.Should().BeApproximately(1, 1e-6);
         last.FrameToPulseMs!.Value.Should().BeApproximately(1.8, 1e-6);
         last.PulseMs.Should().BeApproximately(347, 1e-6);
-        last.OtherMs.Should().BeApproximately(12, 1e-6);
+        // 12 ms after the pulses and 0.8 ms between processing and the pulses
+        last.OtherMs.Should().BeApproximately(12.8, 1e-6);
+        (last.ExposureMs + last.CameraMs + last.ProcessingMs + last.PulseMs + last.OtherMs).Should().BeApproximately(last.CycleMs, 1e-6);
         timer.Timing.FramesPerSecond.Should().BeApproximately(1000 / 912.8, 1e-9);
         timer.Timing.Cycles.Should().Be(1);
     }

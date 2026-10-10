@@ -49,6 +49,7 @@ namespace NINA.Profile {
             indiDriver = "None";
             indiMaxSlewRateDps = 4.0;
             serialPort = string.Empty;
+            preferredPierSide = string.Empty;
         }
 
         private string id;
@@ -325,6 +326,25 @@ namespace NINA.Profile {
             set {
                 if (serialPort != value) {
                     serialPort = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string preferredPierSide;
+
+        /// <summary>
+        /// The pier side the mount prefers for gotos: "East", "West" or "Best" (stay on the current side as long as
+        /// possible); empty leaves the mount's own setting. Mount drivers that support it set it at every connect
+        /// (so far pins' native OnStepX driver, :SX96). With "Best" a goto for a meridian flip may stay on the same side
+        /// until the meridian limit.
+        /// </summary>
+        [DataMember]
+        public string PreferredPierSide {
+            get => preferredPierSide;
+            set {
+                if (preferredPierSide != value) {
+                    preferredPierSide = value;
                     RaisePropertyChanged();
                 }
             }

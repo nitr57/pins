@@ -665,7 +665,6 @@ public class ClosedLoopTests
             $"scale {h.Guider.PixelScale:F2}″/px; {Describe("RA", h.Guider.RaAlgorithm)}; {Describe("Dec", h.Guider.DecAlgorithm)}");
     }
 
-    /// <summary>Wires a simulator, a guider and an event recorder together.</summary>
     [Test]
     public async Task Measures_the_guide_cycle()
     {
@@ -691,10 +690,11 @@ public class ClosedLoopTests
             timing.Median.PulseMs.Should().BeGreaterThan(0);
         }
         var last = timing.Last;
-        (last.ExposureMs + last.CameraMs + last.ProcessingMs + (last.FrameToPulseMs is null ? 0 : last.FrameToPulseMs.Value - last.ProcessingMs) + last.PulseMs + last.OtherMs)
+        (last.ExposureMs + last.CameraMs + last.ProcessingMs + last.PulseMs + last.OtherMs)
             .Should().BeApproximately(last.CycleMs, 1e-6, "the parts of one cycle add up to it");
     }
 
+    /// <summary>Wires a simulator, a guider and an event recorder together.</summary>
     private sealed class Harness
     {
         private readonly object gate = new();

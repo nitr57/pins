@@ -715,7 +715,8 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 PixelScale = PixelScale,
                 FrameNumber = latestFrame?.FrameNumber ?? 0,
                 LastProcessingMs = lastStep?.ProcessingMs ?? 0,
-                Timing = ToDto(g?.Timing),
+                // the last cycles of a stopped loop are no frame rate any more
+                Timing = g is { IsLoopRunning: true } ? ToDto(g.Timing) : null,
                 LockX = lockPos.IsValid ? lockPos.X : null,
                 LockY = lockPos.IsValid ? lockPos.Y : null,
                 PrimaryStar = primary is null ? null : ToDto(primary),

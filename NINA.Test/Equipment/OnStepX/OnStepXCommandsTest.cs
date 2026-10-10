@@ -28,20 +28,24 @@ namespace NINA.Test.Equipment.OnStepX {
             return (device, port);
         }
 
-        [TestCase(4 + 15 / 3600.0, "04:00:15")]
-        [TestCase(0.0, "00:00:00")]
-        [TestCase(23.9999999, "00:00:00")]
-        [TestCase(-1.0, "23:00:00")]
-        [TestCase(12.5 + 29.6 / 3600, "12:30:30")]
+        [TestCase(4 + 15 / 3600.0, "04:00:15.0000")]
+        [TestCase(0.0, "00:00:00.0000")]
+        [TestCase(23.9999999, "23:59:59.9996")]
+        [TestCase(23.99999999, "00:00:00.0000")]
+        [TestCase(-1.0, "23:00:00.0000")]
+        [TestCase(12.5 + 29.6 / 3600, "12:30:29.6000")]
+        [TestCase(5 + 59 / 60.0 + 59.99996 / 3600, "06:00:00.0000")]
         public void FormatRightAscension(double hours, string expected) {
             Assert.That(OnStepXDevice.FormatRightAscension(hours), Is.EqualTo(expected));
         }
 
-        [TestCase(90.0, "+90*00:00")]
-        [TestCase(0.0, "+00*00:00")]
-        [TestCase(-(5 + 30 / 60.0 + 36 / 3600.0), "-05*30:36")]
-        [TestCase(-0.5, "-00*30:00")]
-        [TestCase(45.5, "+45*30:00")]
+        [TestCase(90.0, "+90*00:00.000")]
+        [TestCase(0.0, "+00*00:00.000")]
+        [TestCase(-(5 + 30 / 60.0 + 36 / 3600.0), "-05*30:36.000")]
+        [TestCase(-0.5, "-00*30:00.000")]
+        [TestCase(45.5, "+45*30:00.000")]
+        [TestCase(12 + 34 / 60.0 + 56.789 / 3600, "+12*34:56.789")]
+        [TestCase(-(9 + 59 / 60.0 + 59.9996 / 3600), "-10*00:00.000")]
         public void FormatDeclination(double degrees, string expected) {
             Assert.That(OnStepXDevice.FormatDeclination(degrees), Is.EqualTo(expected));
         }
@@ -65,6 +69,9 @@ namespace NINA.Test.Equipment.OnStepX {
         [TestCase(0.0, "000:00")]
         [TestCase(5.5, "-05:30")]
         [TestCase(5.75, "-05:45")]
+        [TestCase(0.5, "-00:30")]
+        [TestCase(-0.5, "000:30")]
+        [TestCase(-9.5, "009:30")]
         public void FormatUtcOffset(double offsetHours, string expected) {
             Assert.That(OnStepXDevice.FormatUtcOffset(offsetHours), Is.EqualTo(expected));
         }
@@ -72,21 +79,21 @@ namespace NINA.Test.Equipment.OnStepX {
         [Test]
         public void Goto_SetsTheTargetAndStarts() {
             var (device, port) = Connect(FakeOnStepXPort.Umi17S()
-                .On(":Sr04:00:15#", "1")
-                .On(":Sd+45*30:00#", "1")
+                .On(":Sr04:00:15.0000#", "1")
+                .On(":Sd+45*30:00.000#", "1")
                 .On(":MS#", "0"));
 
             var error = device.Goto(4 + 15 / 3600.0, 45.5);
 
             Assert.That(error, Is.EqualTo(OnStepXGotoError.None));
-            Assert.That(port.Written, Is.EqualTo(new[] { ":Sr04:00:15#", ":Sd+45*30:00#", ":MS#" }));
+            Assert.That(port.Written, Is.EqualTo(new[] { ":Sr04:00:15.0000#", ":Sd+45*30:00.000#", ":MS#" }));
         }
 
         [Test]
         public void Goto_Refused_ReturnsTheReason() {
             var (device, port) = Connect(FakeOnStepXPort.Umi17S()
-                .On(":Sr04:00:15#", "1")
-                .On(":Sd-80*00:00#", "1")
+                .On(":Sr04:00:15.0000#", "1")
+                .On(":Sd-80*00:00.000#", "1")
                 .On(":MS#", "1Object below horizon#"));
 
             Assert.That(device.Goto(4 + 15 / 3600.0, -80), Is.EqualTo(OnStepXGotoError.BelowHorizon));
@@ -96,7 +103,7 @@ namespace NINA.Test.Equipment.OnStepX {
         [Test]
         public void Goto_TargetRefused_Throws() {
             var (device, port) = Connect(FakeOnStepXPort.Umi17S()
-                .On(":Sr04:00:15#", "0"));
+                .On(":Sr04:00:15.0000#", "0"));
 
             Assert.That(() => device.Goto(4 + 15 / 3600.0, 45.5), Throws.InstanceOf<OnStepXException>());
             Assert.That(port.Written, Has.None.EqualTo(":MS#"));
@@ -106,8 +113,8 @@ namespace NINA.Test.Equipment.OnStepX {
         [TestCase("E6#", OnStepXGotoError.OutsideLimits)]
         public void Sync(string reply, OnStepXGotoError expected) {
             var (device, port) = Connect(FakeOnStepXPort.Umi17S()
-                .On(":Sr04:00:15#", "1")
-                .On(":Sd+45*30:00#", "1")
+                .On(":Sr04:00:15.0000#", "1")
+                .On(":Sd+45*30:00.000#", "1")
                 .On(":CM#", reply));
 
             Assert.That(device.Sync(4 + 15 / 3600.0, 45.5), Is.EqualTo(expected));
@@ -117,8 +124,8 @@ namespace NINA.Test.Equipment.OnStepX {
         [Test]
         public void Sync_UnexpectedReply_Throws() {
             var (device, _) = Connect(FakeOnStepXPort.Umi17S()
-                .On(":Sr04:00:15#", "1")
-                .On(":Sd+45*30:00#", "1")
+                .On(":Sr04:00:15.0000#", "1")
+                .On(":Sd+45*30:00.000#", "1")
                 .On(":CM#", "0"));
 
             Assert.That(() => device.Sync(4 + 15 / 3600.0, 45.5), Throws.InstanceOf<OnStepXException>());
@@ -225,6 +232,112 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void Refusal_WithErrorCodeZero_IsAnUnknownReason() {
+            // CE_NONE after a '0': the error was already overwritten or never recorded
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":hQ#", "0").On(":GE#", "00#"));
+
+            var ex = Assert.Throws<OnStepXCommandRefusedException>(() => device.SetParkPosition());
+
+            Assert.That(ex!.Error, Is.Null);
+            Assert.That(ex.Message, Does.Contain("reason unknown"));
+        }
+
+        [Test]
+        public void Unpark_AlreadyParkedReason_MeansDateAndTimeNotSet() {
+            // Park::restore answers CE_PARKED while it postpones the unpark until date and time are set (Park.cpp)
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":hR#", "0").On(":GE#", "09#"));
+
+            var ex = Assert.Throws<OnStepXCommandRefusedException>(() => device.Unpark());
+
+            Assert.That(ex!.Error, Is.EqualTo(OnStepXCommandError.Parked));
+            Assert.That(ex.Reason, Does.Contain("date and time not set"));
+        }
+
+        [Test]
+        public void SetTrackingRate_King() {
+            var (device, port) = Connect();
+
+            device.SetTrackingRate(OnStepXTrackingRate.King);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":TK#" }));
+        }
+
+        [TestCase(OnStepXCompensation.None, new[] { ":Tn#" })]
+        [TestCase(OnStepXCompensation.Refraction, new[] { ":Tr#", ":T1#" })]
+        [TestCase(OnStepXCompensation.RefractionDual, new[] { ":Tr#", ":T2#" })]
+        [TestCase(OnStepXCompensation.Model, new[] { ":To#", ":T1#" })]
+        [TestCase(OnStepXCompensation.ModelDual, new[] { ":To#", ":T2#" })]
+        public void SetCompensation(OnStepXCompensation compensation, string[] commands) {
+            var port = FakeOnStepXPort.Umi17S();
+            foreach (var command in commands) {
+                port.On(command, "1");
+            }
+            var (device, _) = Connect(port);
+
+            device.SetCompensation(compensation);
+
+            Assert.That(port.Written, Is.EqualTo(commands));
+        }
+
+        [TestCase("0#", true)]
+        [TestCase("1#", false)]
+        [TestCase(null, null)]
+        public void IsDateTimeReady(string? reply, bool? expected) {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":GX89#", reply));
+
+            Assert.That(device.IsDateTimeReady(), Is.EqualTo(expected));
+        }
+
+        [Test]
+        public void ContinueFromHomePause() {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(":SX99,1#", "1"));
+
+            device.ContinueFromHomePause();
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":SX99,1#" }));
+        }
+
+        [TestCase("+350.0#", 350.0)]
+        [TestCase("-12.5#", -12.5)]
+        [TestCase("0", double.NaN)]
+        public void GetElevation(string reply, double expected) {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":Gv#", reply));
+
+            Assert.That(device.GetElevation(), Is.EqualTo(expected));
+        }
+
+        [TestCase(512.5, ":Sv+512.5#")]
+        [TestCase(-12.34, ":Sv-12.3#")]
+        public void SetElevation(double metres, string command) {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(command, "1"));
+
+            device.SetElevation(metres);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { command }));
+        }
+
+        [TestCase("E#", OnStepXPreferredPierSide.East)]
+        [TestCase("W#", OnStepXPreferredPierSide.West)]
+        [TestCase("B#", OnStepXPreferredPierSide.Best)]
+        [TestCase("0", null)]
+        public void GetPreferredPierSide(string reply, OnStepXPreferredPierSide? expected) {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":GX96#", reply));
+
+            Assert.That(device.GetPreferredPierSide(), Is.EqualTo(expected));
+        }
+
+        [TestCase(OnStepXPreferredPierSide.East, ":SX96,E#")]
+        [TestCase(OnStepXPreferredPierSide.West, ":SX96,W#")]
+        [TestCase(OnStepXPreferredPierSide.Best, ":SX96,B#")]
+        public void SetPreferredPierSide(OnStepXPreferredPierSide side, string command) {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(command, "1"));
+
+            device.SetPreferredPierSide(side);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { command }));
+        }
+
+        [Test]
         public void GetSite_LongitudeIsPositiveEast() {
             var (device, _) = Connect();
 
@@ -258,6 +371,16 @@ namespace NINA.Test.Equipment.OnStepX {
             var (device, _) = Connect();
 
             Assert.That(device.GetUtcDate(), Is.EqualTo(new DateTime(2026, 10, 9, 20, 57, 0, DateTimeKind.Utc)));
+        }
+
+        [Test]
+        public void GetUtcDate_AcrossLocalMidnight_PairsTheNewDateWithTheNewTime() {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S()
+                .On(":GC#", "10/09/26#", "10/10/26#")
+                .On(":GL#", "23:59:59#", "00:00:01#"));
+
+            Assert.That(device.GetUtcDate(), Is.EqualTo(new DateTime(2026, 10, 9, 22, 0, 1, DateTimeKind.Utc)));
+            Assert.That(port.Written, Is.EqualTo(new[] { ":GC#", ":GL#", ":GC#", ":GL#", ":GG#" }));
         }
 
         [Test]

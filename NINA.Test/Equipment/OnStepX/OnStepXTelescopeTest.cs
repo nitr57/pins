@@ -34,9 +34,11 @@ namespace NINA.Test.Equipment.OnStepX {
         private const string Idle = "nNpEW260#";
         private const string Tracking = "NpEW260#";
         private const string TrackingAndSlewing = "pEW260#";
+        private const string ManualMove = "NpgEW260#";
 
-        private static (OnStepXTelescope Telescope, FakeOnStepXPort Port) Create(FakeOnStepXPort port, string serialPort = "/dev/fake", bool timeSync = false) {
-            var profile = new NINA.Profile.Profile();
+        private static (OnStepXTelescope Telescope, FakeOnStepXPort Port) Create(FakeOnStepXPort port, string serialPort = "/dev/fake", bool timeSync = false,
+            NINA.Profile.Profile? profile = null) {
+            profile ??= new NINA.Profile.Profile();
             profile.TelescopeSettings.SerialPort = serialPort;
             profile.TelescopeSettings.TimeSync = timeSync;
             profile.ApplicationSettings.DevicePollingInterval = 0.05;
@@ -108,6 +110,74 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task PreferredPierSide_IsSetAtConnect() {
+            var profile = new NINA.Profile.Profile();
+            profile.TelescopeSettings.PreferredPierSide = "west";
+            var port = FakeOnStepXPort.Umi17S().On(":SX96,W#", "1");
+            var (telescope, _) = Create(port, profile: profile);
+
+            Assert.That(await telescope.Connect(CancellationToken.None), Is.True);
+
+            Assert.That(port.Written, Does.Contain(":SX96,W#"));
+        }
+
+        [Test]
+        public async Task PreferredPierSide_Empty_LeavesTheMountsOwn() {
+            var (_, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.Written.Clear();
+
+            Assert.That(port.Written.Any(c => c.StartsWith(":SX96")), Is.False);
+        }
+
+        [Test]
+        public async Task PreferredPierSide_ChangedWhileConnected_IsSetAtOnce() {
+            var profile = new NINA.Profile.Profile();
+            var port = FakeOnStepXPort.Umi17S().On(":SX96,E#", "1");
+            var (telescope, _) = Create(port, profile: profile);
+            await telescope.Connect(CancellationToken.None);
+            port.Written.Clear();
+
+            profile.TelescopeSettings.PreferredPierSide = "East";
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":SX96,E#" }));
+        }
+
+        [Test]
+        public async Task PreferredPierSide_Refused_DoesNotFailTheConnect() {
+            var profile = new NINA.Profile.Profile();
+            profile.TelescopeSettings.PreferredPierSide = "Best";
+            var port = FakeOnStepXPort.Umi17S().On(":SX96,B#", "0").On(":GE#", "04#");
+            var (telescope, _) = Create(port, profile: profile);
+
+            Assert.That(await telescope.Connect(CancellationToken.None), Is.True);
+            Assert.That(port.Written, Does.Contain(":SX96,B#"));
+        }
+
+        [Test]
+        public async Task MeridianFlip_EndingOnTheSameSide_IsNotASuccess() {
+            // LST 22:43:54 (:GS#), target half an hour past the meridian: NINA expects pierEast ('T'); the mount stays 'W'
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":MS#", "0"));
+            port.DefaultReply = "1";
+            port.On(":GU#", "NpEW260#");
+            var target = new Coordinates(Angle.ByHours(22 + 43 / 60.0 + 54 / 3600.0 - 0.5), Angle.ByDegree(20), Epoch.JNOW);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3));
+
+            Assert.That(async () => await telescope.MeridianFlip(target, cts.Token), Throws.InstanceOf<OperationCanceledException>(),
+                "it waits to retry instead of returning success");
+            Assert.That(port.Written, Does.Contain(":MS#"));
+        }
+
+        [Test]
+        public async Task MeridianFlip_EndingOnTheExpectedSide_Succeeds() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":MS#", "0"));
+            port.DefaultReply = "1";
+            port.On(":GU#", "NpEW260#", "NpET260#");
+            var target = new Coordinates(Angle.ByHours(22 + 43 / 60.0 + 54 / 3600.0 - 0.5), Angle.ByDegree(20), Epoch.JNOW);
+
+            Assert.That(await telescope.MeridianFlip(target, CancellationToken.None), Is.True);
+        }
+
+        [Test]
         public async Task Connect_WithoutSerialPort_Fails() {
             var (telescope, port) = Create(FakeOnStepXPort.Umi17S(), serialPort: "");
 
@@ -167,8 +237,8 @@ namespace NINA.Test.Equipment.OnStepX {
         [Test]
         public async Task SlewToCoordinates_WhileTracking_GoesAndWaitsForTheEnd() {
             var port = FakeOnStepXPort.Umi17S()
-                .On(":Sr05:00:00#", "1")
-                .On(":Sd+20*00:00#", "1")
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
                 .On(":MS#", "0");
             var (telescope, _) = await Connected(port);
             port.On(":GU#", Tracking, TrackingAndSlewing, TrackingAndSlewing, Tracking);
@@ -186,8 +256,8 @@ namespace NINA.Test.Equipment.OnStepX {
         public async Task SlewToCoordinates_RightAfterTrackingOn_RetriesABelowHorizonRefusalOnce() {
             var port = FakeOnStepXPort.Umi17S()
                 .On(":Te#", "1")
-                .On(":Sr05:00:00#", "1")
-                .On(":Sd+20*00:00#", "1")
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
                 .On(":MS#", "1", "0");
             var (telescope, _) = await Connected(port);
             port.On(":GU#", Idle, Tracking);
@@ -200,26 +270,109 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
-        public async Task SlewToCoordinates_Refused_ReturnsFalse() {
+        public async Task SlewToCoordinates_Refused_Throws() {
+            // TelescopeVM ignores the result: only an exception keeps it from carrying on as if the mount had arrived
             var port = FakeOnStepXPort.Umi17S()
                 .On(":GU#", Tracking)
-                .On(":Sr05:00:00#", "1")
-                .On(":Sd+20*00:00#", "1")
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
                 .On(":MS#", "6");
             var (telescope, _) = await Connected(port);
 
-            bool done = await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None);
-
-            Assert.That(done, Is.False);
+            Assert.That(async () => await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("refused the goto").And.Message.Contains("outside limits"));
             Assert.That(port.Written.Count(c => c == ":MS#"), Is.EqualTo(1));
+            Assert.That(telescope.TargetCoordinates, Is.Null);
         }
 
         [Test]
-        public async Task SlewToCoordinates_Parked_DoesNothing() {
+        public async Task SlewToCoordinates_TargetRefused_Throws() {
+            var port = FakeOnStepXPort.Umi17S()
+                .On(":GU#", Tracking)
+                .On(":Sr05:00:00.0000#", "0");
+            var (telescope, _) = await Connected(port);
+
+            Assert.That(async () => await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None),
+                Throws.InvalidOperationException);
+            Assert.That(port.Written, Has.None.EqualTo(":MS#"));
+        }
+
+        [Test]
+        public async Task SlewToCoordinates_Parked_Throws() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", "nNPEW260#"));
 
-            Assert.That(await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None), Is.False);
+            Assert.That(async () => await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("parked"));
             Assert.That(port.Written, Has.None.EqualTo(":MS#"));
+        }
+
+        [Test]
+        public async Task SlewToCoordinates_Cancelled_StopsTheMount() {
+            var port = FakeOnStepXPort.Umi17S()
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
+                .On(":MS#", "0");
+            var (telescope, _) = await Connected(port);
+            port.On(":GU#", Tracking, TrackingAndSlewing);
+            using var cancel = new CancellationTokenSource(TimeSpan.FromMilliseconds(500));
+
+            Assert.That(async () => await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), cancel.Token),
+                Throws.InstanceOf<OperationCanceledException>());
+            Assert.That(port.Written.Skip(port.Written.IndexOf(":MS#")), Does.Contain(":Q#"));
+        }
+
+        [Test]
+        public async Task SlewToCoordinates_PausedAtHome_ThrowsInsteadOfWaiting() {
+            // 'w': OnStepX's pause at home on a meridian flip waits for :SX99,1# or a button; not a slew any more
+            var port = FakeOnStepXPort.Umi17S()
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
+                .On(":MS#", "0");
+            var (telescope, _) = await Connected(port);
+            port.On(":GU#", Tracking, TrackingAndSlewing, "pwEW260#");
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+
+            Assert.That(async () => await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("waits at home"));
+            Assert.That(clock.Elapsed, Is.LessThan(TimeSpan.FromSeconds(2)));
+        }
+
+        [Test]
+        public async Task PulseGuide_RightAfterAGotoStarted_IsRefused() {
+            // a pulse aborts a goto (Guide::validate), and the last status may predate :MS#
+            var port = FakeOnStepXPort.Umi17S()
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
+                .On(":MS#", "0");
+            var (telescope, _) = await Connected(port);
+            port.On(":GU#", Tracking);
+            var slew = telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None);
+            await WaitUntil(() => port.Written.Contains(":MS#"));
+
+            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
+                Throws.InvalidOperationException.With.Message.Contains("just been started"));
+            Assert.That(port.Written.Any(c => c.StartsWith(":Mg")), Is.False);
+            Assert.That(await slew, Is.True);
+        }
+
+        [Test]
+        public async Task Park_DuringAManualMove_StopsFirst() {
+            // Park::request refuses while a guide motion runs (Park.cpp)
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "NpgEW260#", "NpgEW260#", Tracking, "nIEW260#", "nNPEW260#");
+
+            await telescope.Park(CancellationToken.None);
+
+            var commands = port.Written.Where(c => !c.StartsWith(":G")).ToList();
+            Assert.That(commands, Is.EqualTo(new[] { ":Q#", ":hP#" }));
+            Assert.That(telescope.AtPark, Is.True);
+        }
+
+        [Test]
+        public void Park_NotConnected_Throws() {
+            var (telescope, _) = Create(FakeOnStepXPort.Umi17S());
+
+            Assert.That(async () => await telescope.Park(CancellationToken.None), Throws.InvalidOperationException.With.Message.Contains("not connected"));
         }
 
         [Test]
@@ -348,8 +501,8 @@ namespace NINA.Test.Equipment.OnStepX {
         public async Task Sync_WhileTracking() {
             var port = FakeOnStepXPort.Umi17S()
                 .On(":GU#", Tracking)
-                .On(":Sr05:00:00#", "1")
-                .On(":Sd+20*00:00#", "1")
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
                 .On(":CM#", "N/A#");
             var (telescope, _) = await Connected(port);
 
@@ -401,7 +554,8 @@ namespace NINA.Test.Equipment.OnStepX {
 
         [TestCase("nNPEW260#", "parked")]
         [TestCase("pEW260#", "goto")]
-        [TestCase("NpEW262#", "limit")]
+        [TestCase("NpEW222#", "limit")]
+        [TestCase("NpEW261#", "motor fault")]
         public async Task PulseGuide_RefusedByTheController_ThrowsWithoutSending(string status, string reason) {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
             port.On(":GU#", status);
@@ -410,6 +564,19 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
                 Throws.InvalidOperationException.With.Message.Contains(reason));
             Assert.That(port.Written.Any(c => c.StartsWith(":Mg")), Is.False);
+        }
+
+        [Test]
+        public async Task PulseGuide_LimitErrorAtAFastMoveRate_IsSent() {
+            // Guide::validate checks the limits only when the rate index is below 3 (1x or slower)
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "NpEW262#");
+            _ = telescope.Slewing;
+            port.Written.Clear();
+
+            telescope.PulseGuide(GuideDirections.guideNorth, 100);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":Mgn0100#" }));
         }
 
         [Test]
@@ -471,15 +638,82 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task SelectMoveRate_SlowRate_ChecksWhetherItBecameThePulseRate() {
+            // OnStepX also makes :R0# to :R2# the pulse-guide rate (the digit before the move rate in :GU#)
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            _ = telescope.Slewing;
+            port.On(":GU#", "nNpEW110#");
+            port.Written.Clear();
+
+            telescope.SelectMoveRate(1);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":R1#", ":GU#" }));
+        }
+
+        [Test]
+        public void SelectMoveRate_NotConnected_Throws() {
+            var (telescope, _) = Create(FakeOnStepXPort.Umi17S());
+
+            Assert.That(() => telescope.SelectMoveRate(2), Throws.InvalidOperationException.With.Message.Contains("not connected"));
+        }
+
+        [Test]
         public async Task MoveAxisDirection_MovesWithoutTouchingTheRate() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", ManualMove);
 
             telescope.MoveAxisDirection(TelescopeAxes.Secondary, 1);
             telescope.MoveAxisDirection(TelescopeAxes.Primary, -1);
             telescope.MoveAxisDirection(TelescopeAxes.Secondary, 0);
 
-            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Mn#", ":Mw#", ":Qn#", ":Qs#" }));
+            // the stop only for the direction this axis moves in
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Mn#", ":Mw#", ":Qn#" }));
             Assert.That(telescope.SelectedMoveRate, Is.EqualTo(6));
+        }
+
+        [Test]
+        public async Task MoveAxisDirection_StopWithNothingMoving_SendsNothing() {
+            // :Qn# and :Qs# would also end a guide pulse on that axis
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+
+            telescope.MoveAxisDirection(TelescopeAxes.Secondary, 0);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.Empty);
+        }
+
+        [Test]
+        public async Task MoveAxisDirection_StopWhileAnotherClientMoves_StopsBothDirections() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", ManualMove));
+            _ = telescope.Slewing;
+
+            telescope.MoveAxisDirection(TelescopeAxes.Secondary, 0);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Qn#", ":Qs#" }));
+        }
+
+        [Test]
+        public async Task MoveAxisDirection_KeepaliveAfterTheFirmwareEndedTheMove_StartsItAgain() {
+            // the firmware's guide time limit, a limit or another client ends the move: no 'g' any more
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+
+            telescope.MoveAxisDirection(TelescopeAxes.Secondary, 1);
+            telescope.MoveAxisDirection(TelescopeAxes.Secondary, 1);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Mn#", ":Mn#" }));
+        }
+
+        [Test]
+        public async Task Slewing_DuringASlowManualMoveShownAsAPulse() {
+            // a move at 2x or slower runs as a pulse guide in the firmware: 'G', not 'g'
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "NpGEW222#");
+
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 1);
+
+            Assert.That(telescope.Slewing, Is.True);
+            Assert.That(telescope.IsPulseGuiding, Is.False);
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 0);
+            Assert.That(telescope.Slewing, Is.False);
         }
 
         [Test]
@@ -495,9 +729,76 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task Slewing_WhileHomingWithSensors() {
+            // homing with home sensors is a guide: neither a goto ('N' stays) nor 'g', only 'h'
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "nNphEo290#");
+            await Task.Delay(300);
+
+            Assert.That(telescope.Slewing, Is.True);
+        }
+
+        [Test]
+        public async Task Slewing_WhileAStoppedMoveStillBrakes() {
+            // after :Qe# the axis brakes (GA_BREAK) without 'g'; only the coordinates show it
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GR#", "04:00:15#", "04:10:15#", "04:10:15#");
+            await Task.Delay(300);
+            _ = telescope.RightAscension;
+
+            await Task.Delay(600);
+            Assert.That(telescope.Slewing, Is.True, "RA moved 2.5° in 0.6 s");
+
+            await Task.Delay(600);
+            Assert.That(telescope.Slewing, Is.False);
+        }
+
+        [Test]
+        public async Task Slewing_NotForTheSiderealDriftOfAMountThatDoesNotTrack() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GR#", "04:00:15#", "04:00:16#", "04:00:16#");
+            await Task.Delay(300);
+            _ = telescope.RightAscension;
+
+            await Task.Delay(600);
+            Assert.That(telescope.Slewing, Is.False);
+        }
+
+        [Test]
+        public async Task Park_WhileAStoppedMoveStillBrakes_StopsAndWaitsFirst() {
+            // Park::request refuses while the guide state is not GU_NONE, which includes braking
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GR#", "04:00:15#", "04:10:15#", "04:20:15#", "04:20:15#");
+            port.On(":GU#", Tracking);
+            await Task.Delay(300);
+            _ = telescope.RightAscension;
+            await Task.Delay(600);
+            Assert.That(telescope.Slewing, Is.True);
+            // still Tracking for the check before the stop; the wait until the coordinates rest then sees it parked
+            port.On(":GU#", Tracking, "nNPEW260#");
+
+            await telescope.Park(CancellationToken.None);
+
+            var commands = port.Written.Where(c => !c.StartsWith(":G")).ToList();
+            Assert.That(commands, Is.EqualTo(new[] { ":Q#", ":hP#" }));
+        }
+
+        [Test]
+        public async Task PulseGuide_WhileHoming_IsRefused() {
+            // Guide::startAxis1 drops a pulse while homing with sensors runs as a guide
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "nNphEo290#");
+            _ = telescope.Slewing;
+
+            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
+                Throws.InvalidOperationException.With.Message.Contains("homing"));
+        }
+
+        [Test]
         public async Task MoveAxisDirection_KeepaliveRepeatsSendNothing() {
             // OnStepX re-reads the pier side on every :Mn#; at home that turned the mount back and forth
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", ManualMove);
 
             telescope.MoveAxisDirection(TelescopeAxes.Secondary, 1);
             telescope.MoveAxisDirection(TelescopeAxes.Secondary, 1);
@@ -507,7 +808,7 @@ namespace NINA.Test.Equipment.OnStepX {
             telescope.MoveAxisDirection(TelescopeAxes.Secondary, 1);
 
             Assert.That(port.Written.Where(c => !c.StartsWith(":G")),
-                Is.EqualTo(new[] { ":Mn#", ":Qn#", ":Ms#", ":Qn#", ":Qs#", ":Mn#" }));
+                Is.EqualTo(new[] { ":Mn#", ":Qn#", ":Ms#", ":Qs#", ":Mn#" }));
         }
 
         [Test]
@@ -524,14 +825,45 @@ namespace NINA.Test.Equipment.OnStepX {
 
         [Test]
         public async Task TrackingMode_Lunar_SelectsTheRateAndStartsTracking() {
-            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":Te#", "1"));
-            port.On(":GU#", Idle, Tracking);
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":Te#", "1").On(":GU#", Idle));
 
             telescope.TrackingMode = TrackingMode.Lunar;
+            port.On(":GU#", "Np(EW260#");
+            await Task.Delay(300);
 
             Assert.That(port.Written, Does.Contain(":TL#"));
             Assert.That(port.Written, Does.Contain(":Te#"));
             Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Lunar));
+        }
+
+        [Test]
+        public async Task TrackingRate_FollowsTheControllersStatus() {
+            // a rate chosen on the mount or by another client: '(' lunar, 'O' solar, 'k' King
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+
+            port.On(":GU#", "NpkEW260#");
+            await Task.Delay(300);
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.King));
+
+            port.On(":GU#", "NpOEW260#");
+            await Task.Delay(300);
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Solar));
+        }
+
+        [Test]
+        public async Task TrackingMode_BackToSidereal_RestoresTheRateCompensation() {
+            // :TK# turns refraction compensation off, :TQ# does not turn it back on (Mount.command.cpp)
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":Tr#", "1").On(":T2#", "1"));
+            port.On(":GU#", "NprEW260#");
+            await Task.Delay(300);
+
+            telescope.TrackingMode = TrackingMode.King;
+            port.On(":GU#", "NpkEW260#");
+            await Task.Delay(300);
+            telescope.TrackingMode = TrackingMode.Sidereal;
+
+            var commands = port.Written.Where(c => !c.StartsWith(":G")).ToList();
+            Assert.That(commands, Is.EqualTo(new[] { ":TK#", ":TQ#", ":Tr#", ":T2#" }));
         }
 
         [Test]
@@ -550,14 +882,30 @@ namespace NINA.Test.Equipment.OnStepX {
         public async Task SilentController_EndsTheConnectionAfterRepeatedFailures() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
             port.On(":GU#", (string?)null);
+            var clock = System.Diagnostics.Stopwatch.StartNew();
 
-            for (int i = 0; i < 3 && telescope.Connected; i++) {
+            for (int i = 0; i < 20 && telescope.Connected; i++) {
                 await Task.Delay(300);
                 _ = telescope.RightAscension;
             }
             await WaitUntil(() => !telescope.Connected);
 
             Assert.That(telescope.Connected, Is.False);
+            Assert.That(clock.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromSeconds(2)), "a short stall must not end the connection");
+        }
+
+        [Test]
+        public async Task UnreadableState_IsNotRetriedByEveryPropertyOfAPoll() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", (string?)null);
+            await Task.Delay(300);
+
+            _ = telescope.RightAscension;
+            _ = telescope.Declination;
+            _ = telescope.AtPark;
+
+            Assert.That(port.Written.Count(c => c == ":GU#"), Is.EqualTo(1));
+            Assert.That(telescope.Connected, Is.True);
         }
 
         [Test]
@@ -569,6 +917,34 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(telescope.Connected, Is.False);
             Assert.That(port.IsOpen, Is.False);
             Assert.That(telescope.RightAscension, Is.NaN);
+        }
+
+        [Test]
+        public async Task Disconnect_StopsAManualMove() {
+            // a move runs on until the firmware's guide time limit
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", ManualMove));
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 1);
+
+            telescope.Disconnect();
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Me#", ":Qe#" }));
+        }
+
+        [Test]
+        public async Task Connect_ReadsTheControllersElevation() {
+            var (telescope, _) = await Connected(FakeOnStepXPort.Umi17S().On(":Gv#", "+350.0#"));
+
+            Assert.That(telescope.SiteElevation, Is.EqualTo(350.0));
+        }
+
+        [Test]
+        public async Task SiteElevation_IsSetOnTheController() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":Sv+512.5#", "1"));
+
+            telescope.SiteElevation = 512.5;
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":Sv+512.5#" }));
+            Assert.That(telescope.SiteElevation, Is.EqualTo(512.5));
         }
 
         private static async Task WaitUntil(Func<bool> condition) {

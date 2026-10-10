@@ -26,6 +26,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -47,8 +48,31 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         /// <summary>The UI reads about 30 properties per poll; they share one set of reads this old at most.</summary>
         private static readonly TimeSpan StateMaxAge = TimeSpan.FromMilliseconds(250);
 
-        /// <summary>Consecutive unreadable states (the controller silent or garbled) before the connection counts as lost.</summary>
+        /// <summary>
+        /// Consecutive unreadable states (the controller silent or garbled), spread over at least
+        /// <see cref="StateFailureSpan"/>, before the connection counts as lost.
+        /// </summary>
         private const int MaxStateFailures = 3;
+
+        /// <summary>A short USB stall must not end the connection within one UI poll.</summary>
+        private static readonly TimeSpan StateFailureSpan = TimeSpan.FromSeconds(2);
+
+        /// <summary>
+        /// Axis motion that :GU# does not show: a manual move braking after its stop (the guide action is GA_BREAK, which
+        /// Guide::active() leaves out, so 'g' is gone at once), as INDITelescope detects it. 0.05°/s is about 12 times the
+        /// sidereal RA drift of a mount that does not track. RA in hours times 15, not scaled by cos(Dec), is the axis 1
+        /// angle, so a move near the pole counts too.
+        /// </summary>
+        private const double CoordinateMotionDegreesPerSecond = 0.05;
+
+        /// <summary>
+        /// The shortest span the coordinate rate is taken over: :GR# has whole seconds, and a tick of 15" between two
+        /// reads 50 ms apart would look like motion.
+        /// </summary>
+        private static readonly TimeSpan CoordinateMotionSpan = TimeSpan.FromSeconds(0.5);
+
+        /// <summary>How long a stopped goto may brake, or a move end, before a park or home gives up.</summary>
+        private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(15);
 
         /// <summary>
         /// Added to a guide pulse counted from when its command is on the line. The controller ends a pulse exactly
@@ -99,6 +123,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         private readonly IProfileService profileService;
         private string? scannedModel;
+        private ITelescopeSettings? watchedSettings;
         private readonly Func<string, OnStepXDevice> connectDevice;
         private readonly object stateLock = new();
 
@@ -112,8 +137,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private double guideRate = double.NaN;
         private double slewSpeed = double.NaN;
         private AlignmentMode alignmentMode = AlignmentMode.GermanPolar;
-        private OnStepXTrackingRate trackingRate = OnStepXTrackingRate.Sidereal;
+        private OnStepXCompensation? compensationBeforeRateChange;
+        private DateTime firstStateFailureAt;
+        private (double Ra, double Dec, DateTime At)? motionReference;
+        private bool coordinatesMoving;
         private readonly object pulseLock = new();
+        private DateTime motionCommandAt = DateTime.MinValue;
         private DateTime raPulseEnd = DateTime.MinValue;
         private DateTime decPulseEnd = DateTime.MinValue;
         private bool pulseEndConfirmed = true;
@@ -122,8 +151,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private OnStepXStatus? latestStatus;
         private DateTime latestStatusAt = DateTime.MinValue;
         private int selectedMoveRate = DefaultMoveRateIndex;
+
+        // The manual moves this driver started, under moveLock; never take stateLock or pulseLock while holding it.
+        private readonly object moveLock = new();
         private OnStepXDirection? primaryMove;
         private OnStepXDirection? secondaryMove;
+        private DateTime moveCommandAt = DateTime.MinValue;
         private double primaryMovingRate = double.NaN;
         private double secondaryMovingRate = double.NaN;
         private Coordinates? targetCoordinates;
@@ -163,15 +196,18 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
             try {
                 using var device = identify(port);
-                KnownModels[port] = device.Model;
-                return device.Model;
+                // the UMi can answer :Pbvg# with "0" right after the port opens: a scan that just missed it keeps the
+                // model it knew (a connect always replaces it)
+                return KnownModels.AddOrUpdate(port, device.Model, (_, known) => device is ProxiskyUmiDevice ? device.Model : known);
             } catch (Exception ex) {
                 Logger.Debug($"OnStepX: no mount identified on {port} while scanning: {ex.Message}");
                 return null;
             }
         }
 
-        private sealed record State(OnStepXStatus Status, double RightAscension, double Declination, double Altitude, double Azimuth, double SiderealTime, OnStepXPierSide PierSide);
+        /// <param name="CoordinatesMoving">RA or Dec changed faster than <see cref="CoordinateMotionDegreesPerSecond"/>.</param>
+        private sealed record State(OnStepXStatus Status, double RightAscension, double Declination, double Altitude, double Azimuth, double SiderealTime, OnStepXPierSide PierSide,
+            bool CoordinatesMoving);
 
         #region IDevice
 
@@ -236,18 +272,22 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 }
 
                 try {
-                    device = connectDevice(port.Trim());
+                    device = ConnectWithRetry(port.Trim(), token);
                     token.ThrowIfCancellationRequested();
                     ReadMountSetup(device);
                     lock (stateLock) {
                         state = null;
                         stateFailures = 0;
+                        motionReference = null;
+                        coordinatesMoving = false;
                     }
                     connectionLost = 0;
                     KnownModels[port.Trim()] = device.Model;
                     Connected = true;
                     Logger.Info($"OnStepX: connected to {device.Model} on {port}, {device.Identification}");
                     CheckMountTime();
+                    WatchSettings();
+                    ApplyPreferredPierSide();
                     RaiseAllPropertiesChanged();
                     return true;
                 } catch (OperationCanceledException) {
@@ -264,9 +304,24 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }, token);
         }
 
+        /// <summary>A device scan opens the port for a moment, and .NET opens it exclusively: try again shortly.</summary>
+        private OnStepXDevice ConnectWithRetry(string port, CancellationToken token) {
+            for (int attempt = 1; ; attempt++) {
+                try {
+                    return connectDevice(port);
+                } catch (Exception ex) when (attempt < 3 && ex is IOException or UnauthorizedAccessException) {
+                    Logger.Info($"OnStepX: {port} is busy ({ex.Message}), trying again");
+                    token.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(500));
+                    token.ThrowIfCancellationRequested();
+                }
+            }
+        }
+
         public void Disconnect() {
-            CloseDevice();
+            // commands still in flight fail on the closing port; that is no lost connection
+            Interlocked.Exchange(ref connectionLost, 1);
             Connected = false;
+            CloseDevice();
             RaiseAllPropertiesChanged();
         }
 
@@ -276,10 +331,28 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         }
 
         private void CloseDevice() {
-            primaryMove = secondaryMove = null;
+            UnwatchSettings();
             var d = Interlocked.Exchange(ref device, null);
+            OnStepXDirection?[] moves;
+            lock (moveLock) {
+                moves = [primaryMove, secondaryMove];
+                primaryMove = secondaryMove = null;
+            }
             lock (stateLock) {
                 state = null;
+            }
+            if (d is not null) {
+                // a manual move runs on until the firmware's guide time limit, which can be days: stop it while the
+                // port may still work
+                foreach (var move in moves) {
+                    if (move is { } m) {
+                        try {
+                            d.StopMove(m);
+                        } catch (Exception ex) {
+                            Logger.Debug($"OnStepX: stopping the {m} move on close failed: {ex.Message}");
+                        }
+                    }
+                }
             }
             try {
                 d?.Dispose();
@@ -290,7 +363,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         private void ReadMountSetup(OnStepXDevice d) {
             (siteLatitude, siteLongitude) = d.GetSite();
-            siteElevation = profileService.ActiveProfile.AstrometrySettings.Elevation;
+            double elevation = d.GetElevation();
+            siteElevation = double.IsNaN(elevation) ? profileService.ActiveProfile.AstrometrySettings.Elevation : elevation;
             slewSpeed = d.GetSlewSpeed();
             try {
                 guideRate = d.GetPulseGuideRate();
@@ -299,14 +373,65 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 guideRate = double.NaN;
             }
             alignmentMode = d.GetStatus().MountType switch {
-                OnStepXMountType.AltAz => AlignmentMode.AltAz,
-                OnStepXMountType.Fork or OnStepXMountType.ForkAlt => AlignmentMode.Polar,
+                OnStepXMountType.AltAz or OnStepXMountType.AltAlt => AlignmentMode.AltAz,
+                OnStepXMountType.Fork => AlignmentMode.Polar,
                 _ => AlignmentMode.GermanPolar,
             };
-            trackingRate = OnStepXTrackingRate.Sidereal;
+            compensationBeforeRateChange = null;
             int currentMoveRate = d.GetStatus().MoveRateIndex;
             selectedMoveRate = currentMoveRate is >= 0 and <= OnStepXDevice.MaxMoveRateIndex ? currentMoveRate : DefaultMoveRateIndex;
-            Logger.Info($"OnStepX: site {siteLatitude:F4}, {siteLongitude:F4}, slew speed {slewSpeed:F2}°/s, guide rate {guideRate:F2}x, {alignmentMode}");
+            Logger.Info($"OnStepX: site {siteLatitude:F4}, {siteLongitude:F4}, {siteElevation:F0} m, slew speed {slewSpeed:F2}°/s, guide rate {guideRate:F2}x, {alignmentMode}, preferred pier side {d.GetPreferredPierSide()?.ToString() ?? "unknown"}");
+        }
+
+        /// <summary>
+        /// Sets the preferred pier side from <see cref="ITelescopeSettings.PreferredPierSide"/>, at connect and when
+        /// the setting changes; empty leaves the mount's own. OnStepX forgets it at power off unless built with
+        /// PIER_SIDE_PREFERRED_MEMORY.
+        /// </summary>
+        private void ApplyPreferredPierSide() {
+            string? value = profileService.ActiveProfile.TelescopeSettings.PreferredPierSide?.Trim();
+            if (!Connected || string.IsNullOrEmpty(value)) {
+                return;
+            }
+            if (!Enum.TryParse<OnStepXPreferredPierSide>(value, ignoreCase: true, out var side) || !Enum.IsDefined(side)) {
+                Logger.Warning($"OnStepX: unknown preferred pier side '{value}'");
+                Notification.ShowWarning($"OnStepX: unknown preferred pier side '{value}' (East, West or Best)");
+                return;
+            }
+            try {
+                RunOrThrow($"set the preferred pier side to {side}", d => d.SetPreferredPierSide(side));
+                Logger.Info($"OnStepX: preferred pier side set to {side}");
+            } catch (InvalidOperationException ex) {
+                Notification.ShowError(ex.Message);
+            }
+        }
+
+        private void WatchSettings() {
+            UnwatchSettings();
+            watchedSettings = profileService.ActiveProfile.TelescopeSettings;
+            watchedSettings.PropertyChanged += TelescopeSettingsChanged;
+            profileService.ProfileChanged += ProfileChanged;
+        }
+
+        private void UnwatchSettings() {
+            if (watchedSettings is { } settings) {
+                settings.PropertyChanged -= TelescopeSettingsChanged;
+            }
+            watchedSettings = null;
+            profileService.ProfileChanged -= ProfileChanged;
+        }
+
+        private void TelescopeSettingsChanged(object? sender, PropertyChangedEventArgs e) {
+            if (e.PropertyName == nameof(ITelescopeSettings.PreferredPierSide)) {
+                ApplyPreferredPierSide();
+            }
+        }
+
+        private void ProfileChanged(object? sender, EventArgs e) {
+            if (Connected) {
+                WatchSettings();
+                ApplyPreferredPierSide();
+            }
         }
 
         /// <summary>Like IndiTelescope: logs the clock difference, sets the controller's clock when TimeSync is on.</summary>
@@ -333,6 +458,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     Logger.Warning($"OnStepX: system and mount time differ by {Math.Abs(clockOffset.TotalSeconds):0.0##} seconds");
                     Notification.ShowWarning(string.Format(Loc.Instance["LblMountTimeDifferenceTooLarge"], Math.Abs(clockOffset.TotalSeconds)));
                 }
+
+                // without date and time OnStepX refuses every goto, reported as "outside limits" (Goto.cpp validate)
+                if (d.IsDateTimeReady() == false) {
+                    Logger.Warning("OnStepX: the controller's date and time are not set");
+                    Notification.ShowWarning("OnStepX: the mount's date and time are not set, so it refuses gotos. Turn on time sync or set them on the mount.");
+                }
             } catch (Exception ex) when (ex is OnStepXException) {
                 Logger.Error($"OnStepX: reading or setting the mount time failed: {ex.Message}");
             }
@@ -350,33 +481,87 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 return null;
             }
 
+            State result;
+            DateTime readStartedAt;
             lock (stateLock) {
-                if (!fresh && state is { } s && DateTime.UtcNow - stateReadAt < StateMaxAge) {
-                    return s;
+                // after a failed read too, also before the first state: the rest of the poll does not retry at once
+                if (!fresh && (state is not null || stateFailures > 0) && DateTime.UtcNow - stateReadAt < StateMaxAge) {
+                    return state;
                 }
 
                 try {
+                    readStartedAt = DateTime.UtcNow;
                     var status = d.GetStatus();
                     RememberStatus(status);
-                    state = new State(status, d.GetRightAscension(), d.GetDeclination(), d.GetAltitude(), d.GetAzimuth(), d.GetSiderealTime(), status.PierSide);
+                    double ra = d.GetRightAscension();
+                    double dec = d.GetDeclination();
+                    var read = new State(status, ra, dec, d.GetAltitude(), d.GetAzimuth(), d.GetSiderealTime(), status.PierSide,
+                        CoordinatesMoving(ra, dec, DateTime.UtcNow));
+                    state = read;
+                    result = read;
                     stateReadAt = DateTime.UtcNow;
                     stateFailures = 0;
                     if (status.Error != OnStepXError.None && status.Error != lastReportedError) {
                         Logger.Warning($"OnStepX: controller reports error {status.Error} ({status.Raw})");
                     }
                     lastReportedError = status.Error;
-                    return state;
                 } catch (OnStepXException ex) {
+                    var now = DateTime.UtcNow;
                     Logger.Warning($"OnStepX: reading the mount state failed: {ex.Message}");
-                    if (++stateFailures >= MaxStateFailures) {
+                    if (stateFailures++ == 0) {
+                        firstStateFailureAt = now;
+                    }
+                    // back off: the other properties of this poll get the last state instead of retrying at once
+                    stateReadAt = now;
+                    if (stateFailures >= MaxStateFailures && now - firstStateFailureAt >= StateFailureSpan) {
                         ConnectionLost(ex);
                         return null;
                     }
-                    return state;
+                    // a wait must not take the state from before its command for a fresh one
+                    return fresh ? null : state;
                 } catch (Exception ex) when (IsPortFailure(ex)) {
                     ConnectionLost(ex);
                     return null;
                 }
+            }
+
+            // outside stateLock (moveLock is taken while state is read elsewhere): neither 'g' nor 'G' in a status read
+            // after the last move command means no move runs any more, e.g. after the firmware's guide time limit, a
+            // limit or another client's stop
+            if (!result.Status.ManualMove && !result.Status.PulseGuiding) {
+                lock (moveLock) {
+                    if (readStartedAt > moveCommandAt) {
+                        primaryMove = secondaryMove = null;
+                    }
+                }
+            }
+            return result;
+        }
+
+        // Caller holds stateLock.
+        private bool CoordinatesMoving(double ra, double dec, DateTime now) {
+            if (motionReference is not { } reference) {
+                motionReference = (ra, dec, now);
+                return coordinatesMoving = false;
+            }
+            double seconds = (now - reference.At).TotalSeconds;
+            if (seconds < CoordinateMotionSpan.TotalSeconds) {
+                return coordinatesMoving;
+            }
+            double raHours = Math.Abs(ra - reference.Ra);
+            if (raHours > 12) {
+                raHours = 24 - raHours;
+            }
+            double degrees = Math.Max(raHours * 15, Math.Abs(dec - reference.Dec));
+            motionReference = (ra, dec, now);
+            return coordinatesMoving = degrees / seconds > CoordinateMotionDegreesPerSecond;
+        }
+
+        /// <summary>A sync or a new connection moves the coordinates without motion.</summary>
+        private void ResetCoordinateMotion() {
+            lock (stateLock) {
+                motionReference = null;
+                coordinatesMoving = false;
             }
         }
 
@@ -400,7 +585,35 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
             Logger.Error("OnStepX: connection lost", ex);
             Notification.ShowError(Loc.Instance["LblTelescopeConnectionLost"]);
-            _ = Task.Run(Disconnect);
+            var lost = device;
+            // not a new connection made meanwhile
+            _ = Task.Run(() => {
+                if (ReferenceEquals(device, lost)) {
+                    Disconnect();
+                }
+            });
+        }
+
+        /// <summary>On a cancelled goto, park or home: stop the mount, as ASCOM drivers abort the slew on a cancel.</summary>
+        private void AbortQuietly() {
+            if (!Connected || device is not { } d) {
+                return;
+            }
+            try {
+                d.Abort();
+                Logger.Info("OnStepX: cancelled, mount stopped (:Q#)");
+            } catch (Exception ex) {
+                Logger.Warning($"OnStepX: stopping the mount after a cancel failed: {ex.Message}");
+            }
+            InvalidateState();
+        }
+
+        /// <summary>A goto, park or home was started: no pulse until a status read after it shows what the mount does.</summary>
+        private void MotionCommandSent() {
+            lock (pulseLock) {
+                motionCommandAt = DateTime.UtcNow;
+            }
+            InvalidateState();
         }
 
         /// <summary>Runs a command; a port failure ends the connection, a refused or garbled reply is logged.</summary>
@@ -544,12 +757,17 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             set => SetSite(siteLatitude, value);
         }
 
-        /// <summary>The controller keeps no elevation; this is the profile's until set.</summary>
+        /// <summary>The controller's elevation (:Gv#, :Sv); the profile's when the controller does not tell.</summary>
         public double SiteElevation {
             get => siteElevation;
             set {
-                siteElevation = value;
-                RaisePropertyChanged();
+                if (Run(d => {
+                    d.SetElevation(value);
+                    return true;
+                }, false)) {
+                    siteElevation = value;
+                    RaisePropertyChanged();
+                }
             }
         }
 
@@ -590,14 +808,16 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
-        public IList<TrackingMode> TrackingModes { get; } = ImmutableList.Create(TrackingMode.Sidereal, TrackingMode.Lunar, TrackingMode.Solar, TrackingMode.Stopped);
+        public IList<TrackingMode> TrackingModes { get; } = ImmutableList.Create(TrackingMode.Sidereal, TrackingMode.Lunar, TrackingMode.Solar, TrackingMode.King, TrackingMode.Stopped);
 
-        public TrackingRate TrackingRate => !Connected || !TrackingEnabled
+        /// <summary>From :GU# ('(' lunar, 'O' solar, 'k' King), so a rate set on the mount or by homing shows too.</summary>
+        public TrackingRate TrackingRate => CurrentState?.Status is not { Tracking: true } status
             ? new TrackingRate { TrackingMode = TrackingMode.Stopped }
             : new TrackingRate {
-                TrackingMode = trackingRate switch {
+                TrackingMode = status.TrackingRate switch {
                     OnStepXTrackingRate.Lunar => TrackingMode.Lunar,
                     OnStepXTrackingRate.Solar => TrackingMode.Solar,
+                    OnStepXTrackingRate.King => TrackingMode.King,
                     _ => TrackingMode.Sidereal,
                 }
             };
@@ -619,14 +839,31 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 var rate = value switch {
                     TrackingMode.Lunar => OnStepXTrackingRate.Lunar,
                     TrackingMode.Solar => OnStepXTrackingRate.Solar,
+                    TrackingMode.King => OnStepXTrackingRate.King,
                     _ => OnStepXTrackingRate.Sidereal,
                 };
-                if (Run(d => {
-                    d.SetTrackingRate(rate);
-                    return true;
-                }, false)) {
-                    trackingRate = rate;
+                var before = CurrentState?.Status;
+                try {
+                    if (rate == OnStepXTrackingRate.Sidereal) {
+                        RunOrThrow("select the sidereal rate", d => d.SetTrackingRate(rate));
+                        // :TQ# does not turn rate compensation back on (Mount.command.cpp): restore what the other rate turned off
+                        if (compensationBeforeRateChange is { } restore && restore != OnStepXCompensation.None) {
+                            RunOrThrow($"restore the rate compensation ({restore})", d => d.SetCompensation(restore));
+                            Logger.Info($"OnStepX: rate compensation {restore} restored");
+                        }
+                        compensationBeforeRateChange = null;
+                    } else {
+                        // :TL#, :TS# and :TK# turn rate compensation off; remember it for the way back to sidereal
+                        if (before is { } b && b.Compensation != OnStepXCompensation.None) {
+                            compensationBeforeRateChange = b.Compensation;
+                        }
+                        RunOrThrow($"select the {rate} rate", d => d.SetTrackingRate(rate));
+                    }
+                } catch (InvalidOperationException ex) {
+                    Notification.ShowError(ex.Message);
+                    return;
                 }
+                InvalidateState();
                 if (!TrackingEnabled) {
                     TrackingEnabled = true;
                 }
@@ -660,27 +897,27 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         public async Task Park(CancellationToken token) {
             if (!Connected) {
-                return;
+                throw Failure("cannot park: not connected");
             }
-            if (CurrentState?.Status.Slewing == true) {
-                // INDI LX200_OnStep::Park stops a running slew first
-                Run(d => {
-                    d.Abort();
-                    return true;
-                }, false);
-                await Task.Delay(TimeSpan.FromMilliseconds(100), token);
-            }
+            await StopMotionFirst("park", token);
 
             // a refusal throws, so TelescopeVM reports "failed to park" with the reason instead of "Mount has parked";
             // a lost reply leaves it to the status, like Unpark
             bool acknowledged = false;
             RunOrThrow("park", d => acknowledged = d.Park());
+            MotionCommandSent();
             if (!acknowledged) {
                 Logger.Warning("OnStepX: :hP# not acknowledged, checking the park state");
             }
 
             // the slew to the park position shows as parking ('I') or a slew; a mount already there parks at once
-            var outcome = await WaitFor(s => s.Status.Park is OnStepXParkState.Parked or OnStepXParkState.ParkFailed, MotionTimeout, token);
+            State? outcome;
+            try {
+                outcome = await WaitFor(s => s.Status.Park is OnStepXParkState.Parked or OnStepXParkState.ParkFailed, MotionTimeout, token);
+            } catch (OperationCanceledException) {
+                AbortQuietly();
+                throw;
+            }
             if (outcome is null) {
                 throw Failure(Connected
                     ? $"the mount did not report being parked within {MotionTimeout.TotalMinutes:F0} minutes"
@@ -706,7 +943,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         public async Task Unpark(CancellationToken token) {
             if (!Connected) {
-                return;
+                throw Failure("cannot unpark: not connected");
             }
             bool acknowledged = false;
             RunOrThrow("unpark", d => acknowledged = d.Unpark());
@@ -728,15 +965,26 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         /// after a long slew. A firmware that never shows 'h' falls back to INDITelescope's standstill check.
         /// </summary>
         public async Task FindHome(CancellationToken token) {
-            if (!Connected || CurrentState is not { } start) {
-                return;
+            if (!Connected) {
+                throw Failure("cannot find home: not connected");
             }
+            var start = await StopMotionFirst("find home", token);
             if (start.Status.Park == OnStepXParkState.Parked) {
                 throw Failure("cannot find home: the mount is parked");
             }
+
             // :hC# has no reply; a refusal (standby, date and time not set, in motion) comes from :GE# and throws
             RunOrThrow("find home", d => d.FindHome());
+            MotionCommandSent();
+            try {
+                await WaitForHome(start, token);
+            } catch (OperationCanceledException) {
+                AbortQuietly();
+                throw;
+            }
+        }
 
+        private async Task WaitForHome(State start, CancellationToken token) {
             var moving = await WaitFor(s => s.Status.Homing || s.Status.Slewing || Moved(start, s), MotionStartTimeout, token);
             if (moving is null) {
                 if (!Connected) {
@@ -753,7 +1001,10 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             while (DateTime.UtcNow < deadline) {
                 await Task.Delay(PollInterval, token);
                 if (GetState(true) is not { } now) {
-                    throw Failure("the connection was lost while homing");
+                    if (!Connected) {
+                        throw Failure("the connection was lost while homing");
+                    }
+                    continue;
                 }
                 Logger.Debug($"OnStepX: homing, :GU# {now.Status.Raw}, alt {now.Altitude:F3}°, az {now.Azimuth:F3}°");
                 sawHoming |= now.Status.Homing;
@@ -777,14 +1028,19 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private static bool Moved(State from, State to) =>
             Math.Abs(from.Altitude - to.Altitude) > StandstillDegrees || Math.Abs(AstroUtil.EuclidianModulus(from.Azimuth - to.Azimuth + 180, 360) - 180) > StandstillDegrees;
 
-        /// <summary>Polls the state until <paramref name="done"/>; null on timeout or a lost connection.</summary>
+        /// <summary>
+        /// Polls fresh states until <paramref name="done"/>; null on timeout or a lost connection. An unreadable state is
+        /// skipped, never replaced by one from before the command.
+        /// </summary>
         private async Task<State?> WaitFor(Func<State, bool> done, TimeSpan timeout, CancellationToken token) {
             var deadline = DateTime.UtcNow + timeout;
             while (DateTime.UtcNow < deadline) {
-                if (GetState(true) is not { } s) {
-                    return null;
-                }
-                if (done(s)) {
+                var s = GetState(true);
+                if (s is null) {
+                    if (!Connected) {
+                        return null;
+                    }
+                } else if (done(s)) {
                     return s;
                 }
                 await Task.Delay(PollInterval, token);
@@ -792,15 +1048,56 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             return null;
         }
 
+        /// <summary>
+        /// Park::request and Home::request refuse while a goto runs, also while it still brakes after :Q#, and during any
+        /// guide motion: a manual move or a pulse (Park.cpp, Home.cpp). Stops everything (:Q#) and waits until the mount
+        /// stands still; returns that fresh state.
+        /// </summary>
+        private async Task<State> StopMotionFirst(string action, CancellationToken token) {
+            // a single unreadable status must not fail the park
+            if (await WaitFor(_ => true, StateFailureSpan, token) is not { } s) {
+                throw Failure(Connected ? $"cannot {action}: the mount state is unreadable" : $"cannot {action}: the connection was lost");
+            }
+            if (!Moving(s)) {
+                return s;
+            }
+            Logger.Info($"OnStepX: stopping the mount before it can {action} ({s.Status.Raw})");
+            StopSlew();
+            var stopped = await WaitFor(x => !Moving(x), StopTimeout, token);
+            if (stopped is null) {
+                throw Failure(Connected
+                    ? $"cannot {action}: the mount did not stop within {StopTimeout.TotalSeconds:F0} s"
+                    : $"cannot {action}: the connection was lost");
+            }
+            return stopped;
+        }
+
+        /// <summary>Park::request and Home::request also refuse while a move brakes or homing runs (guide state not GU_NONE).</summary>
+        private static bool Moving(State s) =>
+            s.Status.Slewing || s.Status.ManualMove || s.Status.PulseGuiding || s.Status.Homing || s.CoordinatesMoving;
+
         #endregion Park and home
 
         #region Slewing
 
         /// <summary>
-        /// A goto ('N' absent from :GU#) or a manual move ('g'), as ASCOM counts MoveAxis motion as slewing. Pulse guiding
-        /// is neither ('G'). Waits for the end of a goto, park or home use <see cref="OnStepXStatus.Slewing"/> alone.
+        /// A goto ('N' absent from :GU#), homing or a manual move, as ASCOM counts MoveAxis motion as slewing. A move
+        /// faster than 2x shows as 'g'; a slower one runs as a pulse guide in the firmware ('G', Guide.cpp), so the moves
+        /// this driver started count too. Homing with home sensors is a guide that shows neither, only 'h'
+        /// (Home::request, guide.startHome), and a move braking after its stop shows nothing: both count while the
+        /// coordinates move, as with INDI. Pulse guiding alone does not. Waits for the end of a goto, park or home use
+        /// <see cref="OnStepXStatus.Slewing"/> alone.
         /// </summary>
-        public bool Slewing => CurrentState?.Status is { } status && (status.Slewing || status.ManualMove);
+        public bool Slewing => CurrentState is { } s
+            && (s.Status.Slewing || s.Status.ManualMove || s.Status.Homing || s.CoordinatesMoving || ManualMoveRunning);
+
+        private bool ManualMoveRunning {
+            get {
+                lock (moveLock) {
+                    return primaryMove is not null || secondaryMove is not null;
+                }
+            }
+        }
 
         public bool CanSlew => Connected;
 
@@ -824,9 +1121,16 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
+        /// <summary>
+        /// Throws when the goto cannot start, ends in a timeout or the connection is lost: TelescopeVM ignores the
+        /// result and would carry on as if the mount had arrived. A cancel stops the mount.
+        /// </summary>
         public async Task<bool> SlewToCoordinates(Coordinates coordinates, CancellationToken token) {
-            if (!Connected || AtPark) {
-                return false;
+            if (!Connected) {
+                throw Failure("cannot slew: not connected");
+            }
+            if (AtPark) {
+                throw Failure("cannot slew: the mount is parked");
             }
 
             try {
@@ -846,33 +1150,40 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     await Task.Delay(TrackingSettleTime, token);
                     error = StartGoto(target);
                 }
-                if (error is not { } e || e != OnStepXGotoError.None) {
-                    if (error is { } refused) {
-                        Logger.Error($"OnStepX: goto to {target} refused: {refused.Describe()}");
-                        Notification.ShowError($"OnStepX: goto refused: {refused.Describe()}");
-                    }
-                    return false;
+                if (error != OnStepXGotoError.None) {
+                    throw Failure($"the mount refused the goto to {target}: {error.Describe()}");
                 }
+                MotionCommandSent();
 
-                InvalidateState();
                 await Task.Delay(TimeSpan.FromMilliseconds(200), token);
-                var stopped = await WaitFor(s => !s.Status.Slewing, MotionTimeout, token);
+                var stopped = await WaitFor(s => !s.Status.Slewing || s.Status.WaitingAtHome, MotionTimeout, token);
                 if (stopped is null) {
-                    return false;
+                    throw Failure(Connected
+                        ? $"the goto did not end within {MotionTimeout.TotalMinutes:F0} minutes"
+                        : "the connection was lost during the goto");
+                }
+                if (stopped.Status.WaitingAtHome) {
+                    throw Failure("the goto waits at home (OnStepX's pause at home on a meridian flip): continue it on the mount or turn that pause off");
                 }
 
                 if (stopped.Status.Error != OnStepXError.None) {
                     Logger.Warning($"OnStepX: goto ended with controller error {stopped.Status.Error}");
                 }
                 return true;
+            } catch (OperationCanceledException) {
+                AbortQuietly();
+                throw;
             } finally {
                 TargetCoordinates = null;
             }
         }
 
-        /// <summary>The goto result, or null when the command failed (already reported).</summary>
-        private OnStepXGotoError? StartGoto(Coordinates target) =>
-            Run<OnStepXGotoError?>(d => d.Goto(target.RA, target.Dec), null);
+        /// <summary>The goto's answer from :MS#; a failed command (target refused, no reply) throws.</summary>
+        private OnStepXGotoError StartGoto(Coordinates target) {
+            var result = OnStepXGotoError.Unspecified;
+            RunOrThrow("start the goto", d => result = d.Goto(target.RA, target.Dec));
+            return result;
+        }
 
         public Task<bool> SlewToAltAz(TopocentricCoordinates coordinates, CancellationToken token) => Task.FromResult(false);
 
@@ -881,7 +1192,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 d.Abort();
                 return true;
             }, false);
-            primaryMove = secondaryMove = null;
+            lock (moveLock) {
+                primaryMove = secondaryMove = null;
+            }
             InvalidateState();
         }
 
@@ -897,6 +1210,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
             var target = coordinates.Transform(Epoch.JNOW);
             var error = Run<OnStepXGotoError?>(d => d.Sync(target.RA, target.Dec), null);
+            ResetCoordinateMotion();
             InvalidateState();
             if (error is OnStepXGotoError.None) {
                 Logger.Info($"OnStepX: synced to {target}");
@@ -910,8 +1224,10 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         }
 
         /// <summary>
-        /// As IndiTelescope with a mount that cannot set its pier side: the flip is a goto to the target, which OnStepX
-        /// takes on the other side of the pier, retried while the mount is still within its meridian limit.
+        /// As IndiTelescope with a mount that cannot set its pier side: the flip is a goto to the target. OnStepX takes it
+        /// on the side its preferred pier side asks for (<see cref="ITelescopeSettings.PreferredPierSide"/>); with
+        /// "Best" it stays on the current side until the meridian limit (Goto.cpp setTarget). A goto that ends on the
+        /// wrong side counts as failed, so the retries go on instead of reporting a flip that did not happen.
         /// </summary>
         public async Task<bool> MeridianFlip(Coordinates targetCoordinates, CancellationToken token) {
             var success = false;
@@ -937,7 +1253,15 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 int retries = 0;
                 do {
                     Logger.Info($"OnStepX: slewing to {targetCoordinates} for the meridian flip, attempt {retries + 1} / {MeridianFlipSlewRetryAttempts}");
-                    success = await SlewToCoordinates(targetCoordinates, token);
+                    try {
+                        success = await SlewToCoordinates(targetCoordinates, token);
+                    } catch (InvalidOperationException ex) when (Connected) {
+                        Logger.Warning($"OnStepX: meridian flip goto failed: {ex.Message}");
+                        success = false;
+                    }
+                    if (success && !FlippedTo(expectedSideOfPier, retries == 0)) {
+                        success = false;
+                    }
                     if (!success) {
                         if (retries++ >= MeridianFlipSlewRetryAttempts) {
                             Logger.Error("OnStepX: meridian flip slew failed, even after retrying");
@@ -962,6 +1286,24 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 TargetSideOfPier = null;
             }
             return success;
+        }
+
+        /// <summary>Whether the mount ended on <paramref name="expected"/>; an unknown side on either end counts as yes.</summary>
+        private bool FlippedTo(PierSide expected, bool notify) {
+            if (expected == PierSide.pierUnknown) {
+                return true;
+            }
+            InvalidateState();
+            var side = SideOfPier;
+            if (side == PierSide.pierUnknown || side == expected) {
+                return true;
+            }
+            Logger.Warning($"OnStepX: the meridian flip goto ended on {side}, expected {expected}");
+            if (notify) {
+                Notification.ShowWarning("OnStepX: the mount did not flip to the other side of the pier. Set the preferred pier side " +
+                    "(TelescopeSettings.PreferredPierSide) to the side it should flip to; otherwise it flips only at the meridian limit.");
+            }
+            return false;
         }
 
         #endregion Slewing
@@ -1026,17 +1368,32 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         /// <summary>The move rate <see cref="MoveAxisDirection"/> uses: the controller's at connect, then the last one set.</summary>
         public int SelectedMoveRate => selectedMoveRate;
 
-        /// <summary>Selects the move rate (:R&lt;n&gt;#) for <see cref="MoveAxisDirection"/>, like INDI's TELESCOPE_SLEW_RATE.</summary>
+        /// <summary>
+        /// Selects the move rate (:R&lt;n&gt;#) for <see cref="MoveAxisDirection"/>, like INDI's TELESCOPE_SLEW_RATE; throws
+        /// <see cref="InvalidOperationException"/> when it cannot be sent.
+        /// </summary>
         public void SelectMoveRate(int index) {
             if (index < 0 || index >= MoveRates.Count) {
                 throw new ArgumentOutOfRangeException(nameof(index), index, $"move rate index 0-{MoveRates.Count - 1}");
             }
-            if (Run(d => {
-                d.SetMoveRate(index);
-                return true;
-            }, false)) {
-                selectedMoveRate = index;
-                Logger.Info($"OnStepX: move rate {MoveRateLabels[index]} (:R{index}#){(index <= 2 ? ", which OnStepX also makes the pulse-guide rate" : string.Empty)}");
+            int? pulseRateBefore = LatestStatus(PulseRefusalStatusMaxAge)?.PulseGuideRateIndex;
+            RunOrThrow($"select the move rate {MoveRateLabels[index]}", d => d.SetMoveRate(index));
+            selectedMoveRate = index;
+            Logger.Info($"OnStepX: move rate {MoveRateLabels[index]} (:R{index}#)");
+            NoticePulseRateChange(index, pulseRateBefore);
+        }
+
+        /// <summary>
+        /// OnStepX also makes a move rate of 1x or slower the pulse-guide rate and stores it (GUIDE_SEPARATE_PULSE_RATE,
+        /// Guide.command.cpp): say so, since a guide calibration made at the old rate no longer fits.
+        /// </summary>
+        private void NoticePulseRateChange(int moveRateIndex, int? pulseRateBefore) {
+            if (moveRateIndex > 2 || pulseRateBefore is not { } before || before == moveRateIndex) {
+                return;
+            }
+            if (TryReadStatus() is { } after && after.PulseGuideRateIndex != before && after.PulseGuideRateIndex is >= 0 and <= 2) {
+                Logger.Warning($"OnStepX: the move rate {MoveRateLabels[moveRateIndex]} also became the pulse-guide rate (was {MoveRateLabels[before]})");
+                Notification.ShowWarning($"OnStepX: the mount now also guides at {MoveRateLabels[moveRateIndex]} (was {MoveRateLabels[before]}), since OnStepX takes slow move rates as the guide rate. A guide calibration made at the old rate no longer fits.");
             }
         }
 
@@ -1058,29 +1415,38 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
             var (positive, negative) = Directions(axis);
             OnStepXDirection? wanted = sign == 0 ? null : sign > 0 ? positive : negative;
-            OnStepXDirection? moving = axis == TelescopeAxes.Primary ? primaryMove : secondaryMove;
-            if (wanted is not null && wanted == moving) {
-                return;
-            }
-
-            if (Run(d => {
-                if (wanted is { } direction) {
-                    if (moving is { } previous) {
-                        d.StopMove(previous);
-                    }
-                    d.StartMove(direction);
-                } else {
-                    d.StopMove(positive);
-                    d.StopMove(negative);
+            // a stop must not end a guide pulse (:Qe# and friends stop it too): only an axis that is known to move
+            bool firmwareMoving = LatestStatus(PulseRefusalStatusMaxAge)?.ManualMove == true;
+            lock (moveLock) {
+                OnStepXDirection? moving = axis == TelescopeAxes.Primary ? primaryMove : secondaryMove;
+                if (wanted == moving && (wanted is not null || !firmwareMoving)) {
+                    // the state read above clears a move the firmware ended, so a keepalive starts it again
+                    return;
                 }
-                return true;
-            }, false)) {
-                SetMoving(axis, wanted);
+
+                if (Run(d => {
+                    if (wanted is { } direction) {
+                        if (moving is { } previous) {
+                            d.StopMove(previous);
+                        }
+                        d.StartMove(direction);
+                    } else if (moving is { } current) {
+                        d.StopMove(current);
+                    } else {
+                        d.StopMove(positive);
+                        d.StopMove(negative);
+                    }
+                    return true;
+                }, false)) {
+                    SetMoving(axis, wanted);
+                }
             }
             InvalidateState();
         }
 
+        // Caller holds moveLock.
         private void SetMoving(TelescopeAxes axis, OnStepXDirection? direction) {
+            moveCommandAt = DateTime.UtcNow;
             if (axis == TelescopeAxes.Primary) {
                 primaryMove = direction;
             } else {
@@ -1107,22 +1473,28 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
 
             var (positive, negative) = Directions(axis);
-            Run(d => {
-                if (rate == 0) {
-                    d.StopMove(positive);
-                    d.StopMove(negative);
-                    SetMoving(axis, null);
-                } else {
-                    int index = NearestMoveRate(rate);
-                    Logger.Info($"OnStepX: moving {axis} at {MoveRates[index]:F4}°/s (:R{index}#)");
-                    d.SetMoveRate(index);
-                    selectedMoveRate = index;
-                    d.StartMove(rate > 0 ? positive : negative);
-                    SetMoving(axis, rate > 0 ? positive : negative);
-                }
-                return true;
-            }, false);
+            int? pulseRateBefore = LatestStatus(PulseRefusalStatusMaxAge)?.PulseGuideRateIndex;
+            int index = NearestMoveRate(rate);
+            lock (moveLock) {
+                Run(d => {
+                    if (rate == 0) {
+                        d.StopMove(positive);
+                        d.StopMove(negative);
+                        SetMoving(axis, null);
+                    } else {
+                        Logger.Info($"OnStepX: moving {axis} at {MoveRates[index]:F4}°/s (:R{index}#)");
+                        d.SetMoveRate(index);
+                        selectedMoveRate = index;
+                        d.StartMove(rate > 0 ? positive : negative);
+                        SetMoving(axis, rate > 0 ? positive : negative);
+                    }
+                    return true;
+                }, false);
+            }
             InvalidateState();
+            if (rate != 0) {
+                NoticePulseRateChange(index, pulseRateBefore);
+            }
         }
 
         #endregion Manual move
@@ -1154,12 +1526,18 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         /// </summary>
         public bool IsPulseGuiding {
             get {
+                // a manual move at 2x or slower also shows as 'G': then the flag tells nothing about the pulse
+                bool manualMove = ManualMoveRunning;
                 lock (pulseLock) {
                     var now = DateTime.UtcNow;
                     if (now < PulseEnd) {
                         return true;
                     }
                     if (pulseEndConfirmed) {
+                        return false;
+                    }
+                    if (manualMove) {
+                        pulseEndConfirmed = true;
                         return false;
                     }
                     if (now - lastPulseCheck < PulseCheckInterval) {
@@ -1177,7 +1555,16 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                         return now < PulseEnd;
                     }
                     var late = now - PulseEnd;
-                    if (status is null || !status.PulseGuiding) {
+                    if (status is null) {
+                        // unreadable: the pulse may still run; ask again until the timeout
+                        if (late >= PulseEndTimeout) {
+                            Logger.Error($"OnStepX: the end of a guide pulse could not be confirmed {late.TotalMilliseconds:F0} ms after its estimated end; counting it as over");
+                            pulseEndConfirmed = true;
+                            return false;
+                        }
+                        return true;
+                    }
+                    if (!status.PulseGuiding) {
                         pulseEndConfirmed = true;
                         if (pulseLateLogged) {
                             Logger.Warning($"OnStepX: a guide pulse ended {late.TotalMilliseconds:F0} ms after its estimated end (USB serial delay)");
@@ -1215,6 +1602,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             if (duration < 1) {
                 return;
             }
+            lock (pulseLock) {
+                // a pulse aborts a goto that may already run (Guide::validate), and the last status predates it
+                if (motionCommandAt > latestStatusAt) {
+                    throw new InvalidOperationException("OnStepX refuses guide pulses: a goto, park or home has just been started");
+                }
+            }
             if (LatestStatus(PulseRefusalStatusMaxAge) is { } known && PulseRefusal(known) is { } reason) {
                 throw new InvalidOperationException($"OnStepX refuses guide pulses: {reason} ({known.Raw})");
             }
@@ -1243,7 +1636,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
-        /// <summary>Why the controller would refuse a guide pulse in this status (OnStepX Guide::validate), or null.</summary>
+        /// <summary>
+        /// Why the controller would refuse a guide pulse in this status (OnStepX Guide::validate), or null: parked, a goto
+        /// running (which the pulse would abort), a motor fault, and limit or initialization errors only while the move
+        /// rate is 1x or slower (validate checks limits.isError() when the rate index is below 3). Standby does not show
+        /// in :GU#.
+        /// </summary>
         internal static string? PulseRefusal(OnStepXStatus status) {
             if (status.Park == OnStepXParkState.Parked) {
                 return "the mount is parked";
@@ -1251,8 +1649,17 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             if (status.Slewing) {
                 return "a goto is running";
             }
+            if (status.Homing) {
+                // Guide::startAxis1 ignores a pulse while homing with sensors runs as a guide
+                return "homing is running";
+            }
+            if (status.Error == OnStepXError.MotorFault) {
+                return "motor fault";
+            }
+            if (status.MoveRateIndex is < 0 or >= 3) {
+                return null;
+            }
             return status.Error switch {
-                OnStepXError.MotorFault => "motor fault",
                 OnStepXError.LimitSense or OnStepXError.AltitudeMin or OnStepXError.AltitudeMax or OnStepXError.AzimuthLimit
                     or OnStepXError.UnderPoleLimit or OnStepXError.DecLimit or OnStepXError.MeridianLimit => $"limit reached ({status.Error})",
                 OnStepXError.SiteNotInitialized or OnStepXError.NvInitFailed => $"controller not initialized ({status.Error})",

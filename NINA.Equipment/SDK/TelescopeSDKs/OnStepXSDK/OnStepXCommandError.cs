@@ -86,17 +86,21 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
     /// <summary>A command the controller answered with '0'; <see cref="Error"/> is its reason from :GE#, when readable.</summary>
     public class OnStepXCommandRefusedException : OnStepXException {
-        public OnStepXCommandRefusedException(string command, OnStepXCommandError? error)
-            : base($"{command} refused: {(error is { } e ? e.Describe() : "reason unknown")}") {
+        /// <param name="reason">Overrides the generic text for <paramref name="error"/> where a command gives it its own meaning.</param>
+        public OnStepXCommandRefusedException(string command, OnStepXCommandError? error, string? reason = null)
+            : base($"{command} refused: {reason ?? (error is { } e ? e.Describe() : "reason unknown")}") {
             Command = command;
             Error = error;
+            reasonOverride = reason;
         }
+
+        private readonly string? reasonOverride;
 
         public string Command { get; }
 
         public OnStepXCommandError? Error { get; }
 
         /// <summary>The reason alone, for messages that name the action themselves.</summary>
-        public string Reason => Error is { } e ? e.Describe() : "reason unknown";
+        public string Reason => reasonOverride ?? (Error is { } e ? e.Describe() : "reason unknown");
     }
 }

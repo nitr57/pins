@@ -11,9 +11,11 @@ namespace NINA.GuideEngine.Guiding;
 /// engine sees only when the frame arrives, not when the exposure ended.</param>
 /// <param name="ProcessingMs">Frame arrived to frame processed (preprocessing, stars, algorithms).</param>
 /// <param name="FrameToPulseMs">Frame arrived to the first pulse handed to the guide output; null without pulses.
-/// The command still has to reach the mount (about 9 ms on a 9600 baud serial line).</param>
+/// It overlaps <paramref name="ProcessingMs"/> and <paramref name="OtherMs"/>, so it is not one of the parts that add up
+/// to the cycle. The command still has to reach the mount (about 9 ms on a 9600 baud serial line).</param>
 /// <param name="PulseMs">Pulses handed over to the output reporting them done (0 without pulses).</param>
-/// <param name="OtherMs">The rest of the cycle: events, logs, the mount check before the next capture.</param>
+/// <param name="OtherMs">The rest of the cycle: between processing and the pulses, then events, logs and the mount
+/// check before the next capture. Exposure, camera, processing, pulses and this add up to the cycle.</param>
 public sealed record CycleTimes(
     double CycleMs,
     double ExposureMs,
@@ -115,7 +117,8 @@ internal sealed class CycleTimer
         double? frameToPulse = pulsesStart is { } ps ? Ms(ps - ready) : null;
         double pulse = pulsesStart is { } p && pulsesDone is { } pd ? Ms(pd - p) : 0;
         var lastMark = pulsesDone ?? pulsesStart ?? processedAt;
-        double other = Ms(next - lastMark);
+        double beforePulses = pulsesStart is { } pulsesAt && pulsesAt > processedAt ? Ms(pulsesAt - processedAt) : 0;
+        double other = Ms(next - lastMark) + beforePulses;
         var times = new CycleTimes(cycle, exposureMs, camera, processing, frameToPulse, pulse, other);
 
         recent.Enqueue(times);

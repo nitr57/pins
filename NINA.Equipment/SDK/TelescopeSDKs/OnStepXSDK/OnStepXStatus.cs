@@ -29,8 +29,10 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         Unknown,
         GermanEquatorial,
         Fork,
-        ForkAlt,
         AltAz,
+
+        /// <summary>'L', OnStepX 10.24 and later.</summary>
+        AltAlt,
     }
 
     /// <summary>The general error in the last character of :GU#, numbered as INDI's LX200_OnStep Errors.</summary>
@@ -96,6 +98,15 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         /// <summary>'T' east, 'W' west, 'o' none (at home): the same value as :Gm# (both Mount::getMountPosition).</summary>
         public OnStepXPierSide PierSide { get; private init; }
 
+        /// <summary>
+        /// '(' lunar, 'O' solar, 'k' King, otherwise sidereal. OnStepX reports these only without rate compensation, which
+        /// :TL#, :TS# and :TK# turn off.
+        /// </summary>
+        public OnStepXTrackingRate TrackingRate { get; private init; }
+
+        /// <summary>'r' refraction, 't' pointing model ("OnTrack"), with 's' on one axis only; neither: none.</summary>
+        public OnStepXCompensation Compensation { get; private init; }
+
         /// <summary>'w': paused at home during a goto, waiting to continue.</summary>
         public bool WaitingAtHome { get; private init; }
 
@@ -134,6 +145,11 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
                 PulseGuiding = flags.Contains('G'),
                 ManualMove = flags.Contains('g'),
                 PierSide = flags.Contains('T') ? OnStepXPierSide.East : flags.Contains('W') ? OnStepXPierSide.West : OnStepXPierSide.Unknown,
+                TrackingRate = flags.Contains('(') ? OnStepXTrackingRate.Lunar
+                    : flags.Contains('O') ? OnStepXTrackingRate.Solar
+                    : flags.Contains('k') ? OnStepXTrackingRate.King
+                    : OnStepXTrackingRate.Sidereal,
+                Compensation = CompensationOf(flags),
                 WaitingAtHome = flags.Contains('w'),
                 MountType = MountTypeOf(flags),
                 PulseGuideRateIndex = DigitOf(reply[^3]),
@@ -160,6 +176,7 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
             return null;
         }
 
+        // 'k' is the King rate in OnStepX, not a mount type
         private static OnStepXMountType MountTypeOf(string flags) {
             if (flags.Contains('E')) {
                 return OnStepXMountType.GermanEquatorial;
@@ -167,13 +184,24 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
             if (flags.Contains('K')) {
                 return OnStepXMountType.Fork;
             }
-            if (flags.Contains('k')) {
-                return OnStepXMountType.ForkAlt;
-            }
             if (flags.Contains('A')) {
                 return OnStepXMountType.AltAz;
             }
+            if (flags.Contains('L')) {
+                return OnStepXMountType.AltAlt;
+            }
             return OnStepXMountType.Unknown;
+        }
+
+        private static OnStepXCompensation CompensationOf(string flags) {
+            bool single = flags.Contains('s');
+            if (flags.Contains('r')) {
+                return single ? OnStepXCompensation.Refraction : OnStepXCompensation.RefractionDual;
+            }
+            if (flags.Contains('t')) {
+                return single ? OnStepXCompensation.Model : OnStepXCompensation.ModelDual;
+            }
+            return OnStepXCompensation.None;
         }
 
         private static int DigitOf(char c) => c is >= '0' and <= '9' ? c - '0' : -1;

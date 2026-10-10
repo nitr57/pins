@@ -92,9 +92,12 @@ reply types follow INDI's `lx200_OnStep.cpp` and `lx200driver.cpp`; vendor firmw
 `Equipment/MyTelescope/OnStepXTelescope` is the `ITelescope` on top, listed by `TelescopeChooserVM` and connected on
 `TelescopeSettings.SerialPort`. `OnStepXTelescope.Discover` names the list entry after the model the mount reports: it
 opens the port briefly with short timeouts, but not one this process has open (`OnStepXSerialPort.IsOpenInProcess`);
-INDI holds its port exclusively, so the open fails there. `Id` and `Name` stay fixed for the profile's selection. It reads the mount's state as one set of reads at most every 250 ms (the UI polls about
-30 properties at a time), keeps guide pulses per axis by time like INDI, and handles the OnStep behaviours
-`INDITelescope` documents: a goto right after tracking was switched on is refused as below the horizon (one retry).
+a port another program holds exclusively (TIOCEXCL, as INDI and .NET do) fails to open, others are not detected, and a
+scan never replaces a known model with the generic name. `Id` and `Name` stay fixed for the profile's selection. It
+reads the mount's state as one set of reads at most every 250 ms (the UI polls about 30 properties at a time); an
+unreadable state is not retried by the rest of that poll, and the connection counts as lost only after three failures
+over at least 2 s. It handles the OnStep behaviours `INDITelescope` documents: a goto right after tracking was switched
+on is refused as below the horizon (one retry).
 Homing ends when the controller clears its homing flag `h` in `:GU#`; `H` only means the axes are within the home
 tolerance, which the UMi misses after a long slew. The `:GU#` flags are decoded as OnStepX 10.20a writes them
 (`src/telescope/mount/status/Status.command.cpp` of hjd1964/OnStepX at 79492e8, the base of the UMi firmware); INDI
@@ -109,16 +112,36 @@ a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`
 - Refusals: a command answered `0` is followed at once, in the same exchange, by `:GE#` (the controller's last
   command error, `ProcessCmds.cpp`; codes in `OnStepXCommandError`, the same in 10.20a and 10.24c) and throws
   `OnStepXCommandRefusedException` with that reason. `:hC#` has no reply but records its error, so `:GE#` follows it
-  too. `OnStepXTelescope` turns refusals of park, unpark, find home and set park into exceptions: `TelescopeVM` reports
-  a park as done unless `Park` throws.
+  too. `OnStepXTelescope` turns refusals of goto, park, unpark, find home and set park into exceptions: `TelescopeVM`
+  ignores the result of `SlewToCoordinates` and reports a park as done unless `Park` throws. A cancelled goto, park or
+  home stops the mount (`:Q#`), as ASCOM drivers do.
+- Park and home: `Park::request` and `Home::request` refuse during a goto (also while it brakes) and any guide motion,
+  so the driver stops everything first and waits until `:GU#` shows neither a slew nor `g`/`G`.
+- Manual moves: `Slewing` covers gotos, homing and manual moves. A move faster than 2x shows as `g`, a slower one as a
+  pulse guide (`G`), so the driver also counts the moves it started, until a status read after the move command shows
+  neither flag. A stop is sent only for an axis known to move, since `:Qn#` and friends also end a guide pulse (and
+  abort homing). Two motions show no motion flag in `:GU#`: homing with home sensors runs as a guide, not a goto
+  (`Home::request`), and a fast move brakes after its stop as `GA_BREAK`, which `Guide::active()` leaves out. The driver
+  counts `h` and, like `INDITelescope`, RA/Dec changing faster than 0.05°/s, taken over at least 0.5 s because `:GR#`
+  has whole seconds.
+- Tracking rate and rate compensation come from `:GU#` (`(` lunar, `O` solar, `k` King; `r`/`t` with `s` for one
+  axis). `:TL#`, `:TS#` and `:TK#` turn compensation off and `:TQ#` does not restore it, so the driver restores it on
+  the way back to sidereal.
+- Meridian flip: a plain goto. OnStepX picks the side by its preferred pier side (`:GX96#`/`:SX96,[EWB]#`); with
+  "Best" it stays on the current side until the meridian limit (`Goto.cpp` `setTarget`). The driver sets
+  `TelescopeSettings.PreferredPierSide` at connect and on change (OnStepX forgets it at power off unless built with
+  `PIER_SIDE_PREFERRED_MEMORY`) and treats a flip that ends on the wrong side as failed, so NINA's retries go on.
 - Guide pulses: `:Mg` has no reply, so `OnStepXTransport.SendBlindNow` writes it past a read in progress (only the
-  writing of commands is serialized) and returns when the command is on the line, estimated from the characters queued
-  at 9600 baud. A pulse counts as running until then plus its duration plus 15 ms, and after that until `:GU#` no longer
-  shows `G`, so no guide exposure starts while the mount moves: on a UMi17S most pulses ended 0-15 ms after the
-  estimate, but USB serial now and then delays a command by up to ~80 ms. Pulses the controller would refuse (`Guide::validate`)
-  throw, judged on the last known status, never on a fresh read that would delay the pulse.
-- Tests: `NINA.Test/Equipment/OnStepX`, with a scripted fake port; `OnStepXHardwareTest` is explicit and read-only
-  against a real mount on `ONSTEPX_PORT`. Motion is checked by hand on the mount.
+  writing of commands is serialized, and not between a refused command and its `:GE#`) and returns when the command is
+  on the line, estimated from the characters queued at 9600 baud. A pulse counts as running until then plus its
+  duration plus 15 ms, and after that until `:GU#` no longer shows `G`, so no guide exposure starts while the mount
+  moves: on a UMi17S most pulses ended 0-15 ms after the estimate, but USB serial now and then delays a command by up
+  to ~80 ms. Pulses the controller would refuse (`Guide::validate`) throw, judged on the last known status, never on a
+  fresh read that would delay the pulse; so does a pulse after a goto, park or home was sent and before a status read
+  after it, since a pulse aborts a goto.
+- Tests: `NINA.Test/Equipment/OnStepX`, with a scripted fake port; `OnStepXHardwareTest` is explicit and runs against
+  a real mount on `ONSTEPX_PORT`: it reads, and its pulse test moves the mount a few arcseconds. Gotos, parks and moves
+  are checked by hand on the mount.
 
 ## Special Integration: SBIG Camera Service
 

@@ -117,10 +117,13 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
         /// <summary>
         /// A command answered with '1' or '0': on '0' the controller's reason is read right after with :GE# (last command
-        /// error, ProcessCmds.cpp), before any other command can overwrite it. The reason is null for any other reply.
+        /// error, ProcessCmds.cpp). Writing stays locked from the command to :GE#, so not even a guide pulse
+        /// (<see cref="SendBlindNow"/>) can overwrite the error first; pulses wait the few ms. The reason is null for any
+        /// other reply.
         /// </summary>
         public (char? Reply, int? Error) SendForCharWithError(string command) {
-            lock (gate) {
+            lock (gate)
+            lock (writeLock) {
                 WriteCommand(command);
                 int b = port.ReadByte(firstByteTimeout);
                 char? reply = b < 0 ? null : (char)b;
@@ -134,11 +137,12 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         }
 
         /// <summary>
-        /// A command without a reply that still records an error (OnStepX :hC#), followed at once by :GE# for it; null
-        /// when :GE# gives no number.
+        /// A command without a reply that still records an error (OnStepX :hC#), followed at once by :GE# for it, with
+        /// writing locked in between as in <see cref="SendForCharWithError"/>; null when :GE# gives no number.
         /// </summary>
         public int? SendBlindThenError(string command) {
-            lock (gate) {
+            lock (gate)
+            lock (writeLock) {
                 WriteCommand(command);
                 int? error = ReadLastError();
                 Logger.Trace($"OnStepX: {command}, :GE# {(error is { } e ? e.ToString(System.Globalization.CultureInfo.InvariantCulture) : "unreadable")}");

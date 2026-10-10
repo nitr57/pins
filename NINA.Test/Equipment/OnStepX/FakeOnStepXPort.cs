@@ -20,7 +20,8 @@ namespace NINA.Test.Equipment.OnStepX {
 
     /// <summary>
     /// A scripted OnStepX controller. A command not scripted is answered like the firmware answers an unknown one: a
-    /// bare "0". Reads never wait, a missing byte is an immediate timeout.
+    /// bare "0", except the commands the firmware never answers (moves, pulses, stops, move and tracking rates). Reads
+    /// never wait, a missing byte is an immediate timeout.
     /// </summary>
     internal sealed class FakeOnStepXPort : IOnStepXPort {
         public const string Ack = "\u0006";
@@ -80,6 +81,7 @@ namespace NINA.Test.Equipment.OnStepX {
             .On(":GG#", "-02:00#")
             .On(":GX97#", "3.5#")
             .On(":hP#", "1")
+            .On(":GX96#", "E#")
             .On(":hC#", (string?)null)
             .On(":GE#", "00#");
 
@@ -96,7 +98,7 @@ namespace NINA.Test.Equipment.OnStepX {
             }
 
             Written.Add(text);
-            string? reply = DefaultReply;
+            string? reply = IsBlind(text) ? null : DefaultReply;
             if (replies.TryGetValue(text, out var sequence)) {
                 reply = sequence.Count > 1 ? sequence.Dequeue() : sequence.Peek();
             }
@@ -104,6 +106,13 @@ namespace NINA.Test.Equipment.OnStepX {
                 Preload(reply);
             }
         }
+
+        /// <summary>:Mg pulses, :Mn# moves, :Q stops, :R move rates, :TQ# and the other tracking rates: no reply.</summary>
+        private static bool IsBlind(string command) =>
+            command.StartsWith(":Mg", StringComparison.Ordinal)
+            || command is ":Mn#" or ":Ms#" or ":Me#" or ":Mw#" or ":TQ#" or ":TL#" or ":TS#" or ":TK#"
+            || command.StartsWith(":Q", StringComparison.Ordinal)
+            || (command.Length == 4 && command.StartsWith(":R", StringComparison.Ordinal) && char.IsDigit(command[2]));
 
         public int ReadByte(TimeSpan timeout) => incoming.Count > 0 ? incoming.Dequeue() : -1;
 

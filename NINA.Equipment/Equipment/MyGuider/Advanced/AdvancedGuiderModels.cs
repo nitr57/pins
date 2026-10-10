@@ -135,7 +135,10 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
         /// <summary>Processing time of the last frame, ms.</summary>
         public double LastProcessingMs { get; set; }
 
-        /// <summary>Timing of the guide loop (frame rate and where the time of a cycle goes); null before the first cycle.</summary>
+        /// <summary>
+        /// Timing of the guide loop (frame rate and where the time of a cycle goes); null before the first cycle and while
+        /// the loop does not run.
+        /// </summary>
         public AdvancedGuideTiming? Timing { get; set; }
 
         /// <summary>Lock position, camera px; null when none.</summary>
@@ -365,7 +368,10 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
         /// <summary>Pulses handed over to reported done, over cycles with pulses.</summary>
         public double PulseMs { get; set; }
 
-        /// <summary>The rest of a cycle (events, logs, the mount check before the next capture).</summary>
+        /// <summary>
+        /// The rest of a cycle: between processing and the pulses, then events, logs and the mount check before the next
+        /// capture. Exposure, camera, processing, pulses and this add up to the cycle; FrameToPulseMs overlaps them.
+        /// </summary>
         public double OtherMs { get; set; }
 
         public double LastCycleMs { get; set; }

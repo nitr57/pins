@@ -37,11 +37,33 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         West,
     }
 
-    /// <summary>The tracking rates INDI's LX200_OnStep selects (:TQ#, :TL#, :TS#).</summary>
+    /// <summary>The pier side gotos prefer (:GX96# / :SX96,[EWB]#, Goto.command.cpp).</summary>
+    public enum OnStepXPreferredPierSide {
+        East,
+        West,
+
+        /// <summary>Stay on the current side as long as the limits allow.</summary>
+        Best,
+    }
+
+    /// <summary>The tracking rates OnStepX selects with :TQ#, :TL#, :TS# and :TK# (Mount.command.cpp).</summary>
     public enum OnStepXTrackingRate {
         Sidereal,
         Lunar,
         Solar,
+        King,
+    }
+
+    /// <summary>
+    /// Rate compensation (Mount settings.rc): :Tn#, :Tr#, :To#, on one axis (:T1#) or both (:T2#). :TL#, :TS# and :TK#
+    /// turn it off, :TQ# does not turn it back on.
+    /// </summary>
+    public enum OnStepXCompensation {
+        None,
+        Refraction,
+        RefractionDual,
+        Model,
+        ModelDual,
     }
 
     public static class OnStepXGotoErrorExtensions {
