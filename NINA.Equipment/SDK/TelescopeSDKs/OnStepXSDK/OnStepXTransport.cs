@@ -116,6 +116,37 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         }
 
         /// <summary>
+        /// A command answered with '1' or '0': on '0' the controller's reason is read right after with :GE# (last command
+        /// error, ProcessCmds.cpp), before any other command can overwrite it. The reason is null for any other reply.
+        /// </summary>
+        public (char? Reply, int? Error) SendForCharWithError(string command) {
+            lock (gate) {
+                WriteCommand(command);
+                int b = port.ReadByte(firstByteTimeout);
+                char? reply = b < 0 ? null : (char)b;
+                if (reply is not null and not '#') {
+                    DrainReply();
+                }
+                int? error = reply == '0' ? ReadLastError() : null;
+                Logger.Trace($"OnStepX: {command} -> {(reply is { } c ? c.ToString() : "timeout")}{(error is { } e ? $", :GE# {e}" : string.Empty)}");
+                return (reply, error);
+            }
+        }
+
+        /// <summary>
+        /// A command without a reply that still records an error (OnStepX :hC#), followed at once by :GE# for it; null
+        /// when :GE# gives no number.
+        /// </summary>
+        public int? SendBlindThenError(string command) {
+            lock (gate) {
+                WriteCommand(command);
+                int? error = ReadLastError();
+                Logger.Trace($"OnStepX: {command}, :GE# {(error is { } e ? e.ToString(System.Globalization.CultureInfo.InvariantCulture) : "unreadable")}");
+                return error;
+            }
+        }
+
+        /// <summary>
         /// A command without a reply, written at once even while another command waits for its reply; it only waits
         /// for a command being written. Returns when its last character is on the line: the controller acts on it
         /// from then on.
@@ -184,6 +215,16 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
                 lineFreeAt = start + command.Length * characterTime;
                 return lineFreeAt;
             }
+        }
+
+        // Caller holds gate. :GE# without clearing the input first: nothing else can be waiting, and the reply to the
+        // command before is already read.
+        private int? ReadLastError() {
+            Write(":GE#");
+            var reply = ReadUntilTerminator();
+            return reply.Terminated && int.TryParse(reply.Text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int error)
+                ? error
+                : null;
         }
 
         // Caller holds gate.

@@ -110,6 +110,39 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void SendForCharWithError_ReadsTheReasonOnlyAfterAZero() {
+            var port = FakeOnStepXPort.Umi17S().On(":hP#", "1", "0").On(":GE#", "12#");
+            var transport = Open(port);
+
+            var accepted = transport.SendForCharWithError(":hP#");
+            var refused = transport.SendForCharWithError(":hP#");
+
+            Assert.That(accepted, Is.EqualTo(((char?)'1', (int?)null)));
+            Assert.That(refused, Is.EqualTo(((char?)'0', (int?)12)));
+            Assert.That(port.Written, Is.EqualTo(new[] { ":hP#", ":hP#", ":GE#" }));
+        }
+
+        [Test]
+        public void SendForCharWithError_NoReply_DoesNotAsk() {
+            var port = FakeOnStepXPort.Umi17S().On(":hP#", (string?)null);
+
+            var result = Open(port).SendForCharWithError(":hP#");
+
+            Assert.That(result, Is.EqualTo(((char?)null, (int?)null)));
+            Assert.That(port.Written, Is.EqualTo(new[] { ":hP#" }));
+        }
+
+        [Test]
+        public void SendBlindThenError_AsksRightAfter() {
+            var port = FakeOnStepXPort.Umi17S().On(":hC#", (string?)null).On(":GE#", "17#");
+
+            int? error = Open(port).SendBlindThenError(":hC#");
+
+            Assert.That(error, Is.EqualTo(17));
+            Assert.That(port.Written, Is.EqualTo(new[] { ":hC#", ":GE#" }));
+        }
+
+        [Test]
         public void SendBlindNow_GoesOutWhileAReplyIsAwaited() {
             var port = new BlockingPort();
             var transport = new OnStepXTransport(port, firstByteTimeout: TimeSpan.FromSeconds(5));

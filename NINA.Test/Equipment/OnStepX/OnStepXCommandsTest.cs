@@ -159,22 +159,69 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
-        public void ParkUnparkHomeTracking() {
+        public void ParkUnparkHomeTracking_Accepted() {
             var (device, port) = Connect(FakeOnStepXPort.Umi17S()
                 .On(":hR#", "1")
-                .On(":hQ#", "0")
-                .On(":Te#", "1")
-                .On(":Td#", "0"));
+                .On(":hQ#", "1")
+                .On(":Te#", "1"));
 
             Assert.That(device.Park(), Is.True);
             Assert.That(device.Unpark(), Is.True);
-            Assert.That(device.SetParkPosition(), Is.False);
+            device.SetParkPosition();
             device.FindHome();
-            Assert.That(device.SetTracking(true), Is.True);
-            Assert.That(device.SetTracking(false), Is.False);
+            device.SetTracking(true);
             device.SetTrackingRate(OnStepXTrackingRate.Lunar);
 
-            Assert.That(port.Written, Is.EqualTo(new[] { ":hP#", ":hR#", ":hQ#", ":hC#", ":Te#", ":Td#", ":TL#" }));
+            // :hC# has no reply, so its error is read with :GE# right after; the others only on a refusal
+            Assert.That(port.Written, Is.EqualTo(new[] { ":hP#", ":hR#", ":hQ#", ":hC#", ":GE#", ":Te#", ":TL#" }));
+        }
+
+        [Test]
+        public void Park_Refused_ThrowsTheControllersReason() {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(":hP#", "0").On(":GE#", "12#"));
+
+            var ex = Assert.Throws<OnStepXCommandRefusedException>(() => device.Park());
+
+            Assert.That(ex!.Error, Is.EqualTo(OnStepXCommandError.NoParkPositionSet));
+            Assert.That(ex.Message, Does.Contain("no park position set"));
+            Assert.That(port.Written, Is.EqualTo(new[] { ":hP#", ":GE#" }));
+        }
+
+        [Test]
+        public void FindHome_Refused_ThrowsTheControllersReason() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":GE#", "17#"));
+
+            var ex = Assert.Throws<OnStepXCommandRefusedException>(() => device.FindHome());
+
+            Assert.That(ex!.Error, Is.EqualTo(OnStepXCommandError.Standby));
+        }
+
+        [Test]
+        public void Unpark_AnsweredOneNothingOrZero() {
+            var (accepted, _) = Connect(FakeOnStepXPort.Umi17S().On(":hR#", "1"));
+            var (silent, _) = Connect(FakeOnStepXPort.Umi17S().On(":hR#", (string?)null));
+            var (refused, _) = Connect(FakeOnStepXPort.Umi17S().On(":hR#", "0").On(":GE#", "11#"));
+
+            Assert.That(accepted.Unpark(), Is.True);
+            Assert.That(silent.Unpark(), Is.False, "a lost reply leaves the decision to the status");
+            Assert.That(() => refused.Unpark(), Throws.InstanceOf<OnStepXCommandRefusedException>().With.Property("Error").EqualTo(OnStepXCommandError.NotParked));
+        }
+
+        [Test]
+        public void SetTracking_Refused_Throws() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":Te#", "0").On(":GE#", "17#"));
+
+            Assert.That(() => device.SetTracking(true), Throws.InstanceOf<OnStepXCommandRefusedException>());
+        }
+
+        [Test]
+        public void Refusal_WithAnUnreadableReason_StillThrows() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":hQ#", "0").On(":GE#", "0"));
+
+            var ex = Assert.Throws<OnStepXCommandRefusedException>(() => device.SetParkPosition());
+
+            Assert.That(ex!.Error, Is.Null);
+            Assert.That(ex.Message, Does.Contain("reason unknown"));
         }
 
         [Test]

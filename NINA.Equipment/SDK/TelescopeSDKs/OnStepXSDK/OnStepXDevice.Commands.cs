@@ -70,23 +70,45 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         public void Abort() => Transport.SendBlind(":Q#");
 
         /// <summary>
-        /// Starts the slew to the park position (:hP#): '1' when it starts, '0' when the controller refuses (the reason is
-        /// then in <see cref="OnStepXStatus.Error"/>). INDI sends it blind; OnStepX 10.20a answers it (Park.command.cpp).
-        /// <see cref="OnStepXStatus.Park"/> tells when the mount is there.
+        /// Starts the slew to the park position (:hP#). INDI sends it blind; OnStepX answers '1' when it starts and '0'
+        /// when it refuses (Park.command.cpp), which throws <see cref="OnStepXCommandRefusedException"/> with the reason
+        /// from :GE# (no park position set, standby, ...). False without an answer: the park may have started, the
+        /// status decides. <see cref="OnStepXStatus.Park"/> tells when the mount is there.
         /// </summary>
-        public bool Park() => Transport.SendForChar(":hP#") == '1';
+        public bool Park() => SendAcceptedOrUnanswered(":hP#");
 
-        /// <summary>:hR#, answered with '1'.</summary>
-        public bool Unpark() => Transport.SendForChar(":hR#") == '1';
+        /// <summary>
+        /// :hR#: true when answered '1', false without an answer (INDI: the reply can get lost although the controller
+        /// unparks, so the status decides); a '0' throws <see cref="OnStepXCommandRefusedException"/>.
+        /// </summary>
+        public bool Unpark() => SendAcceptedOrUnanswered(":hR#");
 
-        /// <summary>Makes the current position the park position (:hQ#, answered with '1').</summary>
-        public bool SetParkPosition() => Transport.SendForChar(":hQ#") == '1';
+        /// <summary>'1' true, no answer false, '0' throws <see cref="OnStepXCommandRefusedException"/> with the reason.</summary>
+        private bool SendAcceptedOrUnanswered(string command) {
+            var (reply, error) = Transport.SendForCharWithError(command);
+            return reply switch {
+                '1' => true,
+                '0' => throw new OnStepXCommandRefusedException(command, ToCommandError(error)),
+                _ => false,
+            };
+        }
 
-        /// <summary>Starts the move to the home position (:hC#, no reply).</summary>
-        public void FindHome() => Transport.SendBlind(":hC#");
+        /// <summary>Makes the current position the park position (:hQ#); refused with the reason from :GE#.</summary>
+        public void SetParkPosition() => SendExpectingAcceptance(":hQ#");
 
-        /// <summary>:Te# / :Td#, refused with '0'.</summary>
-        public bool SetTracking(bool enabled) => Transport.SendForChar(enabled ? ":Te#" : ":Td#") is { } c && c != '0';
+        /// <summary>
+        /// Starts the move to the home position (:hC#). It has no reply but records its error, so :GE# right after tells
+        /// whether it started (Home.command.cpp); a refusal throws <see cref="OnStepXCommandRefusedException"/>.
+        /// </summary>
+        public void FindHome() {
+            int? error = Transport.SendBlindThenError(":hC#");
+            if (error is { } e && e != (int)OnStepXCommandError.None) {
+                throw new OnStepXCommandRefusedException(":hC#", ToCommandError(e));
+            }
+        }
+
+        /// <summary>:Te# / :Td#; refused with the reason from :GE#.</summary>
+        public void SetTracking(bool enabled) => SendExpectingAcceptance(enabled ? ":Te#" : ":Td#");
 
         /// <summary>:TQ#, :TL# or :TS#, no reply.</summary>
         public void SetTrackingRate(OnStepXTrackingRate rate) => Transport.SendBlind(rate switch {
@@ -201,13 +223,22 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         /// <summary>A raw command without a reply.</summary>
         public void SendCommandBlind(string command) => Transport.SendBlind(command);
 
-        /// <summary>Commands answered with '1' (accepted) or '0' (refused), INDI setStandardProcedure.</summary>
+        /// <summary>
+        /// Commands answered with '1' (accepted) or '0' (refused), INDI setStandardProcedure. A refusal throws
+        /// <see cref="OnStepXCommandRefusedException"/> with the controller's reason (:GE#); no answer throws
+        /// <see cref="OnStepXException"/>.
+        /// </summary>
         protected void SendExpectingAcceptance(string command) {
-            char? reply = Transport.SendForChar(command);
-            if (reply is null or '0') {
-                throw new OnStepXException($"{command} refused ('{reply}')");
+            var (reply, error) = Transport.SendForCharWithError(command);
+            if (reply == '0') {
+                throw new OnStepXCommandRefusedException(command, ToCommandError(error));
+            }
+            if (reply is null) {
+                throw new OnStepXException($"No reply to {command}");
             }
         }
+
+        private static OnStepXCommandError? ToCommandError(int? code) => code is { } c ? (OnStepXCommandError)c : null;
 
         private double ReadSexagesimalWithFallback(string command, string fallback) {
             var reply = Transport.SendForString(command);

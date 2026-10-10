@@ -106,6 +106,11 @@ a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`
   character, or are absent, and an unknown command is answered with a bare `0`.
 - ESP32 controllers reset while RTS is set and DTR is not. `OnStepXSerialPort` keeps both set, as Linux sets them on
   open, and never toggles them; clearing DTR before RTS restarts the mount (about 8 s without replies).
+- Refusals: a command answered `0` is followed at once, in the same exchange, by `:GE#` (the controller's last
+  command error, `ProcessCmds.cpp`; codes in `OnStepXCommandError`, the same in 10.20a and 10.24c) and throws
+  `OnStepXCommandRefusedException` with that reason. `:hC#` has no reply but records its error, so `:GE#` follows it
+  too. `OnStepXTelescope` turns refusals of park, unpark, find home and set park into exceptions: `TelescopeVM` reports
+  a park as done unless `Park` throws.
 - Guide pulses: `:Mg` has no reply, so `OnStepXTransport.SendBlindNow` writes it past a read in progress (only the
   writing of commands is serialized) and returns when the command is on the line, estimated from the characters queued
   at 9600 baud. A pulse counts as running until then plus its duration plus 15 ms, and after that until `:GU#` no longer

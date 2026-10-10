@@ -79,7 +79,9 @@ namespace NINA.Test.Equipment.OnStepX {
             .On(":GL#", "22:57:00#")
             .On(":GG#", "-02:00#")
             .On(":GX97#", "3.5#")
-            .On(":hP#", "1");
+            .On(":hP#", "1")
+            .On(":hC#", (string?)null)
+            .On(":GE#", "00#");
 
         public void Open() => IsOpen = true;
 

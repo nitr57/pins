@@ -261,16 +261,58 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
-        public async Task Park_Refused_EndsAtOnce() {
-            // the UMi17S with a site of 0°/0°: :hP# answered '0', error 2 (below the horizon limit) in :GU#
-            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":hP#", "0"));
-            port.On(":GU#", "NpEW262#");
+        public async Task Park_Refused_ThrowsTheReasonAtOnce() {
+            // TelescopeVM logs "Mount has parked" unless Park throws; OnStepX 10.24c refused :hP# without a park position
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":hP#", "0").On(":GE#", "12#"));
+            port.On(":GU#", Tracking);
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
-            await telescope.Park(CancellationToken.None);
-
+            Assert.That(async () => await telescope.Park(CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("refused to park: no park position set"));
             Assert.That(clock.Elapsed, Is.LessThan(TimeSpan.FromSeconds(2)));
-            Assert.That(telescope.AtPark, Is.False);
+        }
+
+        [Test]
+        public async Task Park_FailedOnTheWay_Throws() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", Tracking, "nIEW260#", "nNFEW260#");
+
+            Assert.That(async () => await telescope.Park(CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("parking failed"));
+        }
+
+        [Test]
+        public async Task Setpark_Refused_Throws() {
+            var (telescope, _) = await Connected(FakeOnStepXPort.Umi17S().On(":hQ#", "0").On(":GE#", "17#"));
+
+            Assert.That(() => telescope.Setpark(), Throws.InvalidOperationException.With.Message.Contains("standby"));
+        }
+
+        [Test]
+        public async Task Unpark_Refused_Throws() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":hR#", "0").On(":GE#", "11#"));
+            port.On(":GU#", "nNPEW260#");
+
+            Assert.That(async () => await telescope.Unpark(CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("refused to unpark: not parked"));
+        }
+
+        [Test]
+        public async Task FindHome_Refused_Throws() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GE#", "17#"));
+            port.On(":GU#", Tracking);
+
+            Assert.That(async () => await telescope.FindHome(CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("refused to find home"));
+        }
+
+        [Test]
+        public async Task TrackingOn_Refused_DoesNotThrow() {
+            // a property setter: the reason goes to a notification and the log
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":Te#", "0").On(":GE#", "17#"));
+
+            Assert.That(() => telescope.TrackingEnabled = true, Throws.Nothing);
+            Assert.That(port.Written, Is.EqualTo(new[] { ":Te#", ":GE#" }));
         }
 
         [Test]

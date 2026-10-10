@@ -420,6 +420,32 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
+        /// <summary>
+        /// Runs a command whose failure the caller must see (park, unpark, home, set park, tracking): a refusal throws
+        /// <see cref="InvalidOperationException"/> naming the action and the controller's reason, as does a garbled or
+        /// missing reply; a port failure ends the connection and throws too.
+        /// </summary>
+        private void RunOrThrow(string action, Action<OnStepXDevice> command) {
+            if (!Connected || device is not { } d) {
+                throw Failure($"cannot {action}: not connected");
+            }
+            try {
+                command(d);
+            } catch (OnStepXCommandRefusedException ex) {
+                throw Failure($"the mount refused to {action}: {ex.Reason}", ex);
+            } catch (OnStepXException ex) {
+                throw Failure($"could not {action}: {ex.Message}", ex);
+            } catch (Exception ex) when (IsPortFailure(ex)) {
+                ConnectionLost(ex);
+                throw Failure($"could not {action}: the connection was lost", ex);
+            }
+        }
+
+        private static InvalidOperationException Failure(string message, Exception? inner = null) {
+            Logger.Error($"OnStepX: {message}");
+            return new InvalidOperationException($"OnStepX: {message}", inner);
+        }
+
         private TimeSpan PollInterval => TimeSpan.FromSeconds(Math.Max(0.05, profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval));
 
         private void RaiseAllPropertiesChanged() {
@@ -548,15 +574,19 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         public bool TrackingEnabled {
             get => CurrentState?.Status.Tracking ?? false;
             set {
-                if (Run(d => d.SetTracking(value), false)) {
-                    InvalidateState();
-                    RaisePropertyChanged();
-                    RaisePropertyChanged(nameof(TrackingMode));
-                    RaisePropertyChanged(nameof(TrackingRate));
-                } else if (Connected) {
-                    Logger.Error($"OnStepX: tracking {(value ? "on" : "off")} refused");
-                    Notification.ShowError($"OnStepX: the mount refused to switch tracking {(value ? "on" : "off")}");
+                if (!Connected) {
+                    return;
                 }
+                try {
+                    RunOrThrow(value ? "switch tracking on" : "switch tracking off", d => d.SetTracking(value));
+                } catch (InvalidOperationException ex) {
+                    Notification.ShowError(ex.Message);
+                    return;
+                }
+                InvalidateState();
+                RaisePropertyChanged();
+                RaisePropertyChanged(nameof(TrackingMode));
+                RaisePropertyChanged(nameof(TrackingRate));
             }
         }
 
@@ -641,29 +671,36 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 await Task.Delay(TimeSpan.FromMilliseconds(100), token);
             }
 
-            if (!Run(d => d.Park(), false)) {
-                if (Connected) {
-                    var reason = GetState(true)?.Status.Error ?? OnStepXError.None;
-                    Logger.Error($"OnStepX: park refused, controller error {reason}");
-                    Notification.ShowError($"OnStepX: the mount refused to park ({reason})");
-                }
-                return;
+            // a refusal throws, so TelescopeVM reports "failed to park" with the reason instead of "Mount has parked";
+            // a lost reply leaves it to the status, like Unpark
+            bool acknowledged = false;
+            RunOrThrow("park", d => acknowledged = d.Park());
+            if (!acknowledged) {
+                Logger.Warning("OnStepX: :hP# not acknowledged, checking the park state");
             }
 
             // the slew to the park position shows as parking ('I') or a slew; a mount already there parks at once
             var outcome = await WaitFor(s => s.Status.Park is OnStepXParkState.Parked or OnStepXParkState.ParkFailed, MotionTimeout, token);
-            if (outcome?.Status.Park == OnStepXParkState.ParkFailed) {
-                Logger.Error($"OnStepX: park failed ({outcome.Status.Raw})");
-                Notification.ShowError("OnStepX: the mount reports that parking failed");
-            } else if (outcome is null) {
-                Logger.Error("OnStepX: the mount did not report being parked");
+            if (outcome is null) {
+                throw Failure(Connected
+                    ? $"the mount did not report being parked within {MotionTimeout.TotalMinutes:F0} minutes"
+                    : "the connection was lost while parking");
+            }
+            if (outcome.Status.Park == OnStepXParkState.ParkFailed) {
+                throw Failure($"the mount reports that parking failed ({outcome.Status.Raw})");
             }
         }
 
+        /// <summary>A refusal also shows as a notification: the API that calls this only reports "unknown error".</summary>
         public void Setpark() {
-            if (Connected && !Run(d => d.SetParkPosition(), false)) {
-                Logger.Error("OnStepX: setting the park position refused");
-                Notification.ShowError("OnStepX: the mount refused to set the park position");
+            if (!Connected) {
+                return;
+            }
+            try {
+                RunOrThrow("set the park position", d => d.SetParkPosition());
+            } catch (InvalidOperationException ex) {
+                Notification.ShowError(ex.Message);
+                throw;
             }
         }
 
@@ -671,15 +708,16 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             if (!Connected) {
                 return;
             }
-            if (!Run(d => d.Unpark(), false)) {
+            bool acknowledged = false;
+            RunOrThrow("unpark", d => acknowledged = d.Unpark());
+            if (!acknowledged) {
                 // like INDI: the single-character reply to :hR# can get lost although the controller unparks, so the
                 // status decides
                 Logger.Warning("OnStepX: :hR# not acknowledged, checking the park state");
             }
             var outcome = await WaitFor(s => s.Status.Park != OnStepXParkState.Parked, MotionStartTimeout, token);
             if (outcome is null) {
-                Logger.Error("OnStepX: the mount is still parked");
-                Notification.ShowError("OnStepX: the mount did not unpark");
+                throw Failure(Connected ? "the mount is still parked" : "the connection was lost while unparking");
             }
         }
 
@@ -694,19 +732,17 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 return;
             }
             if (start.Status.Park == OnStepXParkState.Parked) {
-                Notification.ShowWarning(Loc.Instance["LblTelescopeParkedWarn"]);
-                return;
+                throw Failure("cannot find home: the mount is parked");
             }
-            if (!Run(d => {
-                d.FindHome();
-                return true;
-            }, false)) {
-                return;
-            }
+            // :hC# has no reply; a refusal (standby, date and time not set, in motion) comes from :GE# and throws
+            RunOrThrow("find home", d => d.FindHome());
 
             var moving = await WaitFor(s => s.Status.Homing || s.Status.Slewing || Moved(start, s), MotionStartTimeout, token);
             if (moving is null) {
-                Logger.Info($"OnStepX: no motion after :hC#, the mount is at home already or refused ({CurrentState?.Status.Raw})");
+                if (!Connected) {
+                    throw Failure("the connection was lost while homing");
+                }
+                Logger.Info($"OnStepX: no motion after :hC#, the mount is at home already ({CurrentState?.Status.Raw})");
                 return;
             }
 
@@ -717,7 +753,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             while (DateTime.UtcNow < deadline) {
                 await Task.Delay(PollInterval, token);
                 if (GetState(true) is not { } now) {
-                    return;
+                    throw Failure("the connection was lost while homing");
                 }
                 Logger.Debug($"OnStepX: homing, :GU# {now.Status.Raw}, alt {now.Altitude:F3}°, az {now.Azimuth:F3}°");
                 sawHoming |= now.Status.Homing;
@@ -735,7 +771,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 }
                 last = now;
             }
-            Logger.Warning($"OnStepX: homing did not finish within {MotionTimeout.TotalMinutes:F0} minutes ({last.Status.Raw})");
+            throw Failure($"homing did not finish within {MotionTimeout.TotalMinutes:F0} minutes ({last.Status.Raw})");
         }
 
         private static bool Moved(State from, State to) =>
