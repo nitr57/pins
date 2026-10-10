@@ -796,7 +796,11 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         #region Slewing
 
-        public bool Slewing => CurrentState?.Status.Slewing ?? false;
+        /// <summary>
+        /// A goto ('N' absent from :GU#) or a manual move ('g'), as ASCOM counts MoveAxis motion as slewing. Pulse guiding
+        /// is neither ('G'). Waits for the end of a goto, park or home use <see cref="OnStepXStatus.Slewing"/> alone.
+        /// </summary>
+        public bool Slewing => CurrentState?.Status is { } status && (status.Slewing || status.ManualMove);
 
         public bool CanSlew => Connected;
 

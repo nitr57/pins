@@ -70,7 +70,10 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         /// <summary>'n' is "not tracking".</summary>
         public bool Tracking { get; private init; }
 
-        /// <summary>'N' is "not slewing"; INDI reads its absence as a slew, with or without tracking.</summary>
+        /// <summary>
+        /// 'N' is "no goto" (goTo.state == GS_NONE); INDI reads its absence as a slew, with or without tracking. A manual
+        /// move is not a goto: see <see cref="ManualMove"/>.
+        /// </summary>
         public bool Slewing { get; private init; }
 
         public OnStepXParkState Park { get; private init; }
@@ -83,6 +86,12 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
         /// <summary>'G': a pulse guide is running, on either axis.</summary>
         public bool PulseGuiding { get; private init; }
+
+        /// <summary>
+        /// 'g': a guide move other than a pulse is running (Guide::active), i.e. a manual move (:Mn#, :Me#, ...). Not a goto,
+        /// so <see cref="Slewing"/> stays false.
+        /// </summary>
+        public bool ManualMove { get; private init; }
 
         /// <summary>'T' east, 'W' west, 'o' none (at home): the same value as :Gm# (both Mount::getMountPosition).</summary>
         public OnStepXPierSide PierSide { get; private init; }
@@ -123,6 +132,7 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
                 AtHome = flags.Contains('H'),
                 Homing = flags.Contains('h'),
                 PulseGuiding = flags.Contains('G'),
+                ManualMove = flags.Contains('g'),
                 PierSide = flags.Contains('T') ? OnStepXPierSide.East : flags.Contains('W') ? OnStepXPierSide.West : OnStepXPierSide.Unknown,
                 WaitingAtHome = flags.Contains('w'),
                 MountType = MountTypeOf(flags),

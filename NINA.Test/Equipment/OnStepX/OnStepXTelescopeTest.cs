@@ -483,6 +483,18 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task Slewing_DuringAManualMoveButNotDuringAPulse() {
+            // reported by a tester: manual moves showed "Tracking" in Touch-N-Stars
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "NpgET290#");
+            Assert.That(telescope.Slewing, Is.True);
+
+            port.On(":GU#", "NpGET260#");
+            await Task.Delay(300);
+            Assert.That(telescope.Slewing, Is.False);
+        }
+
+        [Test]
         public async Task MoveAxisDirection_KeepaliveRepeatsSendNothing() {
             // OnStepX re-reads the pier side on every :Mn#; at home that turned the mount back and forth
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());

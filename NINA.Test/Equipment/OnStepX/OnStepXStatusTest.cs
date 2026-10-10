@@ -109,6 +109,16 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void TryParse_ManualMoveIsNotAGoto() {
+            var manual = Parse("NpgET290");
+            var pulse = Parse("NpGET260");
+
+            Assert.That(manual.ManualMove, Is.True);
+            Assert.That(manual.Slewing, Is.False, "'N' stays: a manual move is no goto");
+            Assert.That(pulse.ManualMove, Is.False);
+        }
+
+        [Test]
         public void TryParse_TheTrailingDigitsAreNotReadAsFlags() {
             // error 15 is sent as '0' + 15 = '?', error 11 as ';'; a park state hidden in them must not count
             Assert.That(OnStepXStatus.TryParse("nN2P?", out _), Is.False);
