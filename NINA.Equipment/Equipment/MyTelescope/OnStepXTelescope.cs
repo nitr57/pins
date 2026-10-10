@@ -51,11 +51,25 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private const int MaxStateFailures = 3;
 
         /// <summary>
-        /// Added to a guide pulse before the axis counts as free: the controller counts pulses on its 10 ms tick and
-        /// the command takes about 10 ms on the line at 9600 baud. INDI's own pulse timer has no margin and reports the
-        /// end 10-20 ms early.
+        /// Added to a guide pulse counted from when its command is on the line. The controller ends a pulse exactly
+        /// (its guide task runs without pause, Guide.cpp), but USB serial delays commands by a few ms and now and then by
+        /// up to ~80 ms: measured on a UMi17S, most 300 ms pulses ended 0-15 ms after the estimate, one 33-59 ms after
+        /// it. This margin lets the first 'G' check in <see cref="IsPulseGuiding"/> usually confirm the end; that check
+        /// covers the rest. INDI times pulses from the write, with no margin.
         /// </summary>
-        private static readonly TimeSpan PulseEndMargin = TimeSpan.FromMilliseconds(20);
+        private static readonly TimeSpan PulseEndMargin = TimeSpan.FromMilliseconds(15);
+
+        /// <summary>A pulse ending this much later than estimated is logged as a warning; a little late is normal (USB).</summary>
+        private static readonly TimeSpan PulseLateWarning = TimeSpan.FromMilliseconds(50);
+
+        /// <summary>How often the controller is asked whether a pulse is still running once its estimated end has passed.</summary>
+        private static readonly TimeSpan PulseCheckInterval = TimeSpan.FromMilliseconds(15);
+
+        /// <summary>A pulse still reported after this long past its estimated end counts as over, so the guider does not stall.</summary>
+        private static readonly TimeSpan PulseEndTimeout = TimeSpan.FromSeconds(1);
+
+        /// <summary>How old the last known status may be to refuse a pulse on it; reading it fresh would delay the pulse.</summary>
+        private static readonly TimeSpan PulseRefusalStatusMaxAge = TimeSpan.FromSeconds(5);
 
         /// <summary>
         /// OnStep rejects a goto sent right after tracking was switched on as "below the horizon limit" (see
@@ -99,8 +113,14 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private double slewSpeed = double.NaN;
         private AlignmentMode alignmentMode = AlignmentMode.GermanPolar;
         private OnStepXTrackingRate trackingRate = OnStepXTrackingRate.Sidereal;
+        private readonly object pulseLock = new();
         private DateTime raPulseEnd = DateTime.MinValue;
         private DateTime decPulseEnd = DateTime.MinValue;
+        private bool pulseEndConfirmed = true;
+        private bool pulseLateLogged;
+        private DateTime lastPulseCheck = DateTime.MinValue;
+        private OnStepXStatus? latestStatus;
+        private DateTime latestStatusAt = DateTime.MinValue;
         private int selectedMoveRate = DefaultMoveRateIndex;
         private OnStepXDirection? primaryMove;
         private OnStepXDirection? secondaryMove;
@@ -337,7 +357,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
                 try {
                     var status = d.GetStatus();
-                    state = new State(status, d.GetRightAscension(), d.GetDeclination(), d.GetAltitude(), d.GetAzimuth(), d.GetSiderealTime(), d.GetPierSide());
+                    RememberStatus(status);
+                    state = new State(status, d.GetRightAscension(), d.GetDeclination(), d.GetAltitude(), d.GetAzimuth(), d.GetSiderealTime(), status.PierSide);
                     stateReadAt = DateTime.UtcNow;
                     stateFailures = 0;
                     if (status.Error != OnStepXError.None && status.Error != lastReportedError) {
@@ -1085,25 +1106,77 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             _ => guideRate,
         };
 
-        /// <summary>Kept by the driver per axis like INDI does: from the command until its duration (plus a margin) has passed.</summary>
+        /// <summary>
+        /// True until a pulse's estimated end (<see cref="PulseGuide"/>), then until the controller no longer reports one
+        /// running ('G' in :GU#, for either axis), so the guider never starts an exposure while the mount still moves.
+        /// The controller is asked once per <see cref="PulseCheckInterval"/>; past <see cref="PulseEndTimeout"/> the
+        /// pulse counts as over.
+        /// </summary>
         public bool IsPulseGuiding {
             get {
-                var now = DateTime.UtcNow;
-                return now < raPulseEnd || now < decPulseEnd;
+                lock (pulseLock) {
+                    var now = DateTime.UtcNow;
+                    if (now < PulseEnd) {
+                        return true;
+                    }
+                    if (pulseEndConfirmed) {
+                        return false;
+                    }
+                    if (now - lastPulseCheck < PulseCheckInterval) {
+                        return true;
+                    }
+                    lastPulseCheck = now;
+                }
+
+                var status = TryReadStatus();
+
+                lock (pulseLock) {
+                    var now = DateTime.UtcNow;
+                    if (now < PulseEnd || pulseEndConfirmed) {
+                        // a new pulse started, or another caller confirmed the end meanwhile
+                        return now < PulseEnd;
+                    }
+                    var late = now - PulseEnd;
+                    if (status is null || !status.PulseGuiding) {
+                        pulseEndConfirmed = true;
+                        if (pulseLateLogged) {
+                            Logger.Warning($"OnStepX: a guide pulse ended {late.TotalMilliseconds:F0} ms after its estimated end (USB serial delay)");
+                        }
+                        return false;
+                    }
+                    if (late >= PulseEndTimeout) {
+                        Logger.Error($"OnStepX: the controller still reports a pulse {late.TotalMilliseconds:F0} ms after its estimated end ({status.Raw}); counting it as over");
+                        pulseEndConfirmed = true;
+                        return false;
+                    }
+                    if (late >= PulseLateWarning) {
+                        pulseLateLogged = true;
+                    } else {
+                        Logger.Debug($"OnStepX: pulse still running {late.TotalMilliseconds:F0} ms after its estimated end");
+                    }
+                    return true;
+                }
             }
         }
 
+        // Caller holds pulseLock.
+        private DateTime PulseEnd => raPulseEnd > decPulseEnd ? raPulseEnd : decPulseEnd;
+
+        /// <summary>
+        /// Sends the pulse at once, past any read in progress (:Mg has no reply). A pulse the controller would refuse
+        /// (Guide::validate: parked, a goto running, which a pulse would abort, or a limit or hardware error) throws
+        /// instead, judged on the last known status without reading it again, which would delay the pulse.
+        /// </summary>
         public void PulseGuide(GuideDirections direction, int duration) {
             if (!Connected) {
                 Notification.ShowWarning(Loc.Instance["LblTelescopeNotConnected"]);
                 return;
             }
-            if (AtPark) {
-                Notification.ShowWarning(Loc.Instance["LblTelescopeParkedWarn"]);
-                return;
-            }
             if (duration < 1) {
                 return;
+            }
+            if (LatestStatus(PulseRefusalStatusMaxAge) is { } known && PulseRefusal(known) is { } reason) {
+                throw new InvalidOperationException($"OnStepX refuses guide pulses: {reason} ({known.Raw})");
             }
 
             var dir = direction switch {
@@ -1113,16 +1186,68 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 _ => OnStepXDirection.West,
             };
             int ms = Math.Min(duration, OnStepXDevice.MaxPulseMs);
-            if (Run(d => {
-                d.PulseGuide(dir, ms);
-                return true;
-            }, false)) {
-                var end = DateTime.UtcNow + TimeSpan.FromMilliseconds(ms) + PulseEndMargin;
+            var onLine = Run(d => d.PulseGuide(dir, ms), null);
+            if (onLine is not { } start) {
+                throw new InvalidOperationException("OnStepX: the guide pulse could not be sent");
+            }
+
+            lock (pulseLock) {
+                var end = start + TimeSpan.FromMilliseconds(ms) + PulseEndMargin;
                 if (dir is OnStepXDirection.East or OnStepXDirection.West) {
                     raPulseEnd = end;
                 } else {
                     decPulseEnd = end;
                 }
+                pulseEndConfirmed = false;
+                pulseLateLogged = false;
+            }
+        }
+
+        /// <summary>Why the controller would refuse a guide pulse in this status (OnStepX Guide::validate), or null.</summary>
+        internal static string? PulseRefusal(OnStepXStatus status) {
+            if (status.Park == OnStepXParkState.Parked) {
+                return "the mount is parked";
+            }
+            if (status.Slewing) {
+                return "a goto is running";
+            }
+            return status.Error switch {
+                OnStepXError.MotorFault => "motor fault",
+                OnStepXError.LimitSense or OnStepXError.AltitudeMin or OnStepXError.AltitudeMax or OnStepXError.AzimuthLimit
+                    or OnStepXError.UnderPoleLimit or OnStepXError.DecLimit or OnStepXError.MeridianLimit => $"limit reached ({status.Error})",
+                OnStepXError.SiteNotInitialized or OnStepXError.NvInitFailed => $"controller not initialized ({status.Error})",
+                _ => null,
+            };
+        }
+
+        private void RememberStatus(OnStepXStatus status) {
+            lock (pulseLock) {
+                latestStatus = status;
+                latestStatusAt = DateTime.UtcNow;
+            }
+        }
+
+        private OnStepXStatus? LatestStatus(TimeSpan maxAge) {
+            lock (pulseLock) {
+                return latestStatus is { } s && DateTime.UtcNow - latestStatusAt <= maxAge ? s : null;
+            }
+        }
+
+        /// <summary>:GU# alone, quietly: null when unreadable; a port failure ends the connection.</summary>
+        private OnStepXStatus? TryReadStatus() {
+            if (!Connected || device is not { } d) {
+                return null;
+            }
+            try {
+                var status = d.GetStatus();
+                RememberStatus(status);
+                return status;
+            } catch (OnStepXException ex) {
+                Logger.Debug($"OnStepX: reading the status failed: {ex.Message}");
+                return null;
+            } catch (Exception ex) when (IsPortFailure(ex)) {
+                ConnectionLost(ex);
+                return null;
             }
         }
 

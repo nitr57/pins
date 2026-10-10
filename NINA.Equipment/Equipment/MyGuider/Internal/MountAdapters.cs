@@ -163,7 +163,11 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
 
     public bool IsConnected => telescope.GetInfo()?.Connected == true;
 
-    public bool SupportsSimultaneousPulses => false;
+    /// <summary>
+    /// Only pins' native OnStepX driver: OnStepX times each axis' pulse separately (Guide.cpp) and the driver waits for
+    /// both to end. INDI and ASCOM drivers vary, so they keep one pulse after the other.
+    /// </summary>
+    public bool SupportsSimultaneousPulses => telescope.GetDevice() is OnStepXTelescope;
 
     public async Task PulseAsync(GuideDirection direction, int durationMs, CancellationToken ct)
     {

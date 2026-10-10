@@ -165,6 +165,9 @@ internal sealed class InternalGuiderOptions
         new("MaxDecDurationMs", "Max Dec pulse", "Algorithms", "int", "2500", Unit: "ms", Min: 50, Max: 8000, Phd2Fallback: s => s.PHD2MaxDecDuration?.ToString(Inv)),
         new("MinPulseMs", "Min pulse", "Algorithms", "int", "20", Unit: "ms", Min: 0, Max: 50,
             Description: "Shorter guide pulses are rounded to 0 or to this length: some mounts mishandle very short pulses. 0 = any length."),
+        new("SimultaneousPulses", "Simultaneous RA and Dec pulses", "Algorithms", "bool", "false",
+            Description: "Sends a frame's RA and Dec pulses at the same time instead of one after the other, which shortens the guide cycle. " +
+                "Only with mounts that time both axes separately (pins' native OnStepX driver); other mounts keep pulsing one after the other."),
         new("BacklashCompensation", "Dec backlash compensation", "Algorithms", "bool", "false"),
         new("BacklashPulseMs", "Dec backlash pulse", "Algorithms", "int", "20", Unit: "ms", Min: 20, Max: 8000),
         new("PulseModel", "Pulse model", "Algorithms", "bool", "true",
@@ -482,6 +485,7 @@ internal sealed class InternalGuiderOptions
             MaxRaDurationMs = GetInt("MaxRaDurationMs"),
             MaxDecDurationMs = GetInt("MaxDecDurationMs"),
             MinPulseMs = GetInt("MinPulseMs"),
+            SimultaneousPulses = GetBool("SimultaneousPulses"),
             Backlash = new BacklashSettings { Enabled = GetBool("BacklashCompensation"), PulseMs = GetInt("BacklashPulseMs") },
             PulseModel = GetBool("PulseModel"),
             DitherMode = GetString("DitherMode") == "Spiral" ? DitherMode.Spiral : DitherMode.Random,

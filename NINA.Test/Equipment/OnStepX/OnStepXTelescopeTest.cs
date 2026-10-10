@@ -327,6 +327,72 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task IsPulseGuiding_WaitsUntilTheControllerEndsThePulse() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            // the controller still reports the pulse ('G') at the first two checks after its estimated end
+            port.On(":GU#", "NpGEW260#", "NpGEW260#", "NpEW260#");
+
+            telescope.PulseGuide(GuideDirections.guideNorth, 10);
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (telescope.IsPulseGuiding && clock.ElapsedMilliseconds < 2000) {
+                await Task.Delay(2);
+            }
+
+            Assert.That(telescope.IsPulseGuiding, Is.False);
+            Assert.That(port.Written.Count(c => c == ":GU#"), Is.EqualTo(3));
+            Assert.That(clock.ElapsedMilliseconds, Is.LessThan(500));
+        }
+
+        [Test]
+        public async Task IsPulseGuiding_ControllerNeverEndsIt_GivesUpAfterASecond() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "NpGEW260#");
+
+            telescope.PulseGuide(GuideDirections.guideNorth, 10);
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (telescope.IsPulseGuiding && clock.ElapsedMilliseconds < 3000) {
+                await Task.Delay(5);
+            }
+
+            Assert.That(clock.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromSeconds(1)).And.LessThan(TimeSpan.FromSeconds(2)));
+        }
+
+        [TestCase("nNPEW260#", "parked")]
+        [TestCase("pEW260#", "goto")]
+        [TestCase("NpEW262#", "limit")]
+        public async Task PulseGuide_RefusedByTheController_ThrowsWithoutSending(string status, string reason) {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", status);
+            _ = telescope.Slewing;
+
+            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
+                Throws.InvalidOperationException.With.Message.Contains(reason));
+            Assert.That(port.Written.Any(c => c.StartsWith(":Mg")), Is.False);
+        }
+
+        [Test]
+        public async Task PulseGuide_DoesNotReadTheStateFirst() {
+            // a stale state would otherwise be read again (seven commands) before every pulse
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+
+            telescope.PulseGuide(GuideDirections.guideWest, 100);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":Mgw0100#" }));
+        }
+
+        [Test]
+        public async Task MountPulseOutput_PulsesBothAxesAtOnceOnlyWithOnStepX() {
+            var (telescope, _) = await Connected(FakeOnStepXPort.Umi17S());
+            var onStepX = new Mock<NINA.Equipment.Interfaces.Mediator.ITelescopeMediator>();
+            onStepX.Setup(m => m.GetDevice()).Returns(telescope);
+            var other = new Mock<NINA.Equipment.Interfaces.Mediator.ITelescopeMediator>();
+            other.Setup(m => m.GetDevice()).Returns(Mock.Of<ITelescope>());
+
+            Assert.That(new NINA.Equipment.Equipment.MyGuider.Internal.MountPulseOutput(onStepX.Object).SupportsSimultaneousPulses, Is.True);
+            Assert.That(new NINA.Equipment.Equipment.MyGuider.Internal.MountPulseOutput(other.Object).SupportsSimultaneousPulses, Is.False);
+        }
+
+        [Test]
         public async Task PulseGuide_Zero_IsNotSent() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
 

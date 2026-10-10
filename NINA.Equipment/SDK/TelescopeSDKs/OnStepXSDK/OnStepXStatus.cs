@@ -81,8 +81,11 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         /// <summary>'h': moving to home (HS_HOMING), cleared when the controller has finished homing.</summary>
         public bool Homing { get; private init; }
 
-        /// <summary>'G': a pulse guide is running.</summary>
+        /// <summary>'G': a pulse guide is running, on either axis.</summary>
         public bool PulseGuiding { get; private init; }
+
+        /// <summary>'T' east, 'W' west, 'o' none (at home): the same value as :Gm# (both Mount::getMountPosition).</summary>
+        public OnStepXPierSide PierSide { get; private init; }
 
         /// <summary>'w': paused at home during a goto, waiting to continue.</summary>
         public bool WaitingAtHome { get; private init; }
@@ -120,6 +123,7 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
                 AtHome = flags.Contains('H'),
                 Homing = flags.Contains('h'),
                 PulseGuiding = flags.Contains('G'),
+                PierSide = flags.Contains('T') ? OnStepXPierSide.East : flags.Contains('W') ? OnStepXPierSide.West : OnStepXPierSide.Unknown,
                 WaitingAtHome = flags.Contains('w'),
                 MountType = MountTypeOf(flags),
                 PulseGuideRateIndex = DigitOf(reply[^3]),

@@ -113,14 +113,16 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         public void StopMove(OnStepXDirection direction) => Transport.SendBlind($":Q{Letter(direction)}#");
 
         /// <summary>
-        /// A guide pulse (:Mg, no reply). OnStepX runs a pulse of 0 ms for days (Guide::startAxis1 reads 0 as unlimited),
-        /// so a pulse shorter than 1 ms is not sent; longer ones are cut to <see cref="MaxPulseMs"/>.
+        /// A guide pulse (:Mg, no reply), written at once even while another command waits for its reply
+        /// (<see cref="OnStepXTransport.SendBlindNow"/>). OnStepX runs a pulse of 0 ms for days (Guide::startAxis1 reads 0
+        /// as unlimited), so a pulse shorter than 1 ms is not sent; longer ones are cut to <see cref="MaxPulseMs"/>.
+        /// Returns when the command is on the line, the moment the controller starts the pulse; null when not sent.
         /// </summary>
-        public void PulseGuide(OnStepXDirection direction, int durationMs) {
+        public DateTime? PulseGuide(OnStepXDirection direction, int durationMs) {
             if (durationMs < 1) {
-                return;
+                return null;
             }
-            Transport.SendBlind(string.Create(Inv, $":Mg{Letter(direction)}{Math.Min(durationMs, MaxPulseMs):0000}#"));
+            return Transport.SendBlindNow(string.Create(Inv, $":Mg{Letter(direction)}{Math.Min(durationMs, MaxPulseMs):0000}#"));
         }
 
         /// <summary>Altitude in degrees (:GA#).</summary>

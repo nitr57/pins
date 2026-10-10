@@ -13,6 +13,11 @@
 #endregion "copyright"
 
 using NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK;
+using System;
+using System.Collections.Concurrent;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace NINA.Test.Equipment.OnStepX {
 
@@ -105,10 +110,77 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void SendBlindNow_GoesOutWhileAReplyIsAwaited() {
+            var port = new BlockingPort();
+            var transport = new OnStepXTransport(port, firstByteTimeout: TimeSpan.FromSeconds(5));
+            transport.Open();
+            var read = Task.Run(() => transport.SendForString(":GR#"));
+            Assert.That(SpinWait.SpinUntil(() => port.Written.Contains(":GR#"), 2000), Is.True);
+
+            var pulse = Task.Run(() => transport.SendBlindNow(":Mgn0100#"));
+
+            Assert.That(pulse.Wait(1000), Is.True, "the pulse waited for the reply to :GR#");
+            Assert.That(read.IsCompleted, Is.False);
+            port.Reply("04:00:15#");
+            Assert.That(read.Result.Text, Is.EqualTo("04:00:15"));
+        }
+
+        [Test]
+        public void SendBlindNow_ReturnsWhenTheCommandIsOnTheLine() {
+            // 1 ms per character; the pulse queues behind the 4 characters of :GU#
+            var now = new DateTime(2026, 10, 10, 12, 0, 0, DateTimeKind.Utc);
+            var port = FakeOnStepXPort.Umi17S();
+            var transport = new OnStepXTransport(port, characterTime: TimeSpan.FromMilliseconds(1), utcNow: () => now);
+            transport.Open();
+
+            transport.SendForString(":GU#");
+            var onLine = transport.SendBlindNow(":Mgn0100#");
+
+            Assert.That(onLine, Is.EqualTo(now + TimeSpan.FromMilliseconds(4 + 9)));
+        }
+
+        [Test]
+        public void CharacterTime_9600Baud() {
+            Assert.That(OnStepXTransport.CharacterTime(9600).TotalMilliseconds, Is.EqualTo(1.0417).Within(0.0001));
+        }
+
+        [Test]
         public void Send_OnAClosedPort_Throws() {
             var transport = new OnStepXTransport(FakeOnStepXPort.Umi17S());
 
             Assert.That(() => transport.SendForString(":GU#"), Throws.InvalidOperationException);
+        }
+
+        /// <summary>A port whose reply arrives only when the test sends it.</summary>
+        private sealed class BlockingPort : IOnStepXPort {
+            private readonly BlockingCollection<char> incoming = new();
+
+            public ConcurrentQueue<string> Written { get; } = new();
+
+            public string PortName => "/dev/blocking";
+
+            public bool IsOpen { get; private set; }
+
+            public void Reply(string text) {
+                foreach (char c in text) {
+                    incoming.Add(c);
+                }
+            }
+
+            public void Open() => IsOpen = true;
+
+            public void Close() => IsOpen = false;
+
+            public void Write(string text) => Written.Enqueue(text);
+
+            public int ReadByte(TimeSpan timeout) => incoming.TryTake(out char c, timeout) ? c : -1;
+
+            public void DiscardInBuffer() {
+                while (incoming.TryTake(out _)) {
+                }
+            }
+
+            public void Dispose() => IsOpen = false;
         }
     }
 }

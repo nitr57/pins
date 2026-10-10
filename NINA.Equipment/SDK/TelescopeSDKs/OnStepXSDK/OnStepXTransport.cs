@@ -34,7 +34,9 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
     /// <summary>
     /// One command at a time to an OnStepX controller, with the reply types INDI's LX200_OnStep uses: none, a single
     /// character, or text up to '#'. Like INDI, every command starts from an empty input buffer, so a late reply to the
-    /// previous command can never be read as this one's.
+    /// previous command can never be read as this one's. <see cref="SendBlindNow"/> is the exception: a command without
+    /// a reply (a guide pulse) goes out while another command waits for its reply, since the line carries both ways at
+    /// once and the controller handles commands in order.
     /// </summary>
     public sealed class OnStepXTransport : IDisposable {
 
@@ -60,13 +62,30 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         private readonly IOnStepXPort port;
         private readonly TimeSpan firstByteTimeout;
         private readonly TimeSpan interByteTimeout;
+        private readonly TimeSpan characterTime;
+        private readonly Func<DateTime> utcNow;
+
+        /// <summary>A command and its reply.</summary>
         private readonly object gate = new();
 
-        public OnStepXTransport(IOnStepXPort port, TimeSpan? firstByteTimeout = null, TimeSpan? interByteTimeout = null) {
+        /// <summary>Only the writing of one command, so commands never interleave on the line.</summary>
+        private readonly object writeLock = new();
+
+        /// <summary>When the last byte written so far is on the line (estimated from <see cref="characterTime"/>).</summary>
+        private DateTime lineFreeAt = DateTime.MinValue;
+
+        /// <param name="characterTime">How long one character takes on the line; 9600 baud 8N1 when omitted.</param>
+        public OnStepXTransport(IOnStepXPort port, TimeSpan? firstByteTimeout = null, TimeSpan? interByteTimeout = null,
+            TimeSpan? characterTime = null, Func<DateTime>? utcNow = null) {
             this.port = port ?? throw new ArgumentNullException(nameof(port));
             this.firstByteTimeout = firstByteTimeout ?? DefaultFirstByteTimeout;
             this.interByteTimeout = interByteTimeout ?? DefaultInterByteTimeout;
+            this.characterTime = characterTime ?? CharacterTime(OnStepXSerialPort.DefaultBaudRate);
+            this.utcNow = utcNow ?? (() => DateTime.UtcNow);
         }
+
+        /// <summary>Start, 8 data and 1 stop bit per character.</summary>
+        public static TimeSpan CharacterTime(int baudRate) => TimeSpan.FromMilliseconds(10_000.0 / baudRate);
 
         public string PortName => port.PortName;
 
@@ -94,6 +113,17 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
                 WriteCommand(command);
                 Logger.Trace($"OnStepX: {command}");
             }
+        }
+
+        /// <summary>
+        /// A command without a reply, written at once even while another command waits for its reply; it only waits
+        /// for a command being written. Returns when its last character is on the line: the controller acts on it
+        /// from then on.
+        /// </summary>
+        public DateTime SendBlindNow(string command) {
+            var onLine = Write(command);
+            Logger.Trace($"OnStepX: {command} (on the line {onLine:HH:mm:ss.fff})");
+            return onLine;
         }
 
         /// <summary>
@@ -134,12 +164,26 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
         // Caller holds gate.
         private void WriteCommand(string command) {
+            port.DiscardInBuffer();
+            Write(command);
+        }
+
+        /// <summary>
+        /// Writes one command and returns when its last character is on the line: the port's write returns once the
+        /// bytes are queued, and characters queued before them go first.
+        /// </summary>
+        private DateTime Write(string command) {
             if (string.IsNullOrEmpty(command)) {
                 throw new ArgumentException("empty command", nameof(command));
             }
 
-            port.DiscardInBuffer();
-            port.Write(command);
+            lock (writeLock) {
+                port.Write(command);
+                var now = utcNow();
+                var start = lineFreeAt > now ? lineFreeAt : now;
+                lineFreeAt = start + command.Length * characterTime;
+                return lineFreeAt;
+            }
         }
 
         // Caller holds gate.

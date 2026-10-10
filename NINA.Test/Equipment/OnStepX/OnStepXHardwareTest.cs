@@ -12,15 +12,22 @@
 
 #endregion "copyright"
 
+using Moq;
+using NINA.Core.Enum;
+using NINA.Equipment.Equipment.MyTelescope;
 using NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK;
+using NINA.Profile.Interfaces;
 using System;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace NINA.Test.Equipment.OnStepX {
 
     /// <summary>
-    /// Against a real OnStepX mount, read-only: nothing here moves it. Runs only when selected, with the port in
-    /// ONSTEPX_PORT, e.g. ONSTEPX_PORT=/dev/ttyUSB0 dotnet test --filter "FullyQualifiedName~OnStepXHardwareTest".
+    /// Against a real OnStepX mount. Only the pulse test moves it (a few arcseconds north and back south). Runs only when
+    /// selected, with the port in ONSTEPX_PORT, e.g.
+    /// ONSTEPX_PORT=/dev/ttyUSB0 dotnet test --filter "FullyQualifiedName~OnStepXHardwareTest".
     /// </summary>
     [TestFixture]
     [Explicit("needs an OnStepX mount on ONSTEPX_PORT")]
@@ -71,6 +78,33 @@ namespace NINA.Test.Equipment.OnStepX {
             TestContext.Out.WriteLine($"ACK after reopening: '{ack}' in {clock.ElapsedMilliseconds} ms");
 
             Assert.That(ack, Is.Not.Null, "no answer right after reopening: the controller restarted");
+        }
+
+        /// <summary>
+        /// Guide pulses through the driver: <see cref="OnStepXTelescope.IsPulseGuiding"/> must stay true until the
+        /// controller has ended the pulse ('G' gone from :GU#). Moves the mount about 4.5" north and back.
+        /// </summary>
+        [Test]
+        public async Task PulseGuide_IsPulseGuidingCoversThePulse() {
+            var profile = new NINA.Profile.Profile();
+            profile.TelescopeSettings.SerialPort = PortName();
+            profile.TelescopeSettings.TimeSync = false;
+            var profileService = new Mock<IProfileService>();
+            profileService.SetupGet(p => p.ActiveProfile).Returns(profile);
+            using var telescope = new OnStepXTelescope(profileService.Object);
+            Assert.That(await telescope.Connect(CancellationToken.None), Is.True);
+
+            foreach (var direction in new[] { GuideDirections.guideNorth, GuideDirections.guideSouth }) {
+                var clock = Stopwatch.StartNew();
+                telescope.PulseGuide(direction, 300);
+                while (telescope.IsPulseGuiding && clock.ElapsedMilliseconds < 3000) {
+                    await Task.Delay(5);
+                }
+                TestContext.Out.WriteLine($"{direction} 300 ms: done after {clock.ElapsedMilliseconds} ms");
+                Assert.That(clock.ElapsedMilliseconds, Is.InRange(300, 1500));
+                await Task.Delay(300);
+            }
+            telescope.Disconnect();
         }
     }
 }

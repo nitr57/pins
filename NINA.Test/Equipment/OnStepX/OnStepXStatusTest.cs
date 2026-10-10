@@ -95,6 +95,19 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(guiding.Homing, Is.False);
         }
 
+        [TestCase("nNpET290", OnStepXPierSide.East)]
+        [TestCase("nNpEW260", OnStepXPierSide.West)]
+        [TestCase("nNphEo290", OnStepXPierSide.Unknown)]
+        public void TryParse_PierSide(string reply, OnStepXPierSide pierSide) {
+            Assert.That(Parse(reply).PierSide, Is.EqualTo(pierSide));
+        }
+
+        [Test]
+        public void TryParse_WaitingAtHomeIsNotThePierSide() {
+            // lowercase 'w' is waiting at home, uppercase 'W' the west pier side
+            Assert.That(Parse("NpwET260").PierSide, Is.EqualTo(OnStepXPierSide.East));
+        }
+
         [Test]
         public void TryParse_TheTrailingDigitsAreNotReadAsFlags() {
             // error 15 is sent as '0' + 15 = '?', error 11 as ';'; a park state hidden in them must not count

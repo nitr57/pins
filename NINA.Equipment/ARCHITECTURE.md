@@ -106,6 +106,12 @@ a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`
   character, or are absent, and an unknown command is answered with a bare `0`.
 - ESP32 controllers reset while RTS is set and DTR is not. `OnStepXSerialPort` keeps both set, as Linux sets them on
   open, and never toggles them; clearing DTR before RTS restarts the mount (about 8 s without replies).
+- Guide pulses: `:Mg` has no reply, so `OnStepXTransport.SendBlindNow` writes it past a read in progress (only the
+  writing of commands is serialized) and returns when the command is on the line, estimated from the characters queued
+  at 9600 baud. A pulse counts as running until then plus its duration plus 15 ms, and after that until `:GU#` no longer
+  shows `G`, so no guide exposure starts while the mount moves: on a UMi17S most pulses ended 0-15 ms after the
+  estimate, but USB serial now and then delays a command by up to ~80 ms. Pulses the controller would refuse (`Guide::validate`)
+  throw, judged on the last known status, never on a fresh read that would delay the pulse.
 - Tests: `NINA.Test/Equipment/OnStepX`, with a scripted fake port; `OnStepXHardwareTest` is explicit and read-only
   against a real mount on `ONSTEPX_PORT`. Motion is checked by hand on the mount.
 
