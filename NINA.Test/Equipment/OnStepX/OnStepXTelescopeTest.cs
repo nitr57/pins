@@ -414,6 +414,31 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task FindHome_WithSensors_WaitsForTheOffsetMoveAfterTheFlagClears() {
+            // Home::guideDone clears 'h' at the sensors, then moves the sense offset with axis gotos: no flag, pier side
+            // still 'W', until the mount arrives at home ('H', pier side 'o'). The UMi17S on 2026-10-10 15:05.
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", Tracking, "nNphEW290#", "nNphEW290#", "nNpEW290#", "nNpEW290#", "nNpEW290#", "nNpHEo290#");
+
+            await telescope.FindHome(CancellationToken.None);
+
+            Assert.That(port.Written.Count(c => c == ":GU#"), Is.EqualTo(7));
+            Assert.That(telescope.AtHome, Is.True);
+        }
+
+        [Test]
+        public async Task FindHome_WithSensors_EndsAtStandstillWithoutTheHomeFlag() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", Tracking, "nNphEW290#", "nNpEW290#");
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+
+            await telescope.FindHome(CancellationToken.None);
+
+            Assert.That(clock.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromSeconds(3)), "waits for the offset move to end");
+            Assert.That(clock.Elapsed, Is.LessThan(TimeSpan.FromSeconds(6)));
+        }
+
+        [Test]
         public async Task Park_Refused_ThrowsTheReasonAtOnce() {
             // TelescopeVM logs "Mount has parked" unless Park throws; OnStepX 10.24c refused :hP# without a park position
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":hP#", "0").On(":GE#", "12#"));

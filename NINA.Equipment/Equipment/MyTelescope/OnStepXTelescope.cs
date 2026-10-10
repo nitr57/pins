@@ -997,6 +997,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             var deadline = DateTime.UtcNow + MotionTimeout;
             var last = moving;
             bool sawHoming = moving.Status.Homing;
+            // without home sensors homing is a goto: done when the controller clears 'h' (Home::requestDone)
+            bool homingByGoto = moving.Status.Homing && moving.Status.Slewing;
             var stillSince = DateTime.UtcNow;
             while (DateTime.UtcNow < deadline) {
                 await Task.Delay(PollInterval, token);
@@ -1008,10 +1010,20 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 }
                 Logger.Debug($"OnStepX: homing, :GU# {now.Status.Raw}, alt {now.Altitude:F3}°, az {now.Azimuth:F3}°");
                 sawHoming |= now.Status.Homing;
+                homingByGoto |= now.Status.Homing && now.Status.Slewing;
 
                 if (sawHoming) {
-                    if (!now.Status.Homing && !now.Status.Slewing) {
+                    if (now.Status.Homing || now.Status.Slewing) {
+                        stillSince = DateTime.UtcNow;
+                    } else if (homingByGoto || now.Status.AtHome) {
                         Logger.Info($"OnStepX: homing finished, at home {now.Status.AtHome} ({now.Status.Raw})");
+                        return;
+                    } else if (Moved(last, now) || now.CoordinatesMoving) {
+                        // with home sensors and a sense offset the controller clears 'h' at the sensors and then moves
+                        // the offset with axis gotos that :GU# does not show (Home::guideDone)
+                        stillSince = DateTime.UtcNow;
+                    } else if (DateTime.UtcNow - stillSince >= HomeStandstillTimeout) {
+                        Logger.Info($"OnStepX: homing finished, the mount stopped after the home sensors (at home {now.Status.AtHome}, {now.Status.Raw})");
                         return;
                     }
                 } else if (now.Status.Slewing || Moved(last, now)) {
