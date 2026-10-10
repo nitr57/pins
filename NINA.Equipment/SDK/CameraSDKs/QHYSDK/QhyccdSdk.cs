@@ -28,30 +28,53 @@ namespace QHYCCD {
     public class QhySdk : IQhySdk {
         private const string DLLNAME = "libqhyccd.so";
 
-        private readonly Lock lockobj = new();
-        private IntPtr handle = IntPtr.Zero;
+        /*
+         * The QHY SDK is process wide: InitQHYCCDResource/ReleaseQHYCCDResource, ScanQHYCCD and
+         * GetQHYCCDId act on every camera at once, so they run under one global lock and the SDK is
+         * released only once no camera handle is open any more.
+         *
+         * Camera handles are per device. Each QHYCamera (and QHYFilterWheel) owns its own QhySdk
+         * instance; Open(id) attaches it to the shared handle for that camera id, so the main camera
+         * and the guide camera get separate handles, while a camera and the CFW plugged into it share
+         * one. Calls on a handle are serialized per handle, so a long readout on one camera does not
+         * block exposures on the other.
+         */
+        private static readonly Lock sdkLock = new();
+        private static readonly Dictionary<string, OpenCamera> openCameras = new(StringComparer.Ordinal);
+        private static bool sdkIsInitialized = false;
 
-        private bool sdkIsInitialized = false;
-        private byte refCount = 0;
+        private static readonly Lazy<bool> dllLoaded = new(() => {
+            Logger.Trace("QhyccdSdk: Loading QHY SDK");
+            DllLoader.LoadDll(Path.Combine("QHYCCD", DLLNAME));
+            return true;
+        });
 
-        public static readonly Lazy<IQhySdk> _instance = new Lazy<IQhySdk>(() => new QhySdk());
+        private sealed class OpenCamera(string id, IntPtr handle) {
+            public string Id { get; } = id;
+            public IntPtr Handle { get; } = handle;
+            public Lock Lock { get; } = new();
+            public int RefCount { get; set; }
+        }
 
-        public static IQhySdk Instance => _instance.Value;
+        private OpenCamera camera;
 
-        private QhySdk() {
-            if (!sdkIsInitialized && handle == IntPtr.Zero && refCount == 0) {
-                Logger.Trace($"QhyccdSdk: Loading QHY SDK, refCount={refCount}, sdkIsInitialized={sdkIsInitialized}");
-                DllLoader.LoadDll(Path.Combine("QHYCCD", DLLNAME));
-            }
+        /// <summary>Handle of the camera this instance is attached to, or zero before Open.</summary>
+        private IntPtr handle => camera?.Handle ?? IntPtr.Zero;
+
+        /// <summary>Per-handle lock; before Open it falls back to the global SDK lock.</summary>
+        private Lock lockobj => camera?.Lock ?? sdkLock;
+
+        public QhySdk() {
+            _ = dllLoaded.Value;
         }
 
         #region Call Wrappers
 
         public void InitSdk() {
-            lock (lockobj) {
-                Logger.Trace($"QhyccdSdk: Initializing QHY SDK, refCount={refCount}, sdkIsInitialized={sdkIsInitialized}");
+            lock (sdkLock) {
+                Logger.Trace($"QhyccdSdk: Initializing QHY SDK, sdkIsInitialized={sdkIsInitialized}, openCameras={openCameras.Count}");
 
-                if (!sdkIsInitialized && handle == IntPtr.Zero && refCount == 0) {
+                if (!sdkIsInitialized) {
                     CheckReturn(InitQHYCCDResource(), MethodBase.GetCurrentMethod());
                     sdkIsInitialized = true;
                 }
@@ -59,10 +82,10 @@ namespace QHYCCD {
         }
 
         public void ReleaseSdk() {
-            lock (lockobj) {
-                Logger.Trace($"QhyccdSdk: Releasing QHY SDK, refCount={refCount}");
+            lock (sdkLock) {
+                Logger.Trace($"QhyccdSdk: Releasing QHY SDK, openCameras={openCameras.Count}");
 
-                if (sdkIsInitialized && handle == IntPtr.Zero && refCount == 0) {
+                if (sdkIsInitialized && camera == null && openCameras.Count == 0) {
                     CheckReturn(ReleaseQHYCCDResource(), MethodBase.GetCurrentMethod());
                     sdkIsInitialized = false;
                 }
@@ -70,33 +93,56 @@ namespace QHYCCD {
         }
 
         public void Open(string id) {
-            lock (lockobj) {
-                Logger.Trace($"QhyccdSdk: Opening {id}, refCount={refCount}");
-
-                if (handle == IntPtr.Zero && refCount == 0 && sdkIsInitialized) {
-                    handle = OpenQHYCCD(id);
-
-                    if (handle == IntPtr.Zero) {
-                        throw new QHYCameraException("Unable to open camera", MethodBase.GetCurrentMethod(), new object[] { id });
+            lock (sdkLock) {
+                if (camera != null) {
+                    if (camera.Id == id) {
+                        Logger.Trace($"QhyccdSdk: {id} is already open on this instance");
+                        return;
                     }
+                    throw new QHYCameraException($"This instance already has camera {camera.Id} open", MethodBase.GetCurrentMethod(), new object[] { id });
                 }
 
-                refCount++;
-                Logger.Trace($"QhyccdSdk: Opened {id}, refCount={refCount}");
+                if (!sdkIsInitialized) {
+                    throw new QHYCameraException("QHY SDK is not initialized", MethodBase.GetCurrentMethod(), new object[] { id });
+                }
+
+                if (!openCameras.TryGetValue(id, out var entry)) {
+                    Logger.Trace($"QhyccdSdk: Opening {id}");
+                    var h = OpenQHYCCD(id);
+
+                    if (h == IntPtr.Zero) {
+                        throw new QHYCameraException("Unable to open camera", MethodBase.GetCurrentMethod(), new object[] { id });
+                    }
+
+                    entry = new OpenCamera(id, h);
+                    openCameras[id] = entry;
+                }
+
+                entry.RefCount++;
+                camera = entry;
+                Logger.Trace($"QhyccdSdk: Opened {id}, refCount={entry.RefCount}");
             }
         }
 
         public void Close() {
-            lock (lockobj) {
-                Logger.Trace($"QhyccdSdk: Closing camera, refCount={refCount}");
-
-                if (handle != IntPtr.Zero && refCount == 1) {
-                    CheckReturn(CloseQHYCCD(handle), MethodBase.GetCurrentMethod(), handle);
-                    handle = IntPtr.Zero;
+            lock (sdkLock) {
+                var entry = camera;
+                if (entry == null) {
+                    Logger.Trace("QhyccdSdk: Close called without an open camera");
+                    return;
                 }
 
-                refCount--;
-                Logger.Trace($"QhyccdSdk: Closed camera, refCount={refCount}");
+                camera = null;
+                entry.RefCount--;
+                Logger.Trace($"QhyccdSdk: Closing {entry.Id}, refCount={entry.RefCount}");
+
+                if (entry.RefCount <= 0) {
+                    openCameras.Remove(entry.Id);
+                    // Wait for any call still running on this handle before it is closed.
+                    lock (entry.Lock) {
+                        CheckReturn(CloseQHYCCD(entry.Handle), MethodBase.GetCurrentMethod(), entry.Handle);
+                    }
+                }
             }
         }
 
@@ -107,7 +153,7 @@ namespace QHYCCD {
         }
 
         public uint Scan() {
-            lock (lockobj) {
+            lock (sdkLock) {
                 return ScanQHYCCD();
             }
         }
@@ -181,7 +227,7 @@ namespace QHYCCD {
         }
 
         public void GetId(uint index, out string id) {
-            lock (lockobj) {
+            lock (sdkLock) {
                 id = string.Empty;
                 byte[] buffer = new byte[QHYCCD_ID_LEN];
 
@@ -193,7 +239,7 @@ namespace QHYCCD {
         }
 
         public void GetModel(string id, out string model) {
-            lock (lockobj) {
+            lock (sdkLock) {
                 model = string.Empty;
                 byte[] modelBuffer = new byte[QHYCCD_MODEL_LEN];
 

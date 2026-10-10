@@ -122,11 +122,13 @@ namespace NINA.Test.Equipment.Camera {
         }
 
         [Test]
-        public void ASecondQhyCamera_IsRefused_EvenADifferentOne() {
+        public void TheSameQhyCamera_IsRefused_AnotherOneIsAllowed() {
             Assert.That(CameraClaims.TryClaim(imagingSlot, Imaging, Camera("QHYCCD", "QHY268M-1234"), out _), Is.True);
 
-            Assert.That(CameraClaims.TryClaim(guideSlot, Guide, Camera("QHYCCD", "QHY5III462C-5678"), out var refusal), Is.False);
-            Assert.That(refusal, Does.Contain("QHY").And.Contain(Imaging));
+            Assert.That(CameraClaims.TryClaim(guideSlot, Guide, Camera("QHYCCD", "QHY268M-1234"), out var refusal), Is.False);
+            Assert.That(refusal, Does.Contain(Imaging));
+
+            Assert.That(CameraClaims.TryClaim(guideSlot, Guide, Camera("QHYCCD", "QHY5III462C-5678"), out _), Is.True);
         }
 
         [Test]

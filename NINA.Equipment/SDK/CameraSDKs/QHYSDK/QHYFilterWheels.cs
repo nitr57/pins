@@ -19,7 +19,7 @@ using System.Collections.Generic;
 namespace QHYCCD {
 
     public class QHYFilterWheels {
-        public IQhySdk Sdk { get; set; } = QhySdk.Instance;
+        public IQhySdk Sdk { get; set; } = new QhySdk();
 
         public List<string> GetFilterWheels() {
             var cameraId = string.Empty;

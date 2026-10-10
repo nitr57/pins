@@ -62,7 +62,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private double? lastRequestedGain;
         private int? lastRequestedOffset;
 
-        public IQhySdk Sdk { get; set; } = QhySdk.Instance;
+        public IQhySdk Sdk { get; set; } = new QhySdk();
 
         public QHYCamera(uint cameraIdx, IProfileService profileService, IExposureDataFactory exposureDataFactory) {
             this.profileService = profileService;
@@ -805,9 +805,11 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
 
                 /*
-                 * Get our selected camera's ID from the SDK
+                 * Open the camera by the ID recorded at enumeration, not by its scan index: the index
+                 * order is not stable across rescans, and with a second QHY camera in use (e.g. as the
+                 * native guider's guide camera) a stale index opens the other camera.
                  */
-                Sdk.GetId(Info.Index, out cameraID);
+                cameraID = Info.Id;
 
                 /*
                  * CameraP is the handle we use to reference this camera
