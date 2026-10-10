@@ -971,6 +971,78 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task GetMountSettings_ReadsLimitsGuideRatePierSideAndFirmware() {
+            var profile = new NINA.Profile.Profile();
+            profile.TelescopeSettings.PreferredPierSide = "west";
+            var port = FakeOnStepXPort.Umi17S().On(":SX96,W#", "1");
+            var (telescope, _) = Create(port, profile: profile);
+            await telescope.Connect(CancellationToken.None);
+
+            var settings = telescope.GetMountSettings();
+
+            Assert.That(settings.HorizonLimit, Is.EqualTo(-10));
+            Assert.That(settings.OverheadLimit, Is.EqualTo(85));
+            Assert.That(settings.MeridianLimitEast, Is.EqualTo(15.0));
+            Assert.That(settings.MeridianLimitWest, Is.EqualTo(10.0));
+            Assert.That(settings.PulseGuideRate, Is.EqualTo(1.0));
+            Assert.That(settings.PreferredPierSide, Is.EqualTo("East"));
+            Assert.That(settings.ProfilePreferredPierSide, Is.EqualTo("West"));
+            Assert.That(settings.Model, Is.EqualTo("Proxisky UMi17S"));
+            Assert.That(settings.VendorFirmware, Is.EqualTo("1.0.7"));
+            Assert.That(settings.FirmwareName, Is.EqualTo("On-Step"));
+            Assert.That(settings.FirmwareVersion, Is.EqualTo("10.20a"));
+            Assert.That(settings.FirmwareDate, Is.EqualTo("Dec  1 2025 11:55:45"));
+        }
+
+        [Test]
+        public async Task GetMountSettings_UnansweredValuesAreNull() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":Gh#", "0").On(":GXEA#", "0");
+
+            var settings = telescope.GetMountSettings();
+
+            Assert.That(settings.HorizonLimit, Is.Null);
+            Assert.That(settings.OverheadLimit, Is.Null);
+            Assert.That(settings.MeridianLimitEast, Is.Null);
+        }
+
+        [Test]
+        public async Task SetAltitudeLimits_Refused_ThrowsTheReason() {
+            var (telescope, _) = await Connected(FakeOnStepXPort.Umi17S().On(":Sh-05#", "0").On(":GE#", "04#"));
+
+            Assert.That(() => telescope.SetAltitudeLimits(-5, 85),
+                Throws.InvalidOperationException.With.Message.Contains("refused to set the altitude limits").And.Message.Contains("out of range"));
+        }
+
+        [Test]
+        public async Task SetMeridianLimits_SendsBothSides() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":SXE9,40#", "1").On(":SXEA,20#", "1"));
+
+            telescope.SetMeridianLimits(10, 5);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":SXE9,40#", ":SXEA,20#" }));
+        }
+
+        [Test]
+        public async Task SetHome_StandingStill_ResetsHomeAndReadsTheRateOffsetsAgain() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", Tracking).On(":GXTR#", "15.00000000#", "0.00000000#"));
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Custom));
+
+            telescope.SetHome();
+
+            Assert.That(port.Written, Does.Contain(":hF#"));
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Sidereal));
+        }
+
+        [Test]
+        public async Task SetHome_WhileMoving_IsRefusedWithoutACommand() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", ManualMove));
+
+            Assert.That(() => telescope.SetHome(), Throws.InvalidOperationException.With.Message.Contains("moves"));
+            Assert.That(port.Written, Has.None.EqualTo(":hF#"));
+        }
+
+        [Test]
         public async Task PortFailure_EndsTheConnection() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
             port.FailWrites = new IOException("device unplugged");

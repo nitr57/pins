@@ -942,6 +942,83 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         #endregion Tracking
 
+        #region Mount settings
+
+        /// <summary>
+        /// The controller's own settings for a settings page: altitude and meridian limits, the pulse-guide rate, the
+        /// preferred pier side and the firmware. A value the controller does not answer is null.
+        /// </summary>
+        public OnStepXMountSettings GetMountSettings() {
+            if (!Connected || device is not { } d) {
+                throw Failure("cannot read the mount settings: not connected");
+            }
+            (int Min, int Max)? altitude = null;
+            (double East, double West)? meridian = null;
+            OnStepXPreferredPierSide? preferred = null;
+            double? pulseRate = null;
+            RunOrThrow("read the mount settings", x => {
+                altitude = x.GetAltitudeLimits();
+                meridian = x.GetMeridianLimits();
+                preferred = x.GetPreferredPierSide();
+                try {
+                    pulseRate = x.GetPulseGuideRate();
+                } catch (OnStepXException ex) {
+                    Logger.Debug($"OnStepX: reading the pulse-guide rate failed: {ex.Message}");
+                }
+            });
+            if (pulseRate is { } rate) {
+                guideRate = rate;
+            }
+            return new OnStepXMountSettings(
+                altitude?.Min, altitude?.Max, meridian?.East, meridian?.West, pulseRate,
+                preferred?.ToString(), NormalizedPreferredPierSide(profileService.ActiveProfile.TelescopeSettings.PreferredPierSide),
+                d.Model, (d as ProxiskyUmiDevice)?.VendorFirmware, d.Identification.Product, d.Identification.Version,
+                $"{d.Identification.Date} {d.Identification.Time}", d.PortName);
+        }
+
+        /// <summary>The profile setting as East, West or Best; null when empty or unknown.</summary>
+        private static string? NormalizedPreferredPierSide(string? value) =>
+            Enum.TryParse<OnStepXPreferredPierSide>(value?.Trim(), ignoreCase: true, out var side) && Enum.IsDefined(side) ? side.ToString() : null;
+
+        /// <summary>Sets the lowest and highest altitude (:Sh, :So; whole degrees, -30 to 30 and 60 to 90), stored by the controller.</summary>
+        public void SetAltitudeLimits(int min, int max) {
+            RunOrThrow($"set the altitude limits to {min}° and {max}°", d => d.SetAltitudeLimits(min, max));
+            Logger.Info($"OnStepX: altitude limits {min}° to {max}°");
+        }
+
+        /// <summary>
+        /// Sets how far past the meridian the mount may track on each side of the pier (:SXE9, :SXEA), in degrees rounded
+        /// to 0.25°, stored by the controller.
+        /// </summary>
+        public void SetMeridianLimits(double eastDegrees, double westDegrees) {
+            RunOrThrow($"set the meridian limits to {eastDegrees:0.##}° east and {westDegrees:0.##}° west", d => d.SetMeridianLimits(eastDegrees, westDegrees));
+            Logger.Info($"OnStepX: meridian limits {eastDegrees:0.##}° east, {westDegrees:0.##}° west");
+        }
+
+        /// <summary>
+        /// Makes the current position the home position (:hF#). The mount has to stand still: OnStepX refuses while a
+        /// goto or guide runs, and the reset stops tracking and clears the park state, the alignment and the tracking
+        /// rate offsets.
+        /// </summary>
+        public void SetHome() {
+            if (!Connected || device is not { } d) {
+                throw Failure("cannot set home: not connected");
+            }
+            if (GetState(true) is { } s && Moving(s)) {
+                throw Failure("cannot set home while the mount moves: stop it first");
+            }
+            RunOrThrow("set home", x => x.ResetHome());
+            Logger.Info("OnStepX: the current position is the home position now (:hF#)");
+            ReadRateOffsets(d);
+            ResetCoordinateMotion();
+            InvalidateState();
+            RaisePropertyChanged(nameof(AtHome));
+            RaisePropertyChanged(nameof(AtPark));
+            RaisePropertyChanged(nameof(TrackingEnabled));
+        }
+
+        #endregion Mount settings
+
         #region Park and home
 
         public bool AtPark => CurrentState?.Status.Park == OnStepXParkState.Parked;
@@ -1782,4 +1859,33 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         #endregion Guiding
     }
+
+    /// <summary>The settings <see cref="OnStepXTelescope.GetMountSettings"/> reads from the controller.</summary>
+    /// <param name="HorizonLimit">The lowest altitude in degrees (:Gh#).</param>
+    /// <param name="OverheadLimit">The highest altitude in degrees (:Go#).</param>
+    /// <param name="MeridianLimitEast">Degrees past the meridian on the east side of the pier (:GXE9#).</param>
+    /// <param name="MeridianLimitWest">Degrees past the meridian on the west side of the pier (:GXEA#).</param>
+    /// <param name="PulseGuideRate">The pulse-guide rate in multiples of sidereal (:GX90#).</param>
+    /// <param name="PreferredPierSide">The controller's preferred pier side now (:GX96#): East, West or Best.</param>
+    /// <param name="ProfilePreferredPierSide">The profile's, which the driver sets at connect; null leaves the controller's.</param>
+    /// <param name="Model">The mount model, e.g. "Proxisky UMi17S".</param>
+    /// <param name="VendorFirmware">The vendor firmware on top of OnStepX, e.g. Proxisky's "1.0.7"; null for plain OnStepX.</param>
+    /// <param name="FirmwareName">The OnStepX product name (:GVP#).</param>
+    /// <param name="FirmwareVersion">The OnStepX version (:GVN#).</param>
+    /// <param name="FirmwareDate">The firmware build date and time (:GVD#, :GVT#).</param>
+    /// <param name="SerialPort">The port the mount is connected on.</param>
+    public sealed record OnStepXMountSettings(
+        int? HorizonLimit,
+        int? OverheadLimit,
+        double? MeridianLimitEast,
+        double? MeridianLimitWest,
+        double? PulseGuideRate,
+        string? PreferredPierSide,
+        string? ProfilePreferredPierSide,
+        string Model,
+        string? VendorFirmware,
+        string FirmwareName,
+        string FirmwareVersion,
+        string FirmwareDate,
+        string SerialPort);
 }

@@ -114,6 +114,79 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
             }
         }
 
+        /// <summary>
+        /// Makes the current position the home position (:hF#, "reset mount at home", the command INDI sends for
+        /// HOME_SET): the mount must point at the pole, a GEM with the counterweights down. The controller also clears the
+        /// park state, the alignment and the tracking rate offsets and stops tracking (Home::reset). No reply, but it
+        /// records its error, so :GE# follows as for :hC#.
+        /// </summary>
+        public void ResetHome() {
+            int? error = Transport.SendBlindThenError(":hF#");
+            if (error is { } e && e != (int)OnStepXCommandError.None) {
+                throw new OnStepXCommandRefusedException(":hF#", (OnStepXCommandError)e);
+            }
+        }
+
+        /// <summary>The lowest and highest altitude OnStepX gotos and tracks to (:Gh#, :Go#), whole degrees; null when unreadable.</summary>
+        public (int Min, int Max)? GetAltitudeLimits() {
+            var min = Transport.SendForString(":Gh#");
+            var max = Transport.SendForString(":Go#");
+            return min.Terminated && max.Terminated && TryParseDegrees(min.Text, out int minDegrees) && TryParseDegrees(max.Text, out int maxDegrees)
+                ? (minDegrees, maxDegrees)
+                : null;
+        }
+
+        /// <summary>The range :Sh takes (Limits.command.cpp).</summary>
+        public const int MinHorizonLimit = -30, MaxHorizonLimit = 30;
+
+        /// <summary>The range :So takes; an alt-az mount stops at 87° anyway.</summary>
+        public const int MinOverheadLimit = 60, MaxOverheadLimit = 90;
+
+        /// <summary>:Sh[sDD]# and :So[DD]#, stored by the controller; each refused with the reason from :GE#.</summary>
+        public void SetAltitudeLimits(int min, int max) {
+            if (min < MinHorizonLimit || min > MaxHorizonLimit) {
+                throw new ArgumentOutOfRangeException(nameof(min), min, $"the horizon limit is {MinHorizonLimit}° to {MaxHorizonLimit}°");
+            }
+            if (max < MinOverheadLimit || max > MaxOverheadLimit) {
+                throw new ArgumentOutOfRangeException(nameof(max), max, $"the overhead limit is {MinOverheadLimit}° to {MaxOverheadLimit}°");
+            }
+            SendExpectingAcceptance(string.Create(Inv, $":Sh{min:+00;-00}#"));
+            SendExpectingAcceptance(string.Create(Inv, $":So{max:00}#"));
+        }
+
+        /// <summary>The largest meridian limit :SXE9/:SXEA take, in degrees.</summary>
+        public const double MaxMeridianLimit = 360.0;
+
+        /// <summary>
+        /// How far past the meridian the mount may track on the east and on the west side of the pier before it stops or
+        /// flips (:GXE9#, :GXEA#), in degrees; the controller keeps whole minutes of time (0.25°). Null when unreadable.
+        /// </summary>
+        public (double East, double West)? GetMeridianLimits() {
+            var east = Transport.SendForString(":GXE9#");
+            var west = Transport.SendForString(":GXEA#");
+            return east.Terminated && west.Terminated
+                && int.TryParse(east.Text, NumberStyles.AllowLeadingSign, Inv, out int eastMinutes)
+                && int.TryParse(west.Text, NumberStyles.AllowLeadingSign, Inv, out int westMinutes)
+                ? (eastMinutes / 4.0, westMinutes / 4.0)
+                : null;
+        }
+
+        /// <summary>:SXE9,[n]# and :SXEA,[n]# in minutes of time (degrees rounded to 0.25°), stored by the controller.</summary>
+        public void SetMeridianLimits(double eastDegrees, double westDegrees) {
+            if (double.IsNaN(eastDegrees) || Math.Abs(eastDegrees) > MaxMeridianLimit) {
+                throw new ArgumentOutOfRangeException(nameof(eastDegrees), eastDegrees, $"meridian limits are ±{MaxMeridianLimit}°");
+            }
+            if (double.IsNaN(westDegrees) || Math.Abs(westDegrees) > MaxMeridianLimit) {
+                throw new ArgumentOutOfRangeException(nameof(westDegrees), westDegrees, $"meridian limits are ±{MaxMeridianLimit}°");
+            }
+            SendExpectingAcceptance(string.Create(Inv, $":SXE9,{(long)Math.Round(eastDegrees * 4, MidpointRounding.AwayFromZero)}#"));
+            SendExpectingAcceptance(string.Create(Inv, $":SXEA,{(long)Math.Round(westDegrees * 4, MidpointRounding.AwayFromZero)}#"));
+        }
+
+        /// <summary>"+10*", "-5*" or "85*" (:Gh#, :Go#).</summary>
+        private static bool TryParseDegrees(string text, out int degrees) =>
+            int.TryParse(text.TrimEnd('*'), NumberStyles.AllowLeadingSign, Inv, out degrees);
+
         /// <summary>:Te# / :Td#; refused with the reason from :GE#.</summary>
         public void SetTracking(bool enabled) => SendExpectingAcceptance(enabled ? ":Te#" : ":Td#");
 

@@ -82,6 +82,10 @@ namespace NINA.Test.Equipment.OnStepX {
             .On(":GX97#", "3.5#")
             .On(":hP#", "1")
             .On(":GX96#", "E#")
+            .On(":Gh#", "-10*#")
+            .On(":Go#", "85*#")
+            .On(":GXE9#", "60#")
+            .On(":GXEA#", "40#")
             .On(":GXTR#", "0.00000000#")
             .On(":GXTD#", "0.00000000#")
             .On(":hC#", (string?)null)
@@ -109,10 +113,10 @@ namespace NINA.Test.Equipment.OnStepX {
             }
         }
 
-        /// <summary>:Mg pulses, :Mn# moves, :Q stops, :R move rates, :TQ# and the other tracking rates: no reply.</summary>
+        /// <summary>:Mg pulses, :Mn# moves, :Q stops, :R move rates, :TQ# and the other tracking rates, :hF#: no reply.</summary>
         private static bool IsBlind(string command) =>
             command.StartsWith(":Mg", StringComparison.Ordinal)
-            || command is ":Mn#" or ":Ms#" or ":Me#" or ":Mw#" or ":TQ#" or ":TL#" or ":TS#" or ":TK#"
+            || command is ":Mn#" or ":Ms#" or ":Me#" or ":Mw#" or ":TQ#" or ":TL#" or ":TS#" or ":TK#" or ":hF#"
             || command.StartsWith(":Q", StringComparison.Ordinal)
             || (command.Length == 4 && command.StartsWith(":R", StringComparison.Ordinal) && char.IsDigit(command[2]));
 

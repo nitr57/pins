@@ -317,6 +317,87 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void ResetHome_ReadsTheErrorAfterwards() {
+            var (device, port) = Connect();
+
+            device.ResetHome();
+
+            Assert.That(port.Written, Is.EqualTo(new[] { ":hF#", ":GE#" }));
+        }
+
+        [Test]
+        public void ResetHome_Refused_ThrowsTheReason() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":hF#", (string?)null).On(":GE#", "22#"));
+
+            var ex = Assert.Throws<OnStepXCommandRefusedException>(() => device.ResetHome());
+
+            Assert.That(ex!.Error, Is.EqualTo(OnStepXCommandError.InMotion));
+        }
+
+        [TestCase("-10*#", "85*#", -10, 85)]
+        [TestCase("+5*#", "90*#", 5, 90)]
+        public void GetAltitudeLimits(string min, string max, int expectedMin, int expectedMax) {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":Gh#", min).On(":Go#", max));
+
+            Assert.That(device.GetAltitudeLimits(), Is.EqualTo((expectedMin, expectedMax)));
+        }
+
+        [Test]
+        public void GetAltitudeLimits_Unreadable_IsNull() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":Go#", "0"));
+
+            Assert.That(device.GetAltitudeLimits(), Is.Null);
+        }
+
+        [TestCase(-10, 85, ":Sh-10#", ":So85#")]
+        [TestCase(5, 90, ":Sh+05#", ":So90#")]
+        [TestCase(0, 60, ":Sh+00#", ":So60#")]
+        public void SetAltitudeLimits(int min, int max, string minCommand, string maxCommand) {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(minCommand, "1").On(maxCommand, "1"));
+
+            device.SetAltitudeLimits(min, max);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { minCommand, maxCommand }));
+        }
+
+        [TestCase(-31, 85)]
+        [TestCase(31, 85)]
+        [TestCase(0, 59)]
+        [TestCase(0, 91)]
+        public void SetAltitudeLimits_OutOfTheFirmwareRange_Throws(int min, int max) {
+            var (device, port) = Connect();
+
+            Assert.That(() => device.SetAltitudeLimits(min, max), Throws.InstanceOf<ArgumentOutOfRangeException>());
+            Assert.That(port.Written, Is.Empty);
+        }
+
+        [Test]
+        public void GetMeridianLimits_MinutesOfTimeAsDegrees() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S().On(":GXE9#", "60#").On(":GXEA#", "-10#"));
+
+            Assert.That(device.GetMeridianLimits(), Is.EqualTo((15.0, -2.5)));
+        }
+
+        [TestCase(15.0, -2.5, ":SXE9,60#", ":SXEA,-10#")]
+        [TestCase(7.6, 0.0, ":SXE9,30#", ":SXEA,0#")]
+        [TestCase(0.125, -0.125, ":SXE9,1#", ":SXEA,-1#")]
+        public void SetMeridianLimits_DegreesAsMinutesOfTime(double east, double west, string eastCommand, string westCommand) {
+            var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(eastCommand, "1").On(westCommand, "1"));
+
+            device.SetMeridianLimits(east, west);
+
+            Assert.That(port.Written, Is.EqualTo(new[] { eastCommand, westCommand }));
+        }
+
+        [Test]
+        public void SetMeridianLimits_BeyondTheFirmwareRange_Throws() {
+            var (device, port) = Connect();
+
+            Assert.That(() => device.SetMeridianLimits(361, 0), Throws.InstanceOf<ArgumentOutOfRangeException>());
+            Assert.That(port.Written, Is.Empty);
+        }
+
+        [Test]
         public void SetTrackingRateOffsets() {
             var (device, port) = Connect(FakeOnStepXPort.Umi17S().On(":SXTR,1.500000#", "1").On(":SXTD,-0.250000#", "1"));
 
