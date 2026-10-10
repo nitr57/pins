@@ -10,6 +10,7 @@
 
   <ItemGroup>
     <Compile Remove="StartupProbe\**\*.cs" />
+    <Compile Remove="**\obj\**\*.cs" />
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
     <PackageReference Include="System.Drawing.Common" Version="*" ExcludeAssets="all" />
   </ItemGroup>
@@ -17,6 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="..\NINA.WPF.Base\NINA.WPF.Base.csproj" />
     <ProjectReference Include="..\System.Windows.Compat\System.Windows.Compat.csproj" />
+    <ProjectReference Include="..\NINA.Sequencer\NINA.Sequencer.csproj" />
   </ItemGroup>
 
 </Project>
