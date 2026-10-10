@@ -28,6 +28,7 @@ using NINA.GuideEngine.Core;
 using NINA.GuideEngine.Guiding;
 using NINA.GuideEngine.Incidents;
 using NINA.GuideEngine.Logging;
+using NINA.GuideEngine.MultiStar;
 using NINA.GuideEngine.Simulation;
 using NINA.GuideEngine.Stats;
 
@@ -889,6 +890,66 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     }
 
     public Task<bool> DitherBy(double pixels, bool raOnly, CancellationToken ct) => DitherCoreAsync(pixels, raOnly, null, ct);
+
+    public async Task<AdvancedStarSelectionResult> SelectGuideStar(double x, double y, CancellationToken ct)
+    {
+        var g = guider;
+        if (g is null)
+        {
+            return SelectionFailed(AdvancedStarSelectionErrors.NotLooping, "The internal guider is not connected.");
+        }
+
+        if (buildingDarks)
+        {
+            return SelectionFailed(AdvancedStarSelectionErrors.Busy, "A dark library is being built.");
+        }
+
+        // the selection is made on the next frame
+        var timeout = TimeSpan.FromMilliseconds(2.0 * g.Settings.ExposureMs) + AutoSelectTimeoutMargin;
+        StarSelectionResult r;
+        try
+        {
+            r = await g.SelectStarAsync(new GuidePoint(x, y), ct).WaitAsync(timeout, ct).ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            return SelectionFailed(AdvancedStarSelectionErrors.TimedOut, "No guide frame arrived in time.");
+        }
+
+        if (!r.Success)
+        {
+            return r.Error switch
+            {
+                StarSelectionError.NoStar => SelectionFailed(AdvancedStarSelectionErrors.NoStar, "No star was found at that position."),
+                StarSelectionError.NearEdge => SelectionFailed(AdvancedStarSelectionErrors.NearEdge, "The star is too close to the edge of the frame."),
+                StarSelectionError.Busy => SelectionFailed(AdvancedStarSelectionErrors.Busy,
+                    "A guide star can only be selected while looping, not while guiding, calibrating or running the Coach."),
+                StarSelectionError.NotLooping => SelectionFailed(AdvancedStarSelectionErrors.NotLooping, "Start looping exposures first."),
+                _ => SelectionFailed(AdvancedStarSelectionErrors.Cancelled, "The selection was cancelled."),
+            };
+        }
+
+        var p = r.Primary;
+        Logger.Info($"InternalGuider: guide star selected by hand at {p.Position.X:F1}, {p.Position.Y:F1} (SNR {p.Snr:F1}), {r.SecondaryStars} secondary stars");
+        return new AdvancedStarSelectionResult
+        {
+            Success = true,
+            Star = new AdvancedGuideStar
+            {
+                X = p.Position.X,
+                Y = p.Position.Y,
+                Snr = p.Snr,
+                Mass = p.Mass,
+                Hfd = p.Hfd,
+                IsPrimary = true,
+                Used = true,
+                Weight = 1,
+            },
+            SecondaryStars = r.SecondaryStars,
+        };
+    }
+
+    private static AdvancedStarSelectionResult SelectionFailed(string error, string message) => new() { Error = error, Message = message };
 
     /// <summary>PHD2's standard dark exposure steps (seconds).</summary>
     private static readonly double[] DarkExposures = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 6, 7, 8, 9, 10, 15, 20, 30];

@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+### Added
+- Internal guider: choose the guide star yourself. While the guider is looping (not guiding), `IAdvancedGuider.SelectGuideStar(x, y)` makes the star nearest the position the guide star on the next frame, like clicking a star in PHD2; in multi-star mode its secondary stars are found around it (PHD2 guides a clicked star alone). It answers with the star and the number of secondary stars, or why it was refused (no star there, too close to the edge, busy guiding, calibrating or running the Guiding Coach, not looping, cancelled, no frame in time). The Touch-N-Stars plugin offers it as `POST /api/internal-guider/select-star`, for choosing the guide star by tapping it in the guide frame
+### Fixed
+- Internal guider, multi-star: after the guide star changed to a neighbouring star (clouds, a reacquisition, or a star kept from before a failure or a slew), every secondary star stayed lost, because a lost secondary is only searched at its old offset from the guide star, and guiding silently went on with the guide star alone (on a rig night 1 of 12 stars was used). The secondary stars are now found again around the guide star when guiding starts on a kept star whose secondaries are mostly gone, and after 30 guiding frames in a row with all of them lost (alert 109 *Secondary stars found again*). The old list is kept when fewer than half as many stars are found, e.g. under clouds
+
 ## 1.1.63 - 2026-10-09
 ### Added
 - Internal guider: the guiding engine of André Duffeck's pins-guider, a C# port of PHD2 (star finding, multi-star tracking, calibration, guide algorithms, backlash compensation, settling, dithering, guide log) with its own extensions (Predictive algorithm, periodic error, Dec guide mode Drift, pulse model, safety monitors, Guiding Coach, incident recorder and a closed-loop simulator), as the new project `NINA.GuideEngine` with its tests in `NINA.GuideEngine.Test`. It is not yet selectable as a guider; the connection to the guide camera, the mount and the guider list follows.

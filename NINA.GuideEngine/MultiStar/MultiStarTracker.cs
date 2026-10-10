@@ -167,6 +167,103 @@ public sealed class MultiStarTracker
         return found;
     }
 
+    /// <summary>
+    /// Manually selects the star nearest <paramref name="position"/> (within the search region) as the primary.
+    /// Deviation from PHD2: a click selection there guides on the clicked star alone (<see cref="SelectStarAt"/>);
+    /// here, in multi-star mode, the secondary stars are found with AutoFind around it, as after an auto-selection.
+    /// The tracker state is left unchanged on failure.
+    /// </summary>
+    public StarSelectionResult SelectStar(GuideFrame frame, GuidePoint position)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        if (!position.IsValid || position.X < 0 || position.X >= frame.Width || position.Y < 0 || position.Y >= frame.Height)
+            return StarSelectionResult.Failed(StarSelectionError.NoStar);
+        var candidate = new Star();
+        if (!candidate.Find(frame, SearchRegion, (int)position.X, (int)position.Y, StarFindMode.Centroid, FinderOptions.MinHfd,
+                FinderOptions.MaxHfd, FinderOptions.SaturationAdu))
+            return StarSelectionResult.Failed(StarSelectionError.NoStar, StarSnapshot.Of(candidate));
+        frameWidth = frame.Width;
+        frameHeight = frame.Height;
+        if (!IsValidLockPosition(candidate.Position))
+            return StarSelectionResult.Failed(StarSelectionError.NearEdge, StarSnapshot.Of(candidate));
+
+        var list = new List<GuideStar> { new(candidate) };
+        list.AddRange(FindSecondaries(frame, candidate.Position));
+        var r = InitializeCore(frame, list, candidate.Position, null);
+        return r.Success
+            ? new StarSelectionResult(StarSelectionError.None, r.Primary, list.Count - 1)
+            : StarSelectionResult.Failed(StarSelectionError.NoStar, r.Primary);
+    }
+
+    /// <summary>
+    /// Extension (not in PHD2): replaces the secondary stars with stars found by AutoFind around the current primary,
+    /// for when the old ones keep being lost (the primary switched to another star, or the field moved). A lost
+    /// secondary is otherwise only searched at its original offset from the primary and never recovers. The list is
+    /// kept when no star, or fewer than half as many stars as before, are found (e.g. under clouds). After a
+    /// replacement the tracker stabilises and re-snaps the new reference points near the lock position, as after a
+    /// lock position change.
+    /// </summary>
+    /// <param name="frame">Full frame the primary was just measured on.</param>
+    /// <param name="force">
+    /// False: first look for the current secondaries at their offsets from the primary, and keep them when at least
+    /// half are there. True: the caller already knows they are lost.
+    /// </param>
+    public SecondaryRefreshResult RefreshSecondaryStars(GuideFrame frame, bool force)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        int before = Math.Max(0, guideStars.Count - 1);
+        if (!primary.WasFound())
+            return new SecondaryRefreshResult(before, 0, false);
+        if (!force && before > 0 && CountSecondariesAtOffsets(frame) * 2 >= before)
+            return new SecondaryRefreshResult(before, 0, false);
+        var found = FindSecondaries(frame, primary.Position);
+        if (found.Count == 0 || found.Count * 2 < before)
+            return new SecondaryRefreshResult(before, found.Count, false);
+
+        guideStars.Clear();
+        guideStars.Add(new TrackedStar(new GuideStar(primary), primary.Position));
+        foreach (var gs in found)
+            guideStars.Add(new TrackedStar(gs, primary.Position));
+        NotifyLockPositionSet();
+        return new SecondaryRefreshResult(before, found.Count, true);
+    }
+
+    /// <summary>Number of secondary stars found at their offsets from the current primary (the tracked stars are not changed).</summary>
+    private int CountSecondariesAtOffsets(GuideFrame frame)
+    {
+        var fo = FinderOptions;
+        var probe = new Star();
+        int present = 0;
+        for (int i = 1; i < guideStars.Count; i++)
+        {
+            var expected = primary.Position + guideStars[i].OffsetFromPrimary;
+            if (IsValidSecondaryStarPosition(expected) &&
+                probe.Find(frame, SearchRegion, (int)expected.X, (int)expected.Y, fo.FindMode, fo.MinHfd, fo.MaxHfd, fo.SaturationAdu))
+                present++;
+        }
+
+        return present;
+    }
+
+    /// <summary>AutoFind's stars except the one at (or crowding) <paramref name="primaryPos"/>, with offsets from it; empty in single-star mode.</summary>
+    private List<GuideStar> FindSecondaries(GuideFrame frame, GuidePoint primaryPos)
+    {
+        var list = new List<GuideStar>();
+        if (!options.MultiStarEnabled || options.UseSubframes || !frame.Subframe.IsEmpty)
+            return list;
+        foreach (var gs in GuideStar.AutoFind(frame, 0, SearchRegion, IntRect.Empty, options.MaxListSize, FinderOptions))
+        {
+            if (list.Count >= options.MaxListSize - 1)
+                break;
+            if ((gs.Position - primaryPos).Distance() <= SearchRegion)
+                continue;
+            gs.OffsetFromPrimary = gs.ReferencePoint - primaryPos;
+            list.Add(gs);
+        }
+
+        return list;
+    }
+
     /// <summary>Removes all secondary stars (PHD2 ClearSecondaryStars).</summary>
     public void ClearSecondaryStars()
     {

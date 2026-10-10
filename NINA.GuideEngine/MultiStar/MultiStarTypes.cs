@@ -191,6 +191,44 @@ public sealed record AutoSelectResult(bool Success, StarSnapshot Primary, IReadO
     public GuidePoint LockPosition => Success ? Primary.Position : GuidePoint.Invalid;
 }
 
+/// <summary>Why a manual star selection failed.</summary>
+public enum StarSelectionError
+{
+    None,
+
+    /// <summary>No star was found around the requested position.</summary>
+    NoStar,
+
+    /// <summary>The star is too close to the frame edge for the search region.</summary>
+    NearEdge,
+
+    /// <summary>The guider is guiding, calibrating, starting to guide or running the Coach.</summary>
+    Busy,
+
+    /// <summary>The guider is not looping exposures.</summary>
+    NotLooping,
+
+    /// <summary>The request was replaced by a newer one, or the loop stopped before a frame arrived.</summary>
+    Cancelled,
+}
+
+/// <summary>Result of a manual star selection (<see cref="MultiStarTracker.SelectStar"/>).</summary>
+/// <param name="Error">Why the selection failed, <see cref="StarSelectionError.None"/> on success.</param>
+/// <param name="Primary">The selected star (on failure the last measurement, if any).</param>
+/// <param name="SecondaryStars">Number of secondary stars found around it (multi-star mode).</param>
+public sealed record StarSelectionResult(StarSelectionError Error, StarSnapshot Primary, int SecondaryStars)
+{
+    public bool Success => Error == StarSelectionError.None;
+
+    public static StarSelectionResult Failed(StarSelectionError error, StarSnapshot primary = default) => new(error, primary, 0);
+}
+
+/// <summary>Result of <see cref="MultiStarTracker.RefreshSecondaryStars"/>.</summary>
+/// <param name="Before">Secondary stars before the refresh.</param>
+/// <param name="Found">Secondary stars found around the primary.</param>
+/// <param name="Replaced">True when the found stars replaced the previous secondaries.</param>
+public readonly record struct SecondaryRefreshResult(int Before, int Found, bool Replaced);
+
 /// <summary>Guider state relevant to the subframe bounding box (PHD2 GetBoundingBox).</summary>
 public enum BoundingBoxState
 {

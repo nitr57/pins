@@ -59,8 +59,14 @@ curl "$H/set-setting?settingName=InternalGuiderSetting&newValue=MinSnr=8"  # any
   flipped automatically; a **post-flip Dec self-check** watches the first corrections and fixes the
   *Reverse Dec after meridian flip* setting if Dec runs away.
 * **Dithering** uses the NINA profile dither settings (pixels, RA only) and PHD2's settle semantics.
+* **Choosing the guide star yourself**: while looping (Loop, not guiding), tap a star in the TNS guide frame and
+  press *Guide on this star* (`IAdvancedGuider.SelectGuideStar`, `POST /api/internal-guider/select-star`). The star
+  nearest the tap becomes the primary on the next frame and the secondary stars are found around it; then press
+  Guide. To change the star while guiding: Stop, Loop, tap, Guide (the calibration is kept).
 * **Multi-star**: up to 9 stars (PHD2 algorithm). If the primary star drops out for a frame, its
-  position is estimated from ≥3 agreeing secondaries instead of declaring the star lost.
+  position is estimated from ≥3 agreeing secondaries instead of declaring the star lost. When the secondaries
+  stay lost while the primary is found (the primary changed to a neighbouring star), they are found again around
+  it after 30 frames (event log: *Secondary stars found again*).
 * **Guide algorithms**: RA Hysteresis (0.7 / 0.1), Dec ResistSwitch (1.0, fast switch), min-move from the
   image scale — PHD2 defaults; Lowpass2 available. Not in PHD2, for every algorithm: a **minimum pulse** (`MinPulseMs`,
   20 ms; 0–50 ms, 0 = any length as in PHD2). A shorter guide pulse is rounded to 0 or to the minimum, whichever is

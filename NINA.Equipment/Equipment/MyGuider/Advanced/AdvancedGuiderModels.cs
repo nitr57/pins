@@ -440,6 +440,44 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
         public string? RejectReason { get; set; }
     }
 
+    /// <summary>Values of <see cref="AdvancedStarSelectionResult.Error"/>.</summary>
+    public static class AdvancedStarSelectionErrors {
+        /// <summary>No star was found around the position.</summary>
+        public const string NoStar = "NoStar";
+
+        /// <summary>The star is too close to the frame edge to track.</summary>
+        public const string NearEdge = "NearEdge";
+
+        /// <summary>The guider is guiding, calibrating, starting to guide or running the Coach.</summary>
+        public const string Busy = "Busy";
+
+        /// <summary>The guider is not looping exposures.</summary>
+        public const string NotLooping = "NotLooping";
+
+        /// <summary>A newer selection replaced it, or looping stopped first.</summary>
+        public const string Cancelled = "Cancelled";
+
+        /// <summary>No frame arrived in time.</summary>
+        public const string TimedOut = "TimedOut";
+    }
+
+    /// <summary>Result of <see cref="IAdvancedGuider.SelectGuideStar"/>.</summary>
+    public class AdvancedStarSelectionResult {
+        public bool Success { get; set; }
+
+        /// <summary>Why it failed (<see cref="AdvancedStarSelectionErrors"/>), null on success.</summary>
+        public string? Error { get; set; }
+
+        /// <summary>The reason in English, null on success.</summary>
+        public string? Message { get; set; }
+
+        /// <summary>The selected star, null on failure.</summary>
+        public AdvancedGuideStar? Star { get; set; }
+
+        /// <summary>Secondary stars found around it (multi-star mode).</summary>
+        public int SecondaryStars { get; set; }
+    }
+
     /// <summary>A processed guide frame with its stars and lock position.</summary>
     public class AdvancedGuiderFrame {
         public long FrameNumber { get; set; }

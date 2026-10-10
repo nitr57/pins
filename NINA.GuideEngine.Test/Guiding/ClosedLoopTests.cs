@@ -5,6 +5,7 @@ using NUnit.Framework;
 using NINA.GuideEngine.Algorithms;
 using NINA.GuideEngine.Core;
 using NINA.GuideEngine.Guiding;
+using NINA.GuideEngine.MultiStar;
 using NINA.GuideEngine.Simulation;
 using NINA.GuideEngine.Test.TestSupport;
 
@@ -532,6 +533,118 @@ public class ClosedLoopTests
         recenter.Should().NotBeEmpty();
         recenter.Should().OnlyContain(s => s.RaDuration <= 300 && s.DecDuration <= 300);
         recenter.Should().Contain(s => s.RaDuration == 300 || s.DecDuration == 300, "the 12 px dither needs more than one max pulse");
+    }
+
+    [Test]
+    public async Task Guides_on_a_star_selected_by_hand()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        StarTruth? chosen = null;
+        Task<StarSelectionResult>? select = null;
+        Task<StarSelectionResult>? whileGuiding = null;
+        Task<SettleResult>? guide = null;
+        IReadOnlyList<StarInfo>? selectionFrameStars = null;
+        h.OnEvent = e =>
+        {
+            if (e is LoopingExposuresEvent && select is null && h.Sim.Camera.LastFrameTruth is { } truth)
+            {
+                // not the star auto-selection would take: the third brightest, away from the edges; tapped 3 px off
+                chosen = truth.Stars.Where(s => s.InFrame && s.X is > 200 and < 1736 && s.Y is > 200 and < 1016)
+                    .OrderBy(s => s.Magnitude).Skip(2).First();
+                select = h.Guider.SelectStarAsync(new GuidePoint(chosen.X + 3, chosen.Y - 2));
+            }
+            else if (e is StarSelectedEvent && guide is null)
+            {
+                guide = h.Guider.StartGuidingAsync(Settle);
+            }
+            else if (e is FrameReadyEvent f && guide is not null && selectionFrameStars is null)
+            {
+                selectionFrameStars = f.Stars;
+            }
+            else if (e is GuideStepEvent && whileGuiding is null)
+            {
+                whileGuiding = h.Guider.SelectStarAsync(new GuidePoint(chosen!.X, chosen.Y));
+            }
+        };
+
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        var selected = await select!;
+        selected.Success.Should().BeTrue();
+        selected.Primary.Position.X.Should().BeApproximately(chosen!.X, 1.5);
+        selected.Primary.Position.Y.Should().BeApproximately(chosen.Y, 1.5);
+        selected.SecondaryStars.Should().BeGreaterThan(2);
+        selectionFrameStars.Should().HaveCount(selected.SecondaryStars + 1, "the frame the star was chosen on shows the new stars");
+        selectionFrameStars!.Single(s => s.IsPrimary).X.Should().BeApproximately(selected.Primary.Position.X, 0.01);
+        (await guide!).Success.Should().BeTrue();
+        (await whileGuiding!).Error.Should().Be(StarSelectionError.Busy);
+        h.Events.OfType<StarSelectedEvent>().Should().ContainSingle("no automatic selection replaced it");
+        var firstLock = h.Events.OfType<LockPositionSetEvent>().First();
+        firstLock.X.Should().BeApproximately(chosen.X, 1.5);
+        firstLock.Y.Should().BeApproximately(chosen.Y, 1.5);
+        h.Events.OfType<GuideStepEvent>().Where(s => s.Time > 120).Should().Contain(s => s.StarsUsed > 1, "multi-star guiding on the chosen star");
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.SecondaryStarsRefreshed);
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+    }
+
+    [Test]
+    public async Task Selecting_a_star_needs_looping_exposures()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        (await h.Guider.SelectStarAsync(new GuidePoint(500, 500))).Error.Should().Be(StarSelectionError.NotLooping);
+    }
+
+    [Test]
+    public async Task Finds_the_secondary_stars_again_when_they_stay_lost()
+    {
+        // what a guide star changing to a neighbour does to the secondaries: the guide star stays, the stars around it
+        // change (set A disappears, set B appears) and the secondaries are never found again at their old offsets
+        const double swapSec = 600;
+        var stars = new List<SimStar> { new(0, 0, 9.5) };
+        SimStar[] setA = [new(-300, 200, 10.0), new(250, -150, 10.2), new(400, 250, 10.4), new(-450, -200, 10.6), new(100, 300, 10.8)];
+        SimStar[] setB = [new(-200, -300, 10.0), new(350, 100, 10.2), new(-500, 100, 10.4), new(200, 350, 10.6), new(-150, 380, 10.8)];
+        stars.AddRange(setA);
+        stars.AddRange(setB);
+        var occlusions = Enumerable.Range(1, setA.Length).Select(i => new StarOcclusion(swapSec, 1e6, i))
+            .Concat(Enumerable.Range(1 + setA.Length, setB.Length).Select(i => new StarOcclusion(0, swapSec, i)))
+            .ToList();
+        var scenario = SimulatorScenario.GoodMount with { Sky = SimulatorScenario.GoodMount.Sky with { Stars = stars, Occlusions = occlusions } };
+        var h = new Harness(scenario);
+        Task<SettleResult>? guide = null;
+        h.OnEvent = e =>
+        {
+            // the automatic selection takes the brightest star, the one that stays
+            if (e is LoopingExposuresEvent && guide is null)
+            {
+                guide = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        await h.RunFor(TimeSpan.FromMinutes(20));
+
+        (await guide!).Success.Should().BeTrue();
+        var refreshed = h.Events.OfType<AlertEvent>().Where(a => a.Code == GuideErrorCode.SecondaryStarsRefreshed).ToList();
+        refreshed.Should().ContainSingle();
+        double refreshSec = h.Seconds(refreshed[0].Timestamp);
+        refreshSec.Should().BeInRange(swapSec + 50, swapSec + 120, "after 30 frames of 2 s with every secondary lost");
+        refreshed[0].Detail.Should().Be("5 secondary stars (before: 5)");
+
+        var steps = h.Events.OfType<GuideStepEvent>().Where(s => !s.IsSettling).ToList();
+        double MultiStarShare(double from, double to)
+        {
+            var window = steps.Where(s => h.Seconds(s.Timestamp) > from && h.Seconds(s.Timestamp) < to).ToList();
+            window.Should().NotBeEmpty();
+            return window.Count(s => s.StarsUsed > 1) / (double)window.Count;
+        }
+
+        double before = MultiStarShare(swapSec - 200, swapSec);
+        double lost = MultiStarShare(swapSec + 10, swapSec + 50);
+        double after = MultiStarShare(refreshSec + 60, double.MaxValue);
+        TestContext.Out.WriteLine($"multi-star frames: {before:P0} before the swap, {lost:P0} with set A lost, {after:P0} after the refresh");
+        before.Should().BeGreaterThan(0.9);
+        lost.Should().Be(0, "every secondary is lost");
+        after.Should().BeGreaterThan(0.9, "guiding on set B");
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
     }
 
     /// <summary>

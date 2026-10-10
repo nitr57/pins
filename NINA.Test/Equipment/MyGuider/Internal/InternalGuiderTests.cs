@@ -21,6 +21,7 @@ using NINA.GuideEngine.Coach;
 using NINA.GuideEngine.Core;
 using NINA.GuideEngine.Guiding;
 using NINA.GuideEngine.Incidents;
+using NINA.GuideEngine.MultiStar;
 using NINA.Equipment.Equipment.MyCamera;
 using NINA.Equipment.Equipment.MyGuider.Internal;
 
@@ -609,6 +610,48 @@ public class InternalGuiderLifecycleTests
         await Task.Run(t.Guider.Disconnect);
         t.Guider.Connected.Should().BeFalse();
     }
+
+    [Test]
+    public async Task Selects_a_guide_star_by_position()
+    {
+        using var t = new GuiderFixture();
+        t.Guider.TrySetSetting("GuideSource", InternalGuiderOptions.SimulatorSource, out _).Should().BeTrue();
+        t.Guider.TrySetSetting("SaveGuideLog", "false", out _).Should().BeTrue();
+        t.Guider.TrySetSetting("ReuseCalibration", "false", out _).Should().BeTrue();
+        t.Guider.TrySetSetting("ExposureSeconds", "0.2", out _).Should().BeTrue();
+        (await t.Guider.Connect(CancellationToken.None)).Should().BeTrue();
+        try
+        {
+            (await t.Guider.SelectGuideStar(100, 100, CancellationToken.None)).Error.Should().Be(AdvancedStarSelectionErrors.NotLooping);
+
+            (await t.Guider.StartLooping(CancellationToken.None)).Should().BeTrue();
+            (await t.Guider.AutoSelectGuideStar().WaitAsync(TimeSpan.FromSeconds(30))).Should().BeTrue();
+            AdvancedGuideStar? secondary = null;
+            for (int i = 0; i < 100 && secondary is null; i++)
+            {
+                await Task.Delay(100);
+                secondary = t.Guider.GetLatestFrame()?.Stars.FirstOrDefault(s => !s.IsPrimary);
+            }
+
+            secondary.Should().NotBeNull("the auto-selection found secondary stars");
+
+            // tapped a little off the star
+            var r = await t.Guider.SelectGuideStar(secondary!.X + 2, secondary.Y - 1, CancellationToken.None);
+
+            r.Success.Should().BeTrue(r.Message);
+            r.Error.Should().BeNull();
+            // the unguided field drifts a little between the frame read here and the one the selection is made on
+            r.Star!.X.Should().BeApproximately(secondary.X, 5);
+            r.Star.Y.Should().BeApproximately(secondary.Y, 5);
+            r.SecondaryStars.Should().BeGreaterThan(0);
+            t.Guider.GetStatus().State.Should().Be(AdvancedGuiderStates.Selected);
+            (await t.Guider.SelectGuideStar(-50, -50, CancellationToken.None)).Error.Should().Be(AdvancedStarSelectionErrors.NoStar);
+        }
+        finally
+        {
+            await Task.Run(t.Guider.Disconnect);
+        }
+    }
 }
 
 [TestFixture]
@@ -629,6 +672,8 @@ public class ContractTests
         Constants(typeof(AdvancedCoachSeverities)).Should().BeEquivalentTo(Constants(typeof(CoachSeverities)));
         Constants(typeof(AdvancedCoachGrades)).Should().BeEquivalentTo(Constants(typeof(CoachGrades)));
         AdvancedCoachSteps.Selectable.Should().Equal(CoachStepNames.All);
+        Constants(typeof(AdvancedStarSelectionErrors)).Should()
+            .BeEquivalentTo(Enum.GetNames<StarSelectionError>().Where(n => n != nameof(StarSelectionError.None)).Append(AdvancedStarSelectionErrors.TimedOut));
     }
 
     [Test]

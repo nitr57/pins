@@ -137,6 +137,9 @@ public sealed class GuideLogBridge : IDisposable
                 // the direction changes and the safety valve; summaries and resets go to the debug log only
                 log.Info($"Dec guide direction: {d.Message}");
                 break;
+            case AlertEvent { Code: GuideErrorCode.SecondaryStarsRefreshed } a when guiding:
+                log.Info($"Secondary stars found again: {a.Detail}");
+                break;
             case AlertEvent a when (guiding || calibrating) && a.Severity != GuideErrorSeverity.Info:
                 log.ServerCommand($"ALERT {(int)a.Code} {a.Code}: {a.Message}{(a.Detail is null ? "" : " - " + a.Detail)}");
                 break;
