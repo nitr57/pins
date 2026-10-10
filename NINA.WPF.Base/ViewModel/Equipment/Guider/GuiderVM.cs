@@ -33,6 +33,7 @@ using NINA.Core.Interfaces;
 using NINA.Equipment.Equipment;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.ViewModel;
+using NINA.Equipment.Utility;
 using Nito.AsyncEx;
 using System.Linq;
 using NINA.Astrometry;
@@ -240,7 +241,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
                 _cancelConnectGuiderSource?.Dispose();
                 _cancelConnectGuiderSource = new CancellationTokenSource();
                 Guider = (IGuider)DeviceChooserVM.SelectedDevice;
-                connected = await Guider.Connect(_cancelConnectGuiderSource.Token);
+                connected = await Guider.ConnectWithCancellation(_cancelConnectGuiderSource.Token);
                 _cancelConnectGuiderSource.Token.ThrowIfCancellationRequested();
                 connected = connected && Guider.Connected;
 
@@ -493,6 +494,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
                 RaisePropertyChanged();
             }
         }
+
+        public void CancelConnect() => CancelConnectGuider(null);
 
         private void CancelConnectGuider(object o) {
             try { _cancelConnectGuiderSource?.Cancel(); } catch { }

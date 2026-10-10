@@ -32,6 +32,11 @@ namespace NINA.Equipment.Interfaces.Mediator {
 
         Task Disconnect();
 
+        /// <summary>
+        /// Cancels a connect attempt that is currently in progress. No-op when nothing is connecting.
+        /// </summary>
+        void CancelConnect() { }
+
         void Broadcast(TInfo deviceInfo);
 
         TInfo GetInfo();

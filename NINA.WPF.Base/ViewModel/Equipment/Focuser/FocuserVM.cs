@@ -30,6 +30,7 @@ using NINA.Core.MyMessageBox;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Equipment;
+using NINA.Equipment.Utility;
 using Nito.AsyncEx;
 using System.Linq;
 using NINA.Core.Utility.Extensions;
@@ -317,7 +318,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 cancelChooseFocuserCts = new CancellationTokenSource();
                 var token = cancelChooseFocuserCts.Token;
                 try {
-                    var connected = await newFocuser.Connect(cancelChooseFocuserCts.Token);
+                    var connected = await newFocuser.ConnectWithCancellation(token);
                     if (connected) {
                         Focuser = newFocuser;
                         token.ThrowIfCancellationRequested();
@@ -384,6 +385,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 progress.Report(new ApplicationStatus { Status = string.Empty });
             }
         }
+
+        public void CancelConnect() => CancelChooseFocuser(null);
 
         private void CancelChooseFocuser(object o) {
             try { cancelChooseFocuserCts?.Cancel(); } catch { }

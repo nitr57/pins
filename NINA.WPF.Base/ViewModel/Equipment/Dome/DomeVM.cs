@@ -33,6 +33,7 @@ using NINA.Core.MyMessageBox;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Equipment;
+using NINA.Equipment.Utility;
 using Nito.AsyncEx;
 using System.Linq;
 using NINA.Core.Enum;
@@ -155,7 +156,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
                 var token = cancelChooseDomeSource.Token;
                 if (dome != null) {
                     try {
-                        var connected = await dome?.Connect(cancelChooseDomeSource.Token);
+                        var connected = await dome.ConnectWithCancellation(token);
                         if (connected) {
                             Dome = dome;
                             token.ThrowIfCancellationRequested();
@@ -227,6 +228,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
                 );
             }
         }
+
+        public void CancelConnect() => CancelChooseDome(null);
 
         private void CancelChooseDome(object o) {
             try { cancelChooseDomeSource?.Cancel(); } catch { }

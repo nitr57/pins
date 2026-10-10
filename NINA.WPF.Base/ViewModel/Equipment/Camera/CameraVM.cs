@@ -30,6 +30,7 @@ using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Model;
+using NINA.Equipment.Utility;
 using NINA.Image.Interfaces;
 using NINA.Profile.Interfaces;
 using NINA.WPF.Base.Interfaces.Mediator;
@@ -354,7 +355,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 var token = _cancelConnectCameraSource.Token;
                 if (cam != null) {
                     try {
-                        var connected = await cam.Connect(_cancelConnectCameraSource.Token);
+                        var connected = await cam.ConnectWithCancellation(token);
 
                         if (connected) {
                             CoolerHistory.Clear();
@@ -508,6 +509,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
         private void BroadcastCameraInfo() {
             cameraMediator.Broadcast(CameraInfo);
         }
+
+        public void CancelConnect() => CancelConnectCamera(null);
 
         private void CancelConnectCamera(object o) {
             try { _cancelConnectCameraSource?.Cancel(); } catch { }

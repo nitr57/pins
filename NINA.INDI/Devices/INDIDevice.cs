@@ -664,107 +664,162 @@ namespace NINA.INDI.Devices
         {
             return Task.Run(async () =>
             {
-                if (Connected)
+                var attempt = new ConnectAttempt();
+                try
                 {
-                    Logger.Warning($"Device '{DeviceName}' is already connected");
-                    return true;
+                    return await ConnectCoreAsync(attempt, ct);
                 }
-
-                Logger.Info($"Connecting to INDI device: {DeviceName}");
-
-                // Call hook to configure connection properties before connecting
-                if (!await OnPreConnect(ct))
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    Logger.Error($"OnPreConnect failed for {DeviceName}");
-                    return false;
+                    AbortCancelledConnect(attempt.ConnectSent);
+                    throw;
                 }
-
-                // Apply optional pre-connect delay (mirrors the Ekos connection-profile setting).
-                // Useful for devices like the SV241 Pro whose ESP32 needs time to finish booting
-                // after the serial port is opened before the CONNECT command is sent.
-                if (_preConnectDelay > TimeSpan.Zero)
-                {
-                    Logger.Info($"[{DeviceName}] Waiting {_preConnectDelay.TotalSeconds}s pre-connect delay");
-                    await Task.Delay(_preConnectDelay, ct);
-                }
-
-                // If the INDI driver is already connected at the server level (e.g. a shared
-                // driver whose other interface was connected first), skip the redundant CONNECT
-                // command.  Sending CONNECT to an already-connected INDI device is well-defined
-                // but many drivers simply ignore it and never send an ack, which would cause the
-                // 30-second SetSwitchValueAsync timeout to fire.
-                // NOTE: use only the CONNECT switch *value* — the property State can be Idle in
-                // a defSwitchVector even when the device is actually connected, so do NOT gate
-                // on State == Ok here.
-                var connPropBefore = GetSwitchProperty("CONNECTION");
-                var alreadyConnectedAtIndi =
-                    connPropBefore?.Switches.FirstOrDefault(s => s.Name == "CONNECT")?.Value == true;
-
-                bool success;
-                if (alreadyConnectedAtIndi)
-                {
-                    Logger.Info($"[{DeviceName}] INDI driver already connected at server level — skipping CONNECT command");
-                    success = true;
-                }
-                else
-                {
-                    success = await SetSwitchValueAsync("CONNECTION", "CONNECT", true, TimeSpan.FromSeconds(30), ct);
-                }
-
-                if (success)
-                {
-                    Logger.Info($"Connected to INDI device: {DeviceName}");
-                    _connectionAttemptFailed = false;  // Clear failure flag on successful connection
-
-                    // Wait for initial property definitions to arrive from the driver
-                    var requiredProps = GetRequiredConnectionProperties();
-                    if (requiredProps != null && requiredProps.Length > 0)
-                    {
-                        Logger.Debug($"Waiting for required properties: {string.Join(", ", requiredProps)}");
-
-                        // Poll for properties with timeout
-                        var propStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                        while (!HasProperties(requiredProps) && propStopwatch.Elapsed < TimeSpan.FromSeconds(20) && !ct.IsCancellationRequested)
-                        {
-                            await CoreUtil.Wait(TimeSpan.FromMilliseconds(200), ct);
-                        }
-                        if (!HasProperties(requiredProps))
-                        {
-                            Logger.Warning($"[{DeviceName}] Required properties did not arrive within 20s: {string.Join(", ", requiredProps)}");
-                        }
-                    }
-
-                    // The CONNECT ack above resolves on the driver's Busy state, which only
-                    // means the driver STARTED connecting. If the attempt then fails
-                    // (Busy → Alert, typical for TCP mounts whose socket connect times out),
-                    // the Alert arrives after the pending operation is gone, so nothing above
-                    // notices — the driver resets CONNECT to Off in that case. Re-read the
-                    // switch as the final verdict instead of trusting the ack. (Limitation:
-                    // if the required-props wait was skipped or instant, a slow Busy → Alert
-                    // failure can still slip through, because our own send optimistically set
-                    // CONNECT=On in the cache.)
-                    if (!alreadyConnectedAtIndi)
-                    {
-                        var connPropAfter = GetSwitchProperty("CONNECTION");
-                        var connectedNow = connPropAfter?.Switches.FirstOrDefault(s => s.Name == "CONNECT")?.Value == true;
-                        if (!connectedNow)
-                        {
-                            Logger.Error($"[{DeviceName}] Driver acknowledged CONNECT but the connection did not complete (CONNECT=Off, state={connPropAfter?.State.ToString() ?? "unknown"})");
-                            _connectionAttemptFailed = true;
-                            success = false;
-                        }
-                    }
-                }
-                else
-                {
-                    Logger.Error($"Connecting to {DeviceName} failed");
-                }
-
-                Logger.Info($"[{DeviceName}] Setting Connected to {success}");
-                Connected = success;
-
-                return success;
             });
+        }
+
+        private sealed class ConnectAttempt
+        {
+            public bool ConnectSent;
+        }
+
+        private async Task<bool> ConnectCoreAsync(ConnectAttempt attempt, CancellationToken ct)
+        {
+            if (Connected)
+            {
+                Logger.Warning($"Device '{DeviceName}' is already connected");
+                return true;
+            }
+
+            Logger.Info($"Connecting to INDI device: {DeviceName}");
+
+            // Call hook to configure connection properties before connecting
+            if (!await OnPreConnect(ct))
+            {
+                Logger.Error($"OnPreConnect failed for {DeviceName}");
+                return false;
+            }
+
+            // Apply optional pre-connect delay (mirrors the Ekos connection-profile setting).
+            // Useful for devices like the SV241 Pro whose ESP32 needs time to finish booting
+            // after the serial port is opened before the CONNECT command is sent.
+            if (_preConnectDelay > TimeSpan.Zero)
+            {
+                Logger.Info($"[{DeviceName}] Waiting {_preConnectDelay.TotalSeconds}s pre-connect delay");
+                await Task.Delay(_preConnectDelay, ct);
+            }
+
+            // If the INDI driver is already connected at the server level (e.g. a shared
+            // driver whose other interface was connected first), skip the redundant CONNECT
+            // command.  Sending CONNECT to an already-connected INDI device is well-defined
+            // but many drivers simply ignore it and never send an ack, which would cause the
+            // 30-second SetSwitchValueAsync timeout to fire.
+            // NOTE: use only the CONNECT switch *value* — the property State can be Idle in
+            // a defSwitchVector even when the device is actually connected, so do NOT gate
+            // on State == Ok here.
+            var connPropBefore = GetSwitchProperty("CONNECTION");
+            var alreadyConnectedAtIndi =
+                connPropBefore?.Switches.FirstOrDefault(s => s.Name == "CONNECT")?.Value == true;
+
+            bool success;
+            if (alreadyConnectedAtIndi)
+            {
+                Logger.Info($"[{DeviceName}] INDI driver already connected at server level — skipping CONNECT command");
+                success = true;
+            }
+            else
+            {
+                attempt.ConnectSent = true;
+                success = await SetSwitchValueAsync("CONNECTION", "CONNECT", true, TimeSpan.FromSeconds(30), ct);
+            }
+
+            if (success)
+            {
+                Logger.Info($"Connected to INDI device: {DeviceName}");
+                _connectionAttemptFailed = false;  // Clear failure flag on successful connection
+
+                // Wait for initial property definitions to arrive from the driver
+                var requiredProps = GetRequiredConnectionProperties();
+                if (requiredProps != null && requiredProps.Length > 0)
+                {
+                    Logger.Debug($"Waiting for required properties: {string.Join(", ", requiredProps)}");
+
+                    // Poll for properties with timeout
+                    var propStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                    while (!HasProperties(requiredProps) && propStopwatch.Elapsed < TimeSpan.FromSeconds(20) && !ct.IsCancellationRequested)
+                    {
+                        await CoreUtil.Wait(TimeSpan.FromMilliseconds(200), ct);
+                    }
+                    if (!HasProperties(requiredProps))
+                    {
+                        Logger.Warning($"[{DeviceName}] Required properties did not arrive within 20s: {string.Join(", ", requiredProps)}");
+                    }
+                }
+
+                // The CONNECT ack above resolves on the driver's Busy state, which only
+                // means the driver STARTED connecting. If the attempt then fails
+                // (Busy → Alert, typical for TCP mounts whose socket connect times out),
+                // the Alert arrives after the pending operation is gone, so nothing above
+                // notices — the driver resets CONNECT to Off in that case. Re-read the
+                // switch as the final verdict instead of trusting the ack. (Limitation:
+                // if the required-props wait was skipped or instant, a slow Busy → Alert
+                // failure can still slip through, because our own send optimistically set
+                // CONNECT=On in the cache.)
+                if (!alreadyConnectedAtIndi)
+                {
+                    var connPropAfter = GetSwitchProperty("CONNECTION");
+                    var connectedNow = connPropAfter?.Switches.FirstOrDefault(s => s.Name == "CONNECT")?.Value == true;
+                    if (!connectedNow)
+                    {
+                        Logger.Error($"[{DeviceName}] Driver acknowledged CONNECT but the connection did not complete (CONNECT=Off, state={connPropAfter?.State.ToString() ?? "unknown"})");
+                        _connectionAttemptFailed = true;
+                        success = false;
+                    }
+                }
+            }
+            else
+            {
+                Logger.Error($"Connecting to {DeviceName} failed");
+            }
+
+            // SetSwitchValueAsync swallows cancellation and reports it as a plain failure. Surface
+            // it as cancellation instead so the caller can tell the two apart and so a CONNECT that
+            // was already sent gets withdrawn (see AbortCancelledConnect).
+            ct.ThrowIfCancellationRequested();
+
+            Logger.Info($"[{DeviceName}] Setting Connected to {success}");
+            Connected = success;
+
+            return success;
+        }
+
+        /// <summary>
+        /// Cleans up after a connect attempt was cancelled. If CONNECT already went out, the driver
+        /// keeps connecting on its own (TCP/serial handshake), which would leave it connected at the
+        /// INDI level while PINS considers it disconnected - so withdraw it with DISCONNECT. When the
+        /// driver was already connected at server level (shared driver), nothing was sent and the
+        /// other user of the driver must not be disconnected.
+        /// </summary>
+        private void AbortCancelledConnect(bool connectSent)
+        {
+            _connected = false;
+            // Any later Disconnect() must not send a second DISCONNECT (or one to a shared driver).
+            _connectionAttemptFailed = true;
+
+            if (!connectSent)
+            {
+                Logger.Info($"[{DeviceName}] Connect cancelled before CONNECT was sent");
+                return;
+            }
+
+            Logger.Info($"[{DeviceName}] Connect cancelled after CONNECT was sent - sending DISCONNECT so the driver does not finish connecting in the background");
+            try
+            {
+                SetSwitchValue("CONNECTION", "DISCONNECT", true);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warning($"[{DeviceName}] Failed to send DISCONNECT after cancelled connect: {ex.Message}");
+            }
         }
 
         public async Task<bool> DisconnectAsync()

@@ -28,6 +28,11 @@ namespace NINA.Equipment.Interfaces.ViewModel {
 
         Task Disconnect();
 
+        /// <summary>
+        /// Cancels a connect attempt that is currently in progress. No-op when nothing is connecting.
+        /// </summary>
+        void CancelConnect() { }
+
         TInfo GetDeviceInfo();
 
         string Action(string actionName, string actionParameters);

@@ -29,6 +29,7 @@ using NINA.Core.MyMessageBox;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Equipment;
+using NINA.Equipment.Utility;
 using Nito.AsyncEx;
 using System.Linq;
 using NINA.Core.Utility.Extensions;
@@ -109,7 +110,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.WeatherData {
                 var token = _cancelChooseWeatherDataSource.Token;
                 if (weatherdev != null) {
                     try {
-                        var connected = await weatherdev?.Connect(_cancelChooseWeatherDataSource.Token);                        
+                        var connected = await weatherdev.ConnectWithCancellation(token);
                         if (connected) {
                             WeatherData = weatherdev;
                             token.ThrowIfCancellationRequested();
@@ -180,6 +181,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.WeatherData {
                 );
             }
         }
+
+        public void CancelConnect() => CancelChooseWeatherData(null);
 
         private void CancelChooseWeatherData(object o) {
             try { _cancelChooseWeatherDataSource?.Cancel(); } catch { }

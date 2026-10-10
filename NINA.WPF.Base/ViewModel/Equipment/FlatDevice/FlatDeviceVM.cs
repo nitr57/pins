@@ -27,6 +27,7 @@ using NINA.Equipment.Exceptions;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Interfaces.ViewModel;
+using NINA.Equipment.Utility;
 using NINA.Profile;
 using NINA.Profile.Interfaces;
 using NINA.WPF.Base.Interfaces.Mediator;
@@ -203,7 +204,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FlatDevice {
                 connectFlatDeviceCts = new CancellationTokenSource();
                 var token = connectFlatDeviceCts.Token;
                 try {
-                    var connected = await newDevice.Connect(connectFlatDeviceCts.Token);
+                    var connected = await newDevice.ConnectWithCancellation(token);
                     if (connected) {
                         this.FlatDevice = newDevice;
                         token.ThrowIfCancellationRequested();
@@ -272,6 +273,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FlatDevice {
                 );
             }
         }
+
+        public void CancelConnect() => CancelConnect(null);
 
         [RelayCommand]
         private void CancelConnect(object o) {

@@ -226,6 +226,14 @@ namespace NINA.Equipment.Equipment {
                     } else {
                         Logger.Error($"Could not connect to {Name}");
                     }
+                } catch (OperationCanceledException) when (token.IsCancellationRequested) {
+                    // A user cancel is not a driver error: let the caller see it as cancellation.
+                    // The INDI device already withdrew its CONNECT (INDIDevice.AbortCancelledConnect).
+                    Logger.Info($"{Name} - Connect cancelled");
+                    try {
+                        Disconnect();
+                    } catch { }
+                    throw;
                 } catch (Exception ex) {
                     Logger.Error(ex);
                     try {

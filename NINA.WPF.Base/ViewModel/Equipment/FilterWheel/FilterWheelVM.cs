@@ -26,6 +26,7 @@ using NINA.Equipment.Equipment.MySafetyMonitor;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Interfaces.ViewModel;
+using NINA.Equipment.Utility;
 using NINA.Profile.Interfaces;
 using NINA.WPF.Base.Interfaces.Mediator;
 using System;
@@ -275,7 +276,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FilterWheel {
                 var token = _cancelChooseFilterWheelSource.Token;
                 if (fW != null) {
                     try {
-                        var connected = await fW?.Connect(_cancelChooseFilterWheelSource.Token);
+                        var connected = await fW.ConnectWithCancellation(token);
                         if (connected) {
                             this.FW = fW;
                             token.ThrowIfCancellationRequested();
@@ -345,6 +346,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FilterWheel {
                 );
             }
         }
+
+        public void CancelConnect() => CancelChooseFW(null);
 
         private void CancelChooseFW(object o) {
             try { _cancelChooseFilterWheelSource?.Cancel(); } catch { }

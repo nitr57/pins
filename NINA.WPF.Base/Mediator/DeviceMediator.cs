@@ -130,6 +130,13 @@ namespace NINA.WPF.Base.Mediator {
         }
 
         /// <summary>
+        /// Cancel a connect attempt that is currently in progress
+        /// </summary>
+        public void CancelConnect() {
+            handler?.CancelConnect();
+        }
+
+        /// <summary>
         /// Broadcast device info updates to all consumers
         /// </summary>
         /// <param name="deviceInfo"></param>

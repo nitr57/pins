@@ -30,6 +30,7 @@ using NINA.Core.MyMessageBox;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Equipment;
 using NINA.Equipment.Interfaces;
+using NINA.Equipment.Utility;
 using Nito.AsyncEx;
 using System.Linq;
 using NINA.Core.Utility.Extensions;
@@ -373,7 +374,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
                 var token = _connectRotatorCts.Token;
                 if (rotator != null) {
                     try {
-                        var connected = await rotator?.Connect(_connectRotatorCts.Token);
+                        var connected = await rotator.ConnectWithCancellation(token);
                         if (connected) {
                             this.Rotator = rotator;
                             token.ThrowIfCancellationRequested();
@@ -443,6 +444,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
                 );
             }
         }
+
+        public void CancelConnect() => CancelConnectRotator(null);
 
         private void CancelConnectRotator(object o) {
             try { _connectRotatorCts?.Cancel(); } catch { }

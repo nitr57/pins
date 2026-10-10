@@ -146,6 +146,34 @@ namespace NINA.Test.Mediator {
             registerSecondHandler.Should().Throw<Exception>().WithMessage("Handler already registered!");
         }
 
+        /// <summary>
+        /// Verifies that CancelConnect is forwarded to the registered handler.
+        /// The API layer can only reach an in-flight connect through the mediator, so this is the cancel path for headless clients.
+        /// </summary>
+        [Test]
+        public void CancelConnect_IsForwardedToRegisteredHandler() {
+            Mock<IFocuserVM> handler = CreateFocuserHandler(new FocuserInfo());
+            FocuserMediator mediator = new FocuserMediator();
+            mediator.RegisterHandler(handler.Object);
+
+            mediator.CancelConnect();
+
+            handler.Verify(x => x.CancelConnect(), Times.Once);
+        }
+
+        /// <summary>
+        /// Verifies that CancelConnect without a registered handler is a no-op instead of throwing.
+        /// API requests can arrive before equipment view models finished initialization.
+        /// </summary>
+        [Test]
+        public void CancelConnect_WithoutHandler_DoesNotThrow() {
+            FocuserMediator mediator = new FocuserMediator();
+
+            Action cancel = () => mediator.CancelConnect();
+
+            cancel.Should().NotThrow();
+        }
+
         private static Mock<IFocuserVM> CreateFocuserHandler(FocuserInfo info) {
             Mock<IFocuserVM> handler = new Mock<IFocuserVM>();
             handler.Setup(x => x.GetDeviceInfo()).Returns(info);

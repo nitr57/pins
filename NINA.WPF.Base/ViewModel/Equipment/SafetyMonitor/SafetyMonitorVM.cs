@@ -31,6 +31,7 @@ using NINA.Core.MyMessageBox;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Equipment;
 using NINA.Equipment.Interfaces;
+using NINA.Equipment.Utility;
 using Nito.AsyncEx;
 using NINA.Core.Utility.Extensions;
 
@@ -146,7 +147,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.SafetyMonitor {
                 var token = connectCts.Token;
                 if (sm != null) {
                     try {
-                        var connected = await sm?.Connect(connectCts.Token);
+                        var connected = await sm.ConnectWithCancellation(token);
                         if (connected) {
                             this.SafetyMonitor = sm;
                             token.ThrowIfCancellationRequested();
@@ -205,6 +206,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.SafetyMonitor {
                 );
             }
         }
+
+        public void CancelConnect() => CancelConnect(null);
 
         private void CancelConnect(object o) {
             try { connectCts?.Cancel(); } catch { }

@@ -34,6 +34,7 @@ using NINA.Core.MyMessageBox;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Equipment;
+using NINA.Equipment.Utility;
 using NINA.Core.Utility.Extensions;
 using CommunityToolkit.Mvvm.Input;
 using System.Xml.Serialization;
@@ -403,7 +404,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Telescope {
                 var token = _cancelChooseTelescopeSource.Token;
                 if (telescope != null) {
                     try {
-                        var connected = await telescope?.Connect(_cancelChooseTelescopeSource.Token);
+                        var connected = await telescope.ConnectWithCancellation(token);
                         if (connected) {
                             Telescope = telescope;
                             token.ThrowIfCancellationRequested();
@@ -703,6 +704,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Telescope {
             telescopeValues.Add(nameof(TelescopeInfo.UTCDate), _telescope?.UTCDate ?? null);
             return telescopeValues;
         }
+
+        public void CancelConnect() => CancelChooseTelescope(null);
 
         private void CancelChooseTelescope(object o) {
             try { _cancelChooseTelescopeSource?.Cancel(); } catch { }

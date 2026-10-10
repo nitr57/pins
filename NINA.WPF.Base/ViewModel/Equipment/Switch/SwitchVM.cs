@@ -33,6 +33,7 @@ using NINA.WPF.Base.Interfaces.Mediator;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Equipment;
 using NINA.Equipment.Interfaces.ViewModel;
+using NINA.Equipment.Utility;
 using NINA.Core.Utility.Extensions;
 using CommunityToolkit.Mvvm.ComponentModel;
 
@@ -169,7 +170,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
             switchMediator.Broadcast(GetDeviceInfo());
         }       
 
-        private void CancelConnect() {
+        public void CancelConnect() {
             try { connectSwitchCts?.Cancel(); } catch { }
         }
 
@@ -216,7 +217,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
                 if (switchHub != null) {
                     try {
                         var token = connectSwitchCts.Token;
-                        var connected = await switchHub?.Connect(token);
+                        var connected = await switchHub.ConnectWithCancellation(token);
                         if (connected) {
                             this.SwitchHub = switchHub;
                             token.ThrowIfCancellationRequested();
