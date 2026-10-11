@@ -32,8 +32,7 @@ public class ToolsGuardAndJobTests {
         new object[] { "start_guiding", "{}" },
         new object[] { "stop_guiding", "{}" },
         new object[] { "set_switch", """{"index":0,"value":1}""" },
-        new object[] { "add_target", """{"name":"M 42","ra":5.5,"dec":-5.4,"exposures":[{"exposure_seconds":60,"count":10}]}""" },
-        new object[] { "save_sequence", """{"name":"x"}""" }
+        new object[] { "add_target", """{"name":"M 42","ra":5.5,"dec":-5.4,"exposures":[{"exposure_seconds":60,"count":10}]}""" }
     ];
 
     private static readonly object[] StrictCalls = [
@@ -256,7 +255,7 @@ public class ToolsGuardAndJobTests {
 
         using var request = new CancellationTokenSource(TimeSpan.FromMilliseconds(50));
 
-        var result = await catalog.CallAsync("slew_mount", """{"ra":5,"dec":5,"wait_seconds":60}""", request.Token);
+        var result = await catalog.CallAsync("slew_mount", """{"ra":5,"dec":5,"wait_seconds":50}""", request.Token);
 
         Assert.That(ToolsTestCatalog.Job(result)["state"]!.GetValue<string>(), Is.EqualTo("running"));
 
@@ -337,18 +336,62 @@ public class ToolsGuardAndJobTests {
     }
 
     [Test]
-    public async Task Job_CaptureWithFilterRefusedWhileFilterWheelBusy() {
+    public async Task Job_CaptureRefusedWhileFilterWheelOrFocuserBusy() {
         catalog.Observatory.Block("ChangeFilter");
 
         await catalog.CallAsync("change_filter", """{"name":"Ha","wait_seconds":0}""");
 
         Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("capture_image", """{"exposure_seconds":1,"filter":"OIII"}"""));
-
-        var withoutFilter = await catalog.CallAsync("capture_image", """{"exposure_seconds":1}""");
-
-        Assert.That(withoutFilter.IsError, Is.False);
+        Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("capture_image", """{"exposure_seconds":1}"""));
 
         catalog.Observatory.Release("ChangeFilter");
+        catalog.Observatory.Block("MoveFocuser");
+
+        await WaitUntilNoRunningJobs();
+        await catalog.CallAsync("move_focuser", """{"position":100,"wait_seconds":0}""");
+
+        Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("capture_image", """{"exposure_seconds":1}"""));
+
+        catalog.Observatory.Release("MoveFocuser");
+    }
+
+    [Test]
+    public async Task StartSequence_RefusedWhileHardwareJobRuns() {
+        catalog.Observatory.Block("Slew");
+
+        await catalog.CallAsync("slew_mount", """{"ra":5,"dec":5,"wait_seconds":0}""");
+
+        var refused = await catalog.CallAsync("start_sequence", "{}");
+
+        Assert.That(refused.IsError, Is.True);
+        Assert.That(refused.Text, Does.Contain("cancel_job"));
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("StartSequence"));
+
+        catalog.Observatory.Release("Slew");
+        await WaitUntilNoRunningJobs();
+
+        var started = await catalog.CallAsync("start_sequence", "{}");
+
+        Assert.That(started.IsError, Is.False);
+    }
+
+    [Test]
+    public async Task StartSequence_AllowedWhileOnlyCoolingRuns() {
+        catalog.Observatory.Block("CoolCamera");
+
+        await catalog.CallAsync("cool_camera", """{"target_celsius":-10,"wait_seconds":0}""");
+
+        var started = await catalog.CallAsync("start_sequence", "{}");
+
+        Assert.That(started.IsError, Is.False);
+
+        catalog.Observatory.Release("CoolCamera");
+    }
+
+    private async Task WaitUntilNoRunningJobs() {
+        for (var attempt = 0; attempt < 200 && catalog.Jobs.List().Any(job => job.State == JobState.Running); attempt++) {
+            await Task.Delay(10);
+        }
     }
 
     [Test]
@@ -376,8 +419,8 @@ public class ToolsGuardAndJobTests {
     public void JobPayload_ReadWait_DefaultsAndBounds() {
         Assert.That(JobPayload.ReadWait(ToolArguments.Empty, 30), Is.EqualTo(TimeSpan.FromSeconds(30)));
         Assert.That(JobPayload.ReadWait(Args("""{"wait_seconds":0}"""), 30), Is.EqualTo(TimeSpan.Zero));
-        Assert.That(JobPayload.ReadWait(Args("""{"wait_seconds":120}"""), 30), Is.EqualTo(TimeSpan.FromSeconds(120)));
-        Assert.Throws<ToolArgumentException>(() => JobPayload.ReadWait(Args("""{"wait_seconds":120.5}"""), 30));
+        Assert.That(JobPayload.ReadWait(Args("""{"wait_seconds":55}"""), 30), Is.EqualTo(TimeSpan.FromSeconds(55)));
+        Assert.Throws<ToolArgumentException>(() => JobPayload.ReadWait(Args("""{"wait_seconds":55.5}"""), 30));
         Assert.Throws<ToolArgumentException>(() => JobPayload.ReadWait(Args("""{"wait_seconds":-0.1}"""), 30));
     }
 

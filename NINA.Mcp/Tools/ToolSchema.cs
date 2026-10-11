@@ -241,6 +241,28 @@ internal sealed class ArgumentSpec {
             .ToArray());
     }
 
+    private bool IsCoordinate => Type is ArgumentType.RightAscension or ArgumentType.Declination;
+
+    private JsonObject CoordinateNumberSchema() {
+        var number = new JsonObject {
+            ["type"] = "number"
+        };
+
+        AddRange(number);
+
+        return number;
+    }
+
+    private void AddRange(JsonObject json) {
+        if (Minimum is not null) {
+            json["minimum"] = Minimum.Value;
+        }
+
+        if (Maximum is not null) {
+            json[ExclusiveMaximum ? "exclusiveMaximum" : "maximum"] = Maximum.Value;
+        }
+    }
+
     public JsonObject ToJson() {
         var json = new JsonObject();
 
@@ -268,7 +290,12 @@ internal sealed class ArgumentSpec {
 
             case ArgumentType.RightAscension:
             case ArgumentType.Declination:
-                json["type"] = new JsonArray("number", "string");
+                // anyOf instead of a type array: several MCP clients reject "type": [..]. Ranges apply to the number form.
+                json["anyOf"] = new JsonArray(CoordinateNumberSchema(), new JsonObject {
+                    ["type"] = "string",
+                    ["minLength"] = 1,
+                    ["maxLength"] = 40
+                });
                 break;
 
             case ArgumentType.ObjectArray:
@@ -278,12 +305,8 @@ internal sealed class ArgumentSpec {
 
         json["description"] = Description;
 
-        if (Minimum is not null) {
-            json["minimum"] = Minimum.Value;
-        }
-
-        if (Maximum is not null) {
-            json[ExclusiveMaximum ? "exclusiveMaximum" : "maximum"] = Maximum.Value;
+        if (!IsCoordinate) {
+            AddRange(json);
         }
 
         if (Type == ArgumentType.String) {

@@ -95,7 +95,7 @@ public class ToolsArgumentTests {
     [TestCase("connect_device", """{"device":"telescope"}""", "'device' must be one of: camera, mount, focuser, filter_wheel")]
     [TestCase("get_job", """{"job_id":"job-1","wait_seconds":121}""", "'wait_seconds'")]
     [TestCase("get_job", """{"job_id":"job-1","wait_seconds":-1}""", "'wait_seconds'")]
-    [TestCase("slew_mount", """{"ra":5,"dec":0,"wait_seconds":500}""", "'wait_seconds' must be at least 0 and at most 120")]
+    [TestCase("slew_mount", """{"ra":5,"dec":0,"wait_seconds":500}""", "'wait_seconds' must be at least 0 and at most 55")]
     [TestCase("start_guiding", """{"force_calibration":1}""", "'force_calibration' must be a boolean")]
     public void InvalidValue_IsRejected(string tool, string json, string expected) {
         Assert.That(catalog.ArgumentError(tool, json), Does.Contain(expected));

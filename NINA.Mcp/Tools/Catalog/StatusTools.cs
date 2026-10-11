@@ -17,8 +17,9 @@ internal sealed class GetStatusTool : ObservatoryTool {
     public override string Description =>
         "Snapshot of the whole observatory: every device slot (camera, mount, focuser, filter_wheel, guider, rotator, "
         + "flat_device, dome, switch, weather, safety_monitor) with connected flag, device name and key readings "
-        + "(e.g. camera temperature in °C and cooler power, mount RA in hours / Dec in degrees, altitude, tracking, park "
-        + "state, focuser position in steps, current filter, guider state and RMS in arcsec), whether the advanced sequence "
+        + "(e.g. camera temperature in °C and cooler power, mount RA in hours / Dec in degrees (J2000; the mount's native "
+        + "epoch values are in raHoursMount/decDegreesMount), altitude, tracking, park state, focuser position in steps, "
+        + "current filter, guider state (e.g. Guiding, Looping, Calibrating, Stopped) and RMS in arcsec), whether the advanced sequence "
         + "is running and which items run, and all running background jobs. Fast and side-effect free; it does not wait "
         + "for hardware. Call it first in every session, before acting on hardware, and to monitor progress.";
 

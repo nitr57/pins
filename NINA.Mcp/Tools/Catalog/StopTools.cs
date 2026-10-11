@@ -19,11 +19,13 @@ internal sealed class StopAllTool : ObservatoryTool {
 
     public override string Description =>
         "Emergency stop. In this order: stops the advanced sequence (so it cannot start its next item), cancels every "
-        + "background job, aborts the running camera exposure, stops a mount slew and halts the focuser. Every step runs even "
-        + "if an earlier one fails; the result lists each step. It does NOT park the mount, stop tracking, stop guiding, warm "
-        + "the camera or disconnect anything. Safe to repeat. Use it whenever the user says stop/abort or something looks "
-        + "wrong (unexpected movement, collision risk, clouds/rain). This tool is never refused: it is the one changing tool "
-        + "that stays available in read-only mode, and it needs no force while a sequence runs. Afterwards check get_status.";
+        + "background job, aborts the running camera exposure, stops the mount if it is slewing and halts a focuser move "
+        + "started over MCP. Every step runs even if an earlier one fails; the result lists each step. It does NOT park the "
+        + "mount, stop guiding, warm the camera or disconnect anything; an idle mount is left alone (note that aborting a "
+        + "slew stops tracking on some mount drivers). Safe to repeat. Use it whenever the user says stop/abort or something "
+        + "looks wrong (unexpected movement, collision risk, clouds/rain). This tool is never refused: together with "
+        + "cancel_job it stays available in read-only mode, and it needs no force while a sequence runs. Afterwards check "
+        + "get_status.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Stop;
 

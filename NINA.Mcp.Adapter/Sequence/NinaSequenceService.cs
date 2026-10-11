@@ -238,9 +238,11 @@ public sealed partial class NinaSequenceService {
             }
 
             if (runTask.IsCompleted) {
-                return OperationResult.Ok(
-                    "The sequence started and ended immediately. Either nothing was left to run (all instructions "
-                    + "finished or skipped; use reset_sequence to run it again) or it failed to start (see the pins log).");
+                // NINA's async command catches and logs start failures, so a crashed start also lands here.
+                return OperationResult.Fail(
+                    "The sequence did not keep running: it ended immediately. Either nothing was left to run (all "
+                    + "instructions finished or skipped; use reset_sequence to run it again) or it failed to start (see "
+                    + "the pins log and get_sequence for failed items).");
             }
 
             if (DateTime.UtcNow >= deadline) {

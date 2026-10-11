@@ -55,6 +55,7 @@ When a task touches "UI", confirm whether it means the WPF layer (usually not th
 - [`NINA.GuideEngine/ARCHITECTURE.md`](NINA.GuideEngine/ARCHITECTURE.md)
 - [`NINA.Image/ARCHITECTURE.md`](NINA.Image/ARCHITECTURE.md)
 - [`NINA.INDI/ARCHITECTURE.md`](NINA.INDI/ARCHITECTURE.md)
+- [`NINA.Mcp/ARCHITECTURE.md`](NINA.Mcp/ARCHITECTURE.md)
 - [`NINA.MGEN/ARCHITECTURE.md`](NINA.MGEN/ARCHITECTURE.md)
 - [`NINA.Platesolving/ARCHITECTURE.md`](NINA.Platesolving/ARCHITECTURE.md)
 - [`NINA.Plugin/ARCHITECTURE.md`](NINA.Plugin/ARCHITECTURE.md)
@@ -105,6 +106,8 @@ When a task touches "UI", confirm whether it means the WPF layer (usually not th
   pins internal guider engine: PHD2-port star finding, calibration, guide algorithms, guiding loop, coach and incident recorder, with no NINA dependencies; tested by `NINA.GuideEngine.Test`. (Not present in upstream NINA.)
 - `NINA.Platesolving`
   Plate-solver integrations and orchestration.
+- `NINA.Mcp`, `NINA.Mcp.Adapter`
+  pins MCP server for AI clients such as Claude Code: dependency-free protocol, jobs and tool catalog in `NINA.Mcp` (tested by `NINA.Mcp.Test`), NINA bindings in `NINA.Mcp.Adapter`, mapped at `/mcp` in `NINA/Program.cs`. (Not present in upstream NINA.)
 
 ### Shared UI Infrastructure
 

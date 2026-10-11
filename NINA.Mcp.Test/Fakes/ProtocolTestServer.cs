@@ -98,8 +98,8 @@ internal sealed class ProtocolTestServer : IAsyncDisposable {
     }
 
     /// <summary>Runs initialize + notifications/initialized and returns the session id.</summary>
-    public async Task<string> InitializeAsync(string? token = null) {
-        var request = CreatePost(InitializeBody(LatestVersion));
+    public async Task<string> InitializeAsync(string? token = null, string? protocolVersion = null) {
+        var request = CreatePost(InitializeBody(protocolVersion ?? LatestVersion));
 
         if (token is not null) {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);

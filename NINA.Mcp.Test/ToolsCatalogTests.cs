@@ -59,7 +59,9 @@ public class ToolsCatalogTests {
 
     private static readonly string[] StopTools = ["stop_all", "cancel_job", "stop_sequence", "stop_guiding"];
 
-    private static readonly string[] ChangeTools = ["load_sequence", "add_target", "clear_targets", "save_sequence", "reset_sequence"];
+    private static readonly string[] ChangeTools = ["add_target", "save_sequence"];
+
+    private static readonly string[] DestructiveChangeTools = ["load_sequence", "clear_targets", "reset_sequence"];
 
     private static readonly string[] JobTools = [
         "connect_device",
@@ -157,6 +159,8 @@ public class ToolsCatalogTests {
             Assert.That(annotations, Is.EqualTo(ToolAnnotations.Stop));
         } else if (ChangeTools.Contains(name)) {
             Assert.That(annotations, Is.EqualTo(ToolAnnotations.Change));
+        } else if (DestructiveChangeTools.Contains(name)) {
+            Assert.That(annotations, Is.EqualTo(ToolAnnotations.ChangeDestructive));
         } else {
             Assert.That(annotations, Is.EqualTo(ToolAnnotations.Hardware));
         }
@@ -179,7 +183,7 @@ public class ToolsCatalogTests {
 
         if (expected) {
             Assert.That(properties["wait_seconds"]!["minimum"]!.GetValue<double>(), Is.EqualTo(0));
-            Assert.That(properties["wait_seconds"]!["maximum"]!.GetValue<double>(), Is.EqualTo(120));
+            Assert.That(properties["wait_seconds"]!["maximum"]!.GetValue<double>(), Is.EqualTo(55));
         }
     }
 
@@ -194,7 +198,7 @@ public class ToolsCatalogTests {
     [Test]
     public void Guards_MatchTheSpec() {
         string[] strict = ["load_sequence", "clear_targets", "start_sequence", "reset_sequence"];
-        string[] none = [.. QueryTools, "stop_all", "cancel_job", "stop_sequence"];
+        string[] none = [.. QueryTools, "stop_all", "cancel_job", "stop_sequence", "save_sequence"];
 
         foreach (var tool in catalog.Tools.Cast<ObservatoryTool>()) {
             var expected = strict.Contains(tool.Name)
@@ -219,10 +223,15 @@ public class ToolsCatalogTests {
     public void CoordinateArguments_AcceptNumberOrString() {
         var slew = catalog.Tool("slew_mount").InputSchema["properties"]!;
 
-        Assert.That(slew["ra"]!["type"]!.ToJsonString(), Is.EqualTo("""["number","string"]"""));
-        Assert.That(slew["ra"]!["exclusiveMaximum"]!.GetValue<double>(), Is.EqualTo(24));
-        Assert.That(slew["dec"]!["minimum"]!.GetValue<double>(), Is.EqualTo(-90));
-        Assert.That(slew["dec"]!["maximum"]!.GetValue<double>(), Is.EqualTo(90));
+        var ra = slew["ra"]!["anyOf"]!.AsArray();
+        var dec = slew["dec"]!["anyOf"]!.AsArray();
+
+        Assert.That(slew["ra"]!["type"], Is.Null, "no type arrays: several MCP clients reject them");
+        Assert.That(ra.Select(option => option!["type"]!.GetValue<string>()), Is.EqualTo(new[] { "number", "string" }));
+        Assert.That(ra[0]!["exclusiveMaximum"]!.GetValue<double>(), Is.EqualTo(24));
+        Assert.That(dec[0]!["minimum"]!.GetValue<double>(), Is.EqualTo(-90));
+        Assert.That(dec[0]!["maximum"]!.GetValue<double>(), Is.EqualTo(90));
+        Assert.That(dec[1]!["maxLength"]!.GetValue<int>(), Is.EqualTo(40));
     }
 
     [Test]
@@ -302,7 +311,17 @@ public class ToolsCatalogTests {
 
             Assert.That(Regex.IsMatch(name, "^[a-z][a-z0-9]*(_[a-z0-9]+)*$"), Is.True, where);
             Assert.That(property["description"]?.GetValue<string>(), Is.Not.Null.And.Not.Empty, where);
-            Assert.That(property.ContainsKey("type"), Is.True, where);
+            Assert.That(property.ContainsKey("type") || property["anyOf"] is JsonArray, Is.True, where);
+
+            if (property["anyOf"] is JsonArray alternatives) {
+                foreach (var alternative in alternatives) {
+                    Assert.That(alternative!["type"]!.GetValueKind(), Is.EqualTo(System.Text.Json.JsonValueKind.String), where);
+                }
+
+                continue;
+            }
+
+            Assert.That(property["type"]!.GetValueKind(), Is.EqualTo(System.Text.Json.JsonValueKind.String), $"{where}: no type arrays");
 
             var minimum = Number(property["minimum"]);
             var maximum = Number(property["maximum"]) ?? Number(property["exclusiveMaximum"]);

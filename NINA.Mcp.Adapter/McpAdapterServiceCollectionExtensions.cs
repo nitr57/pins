@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NINA.Mcp.Adapter.Sequence;
 using NINA.Mcp.Observatory;
 
@@ -22,6 +23,7 @@ public static class McpAdapterServiceCollectionExtensions {
         }
 
         services.AddPinsMcp(options);
+        services.AddSingleton<ILoggerProvider, NinaLoggerProvider>();
         services.AddSingleton<NinaSequenceService>();
         services.AddSingleton<IPinsObservatory, NinaObservatory>();
 

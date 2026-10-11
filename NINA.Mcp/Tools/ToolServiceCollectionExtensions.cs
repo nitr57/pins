@@ -13,7 +13,8 @@ public static class ToolServiceCollectionExtensions {
     /// and the server <see cref="McpServerInstructions"/>. Requires an <c>IPinsObservatory</c> registration.
     /// </summary>
     public static IServiceCollection AddPinsMcpTools(this IServiceCollection services) {
-        services.AddSingleton(new McpServerInstructions(PinsInstructions.Text));
+        services.AddSingleton(provider => new McpServerInstructions(
+            PinsInstructions.Build(provider.GetService<McpServerOptions>()?.ReadOnly ?? false)));
 
         // Status and queries.
         Add(services, observatory => new GetStatusTool(observatory));

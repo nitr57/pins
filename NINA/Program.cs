@@ -129,6 +129,10 @@ app.MapHub<ProgressHub>("/hubs/progress");
 app.MapPinsMcp();
 if (mcpOptions.Enabled) {
     Logger.Info($"MCP endpoint enabled at {mcpOptions.Path} (token {(mcpOptions.BearerToken is null ? "off" : "on")}, read-only {(mcpOptions.ReadOnly ? "on" : "off")})");
+
+    if (mcpOptions.BearerToken is null && !mcpOptions.ReadOnly) {
+        Logger.Warning("MCP endpoint allows hardware control without PINS_MCP_TOKEN: anyone on the network can move the telescope");
+    }
 }
 
 // Set up the notification broadcaster to use SignalR

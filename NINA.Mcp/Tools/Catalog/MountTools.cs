@@ -24,8 +24,9 @@ internal sealed class SlewMountTool : ObservatoryTool {
     public override string Description =>
         "Slews the mount to J2000 coordinates (plain goto: no plate solving or centering; add_target with slew_and_center "
         + "does that in a sequence). The mount must be connected and unparked (unpark_mount). Moves the telescope: make sure "
-        + "the user expects it. Runs as a background job holding the mount; stop it with cancel_job or stop_all. Afterwards "
-        + "check the position with get_status.";
+        + "the user expects it. If guiding is active, stop_guiding first (the guide star is lost during the slew). Runs as a "
+        + "background job holding the mount; stop it with cancel_job or stop_all. Afterwards check the position with "
+        + "get_status.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -94,8 +95,9 @@ internal sealed class MountMotionTool : ObservatoryTool {
             observatory,
             "park_mount",
             "Park mount",
-            "Moves the mount to its park position and stops tracking (end of session, bad weather). Moves the telescope. "
-            + "Runs as a background job holding the mount. Use unpark_mount before the next slew.",
+            "Moves the mount to its park position and stops tracking (end of session, bad weather). Moves the telescope; "
+            + "stop_guiding first if guiding is active. Runs as a background job holding the mount. Use unpark_mount before "
+            + "the next slew.",
             "Park mount",
             (target, token) => target.ParkAsync(token));
     }

@@ -13,8 +13,11 @@ namespace NINA.Mcp.Tools;
 /// </summary>
 public static class JobPayload {
 
-    /// <summary>Upper bound of every <c>wait_seconds</c> argument.</summary>
-    public const double MaxWaitSeconds = 120;
+    /// <summary>
+    /// Upper bound of every <c>wait_seconds</c> argument. Stays below the 60 s request timeout many MCP clients use
+    /// (e.g. the TypeScript SDK default), so a waiting call returns its job id before the client gives up.
+    /// </summary>
+    public const double MaxWaitSeconds = 55;
 
     /// <summary>Default <c>wait_seconds</c> of tools that start a job.</summary>
     public const double DefaultStartWaitSeconds = 30;

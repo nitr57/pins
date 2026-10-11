@@ -27,8 +27,23 @@ public class McpServerOptionsTests {
         Assert.That(options.Enabled, Is.True);
         Assert.That(options.BearerToken, Is.Null);
         Assert.That(options.AllowedOrigins, Is.Empty);
-        Assert.That(options.ReadOnly, Is.False);
+        Assert.That(options.ReadOnly, Is.True, "without a token the endpoint is read-only by default");
         Assert.That(options.ServerVersion, Is.EqualTo("1.2.3"));
+    }
+
+    [Test]
+    public void FromEnvironment_TokenSet_FullAccessByDefault() {
+        var options = McpServerOptions.FromEnvironment("1", Variables(("PINS_MCP_TOKEN", "secret")));
+
+        Assert.That(options.ReadOnly, Is.False);
+    }
+
+    [TestCase("1", true)]
+    [TestCase("0", false)]
+    public void FromEnvironment_TokenSet_ExplicitReadOnlyWins(string value, bool expected) {
+        var options = McpServerOptions.FromEnvironment("1", Variables(("PINS_MCP_TOKEN", "secret"), ("PINS_MCP_READONLY", value)));
+
+        Assert.That(options.ReadOnly, Is.EqualTo(expected));
     }
 
     [TestCase("0", false)]
@@ -50,8 +65,8 @@ public class McpServerOptionsTests {
     [TestCase("1", true)]
     [TestCase("TRUE", true)]
     [TestCase("0", false)]
-    [TestCase("", false)]
-    [TestCase("garbage", false)]
+    [TestCase("", true)]
+    [TestCase("garbage", true)]
     public void FromEnvironment_ReadOnly(string value, bool expected) {
         var options = McpServerOptions.FromEnvironment("1", Variables(("PINS_MCP_READONLY", value)));
 

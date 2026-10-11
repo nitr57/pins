@@ -27,10 +27,9 @@ internal abstract class DeviceConnectionTool : ObservatoryTool {
             ? new JobRequest("connect", $"Connect {name}", name)
             : new JobRequest("disconnect", $"Disconnect {name}", name);
 
-        if (!Connect && kind == DeviceKind.Camera) {
-            // Cooling and warming jobs hold "camera_cooler", not "camera"; pulling the camera mid-ramp must not happen silently.
+        if (!Connect) {
             request = request with {
-                RequiresIdle = ["camera_cooler"]
+                RequiresIdle = DisconnectRequiresIdle(kind)
             };
         }
 
@@ -46,6 +45,20 @@ internal abstract class DeviceConnectionTool : ObservatoryTool {
                 return JobPayload.ToOutcome(result);
             },
             cancellationToken);
+    }
+
+    /// <summary>
+    /// Jobs that use a device without holding its own resource: cooling holds "camera_cooler", autofocus holds "camera"
+    /// but drives the focuser and filter wheel, a capture with a filter holds "camera", guiding drives the mount.
+    /// </summary>
+    internal static IReadOnlyList<string> DisconnectRequiresIdle(DeviceKind kind) {
+        return kind switch {
+            DeviceKind.Camera => ["camera_cooler"],
+            DeviceKind.Focuser => ["camera"],
+            DeviceKind.FilterWheel => ["camera"],
+            DeviceKind.Mount => ["guider"],
+            _ => []
+        };
     }
 }
 
@@ -78,7 +91,8 @@ internal sealed class DisconnectDeviceTool : DeviceConnectionTool {
 
     public override string Description =>
         "Disconnects one device slot. Disconnecting a cooled camera stops its cooler abruptly: run warm_camera first "
-        + "(refused while a cool_camera or warm_camera job runs). "
+        + "(refused while a cool_camera or warm_camera job runs). Refused while a job uses the device indirectly (focuser or "
+        + "filter wheel during a capture/autofocus job, mount during a guiding start). "
         + "Disconnecting the mount does not park it: run park_mount first when ending a session. Runs as a background job "
         + "holding that device.";
 

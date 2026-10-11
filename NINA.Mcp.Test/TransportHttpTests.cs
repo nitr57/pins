@@ -214,7 +214,7 @@ public class TransportHttpTests {
     [Test]
     public async Task Batch_ReturnsArrayOfResponsesForRequestsOnly() {
         var server = await StartAsync();
-        var sessionId = await server.InitializeAsync();
+        var sessionId = await server.InitializeAsync(protocolVersion: "2025-03-26");
 
         using var response = await server.PostAsync(
             """
@@ -245,7 +245,7 @@ public class TransportHttpTests {
     [Test]
     public async Task Batch_OnlyNotifications_202() {
         var server = await StartAsync();
-        var sessionId = await server.InitializeAsync();
+        var sessionId = await server.InitializeAsync(protocolVersion: "2025-03-26");
 
         using var response = await server.PostAsync(
             """[{"jsonrpc":"2.0","method":"notifications/initialized"},{"jsonrpc":"2.0","id":9,"result":{}}]""",
@@ -258,7 +258,7 @@ public class TransportHttpTests {
     [Test]
     public async Task Batch_Empty_400InvalidRequest() {
         var server = await StartAsync();
-        var sessionId = await server.InitializeAsync();
+        var sessionId = await server.InitializeAsync(protocolVersion: "2025-03-26");
 
         using var response = await server.PostAsync("[]", sessionId);
         var body = await ReadJsonAsync(response);
@@ -279,7 +279,7 @@ public class TransportHttpTests {
     [Test]
     public async Task Batch_InvalidElement_GetsErrorEntry() {
         var server = await StartAsync();
-        var sessionId = await server.InitializeAsync();
+        var sessionId = await server.InitializeAsync(protocolVersion: "2025-03-26");
 
         using var response = await server.PostAsync($"[1, {Ping}]", sessionId);
         var body = JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsArray();
@@ -289,6 +289,30 @@ public class TransportHttpTests {
         Assert.That(body[0]!["error"]!["code"]!.GetValue<int>(), Is.EqualTo(JsonRpcErrorCodes.InvalidRequest));
         Assert.That(body[0]!["id"], Is.Null);
         Assert.That(body[1]!["result"], Is.Not.Null);
+    }
+
+    [Test]
+    public async Task Batch_OnNewerProtocolVersion_400() {
+        var server = await StartAsync();
+        var sessionId = await server.InitializeAsync();
+
+        using var response = await server.PostAsync($"[{Ping}]", sessionId);
+        var body = await ReadJsonAsync(response);
+
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.BadRequest));
+        Assert.That(body["error"]!["code"]!.GetValue<int>(), Is.EqualTo(JsonRpcErrorCodes.InvalidRequest));
+        Assert.That(body["error"]!["message"]!.GetValue<string>(), Does.Contain("2025-03-26"));
+    }
+
+    [Test]
+    public async Task Batch_TooLarge_400() {
+        var server = await StartAsync();
+        var sessionId = await server.InitializeAsync(protocolVersion: "2025-03-26");
+        var batch = "[" + string.Join(",", Enumerable.Repeat(Ping, 17)) + "]";
+
+        using var response = await server.PostAsync(batch, sessionId);
+
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.BadRequest));
     }
 
     // ----- JSON-RPC errors over HTTP -----

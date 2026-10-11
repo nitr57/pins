@@ -107,7 +107,7 @@ internal sealed class LoadSequenceTool : ObservatoryTool {
         + "loaded sequence; unsaved edits (e.g. targets added with add_target) are lost, so save_sequence first if needed. "
         + "Refused while a sequence runs. Does not start it: inspect with get_sequence, then start_sequence.";
 
-    public override ToolAnnotations Annotations => ToolAnnotations.Change;
+    public override ToolAnnotations Annotations => ToolAnnotations.ChangeDestructive;
 
     public override SequenceGuard Guard => SequenceGuard.Strict;
 
@@ -187,7 +187,7 @@ internal sealed class AddTargetTool : ObservatoryTool {
         arguments.Boolean("slew_and_center", "Exposure plan only: slew, plate solve and center (and rotate) before imaging. Default true.", defaultValue: true);
         arguments.Boolean("start_guiding", "Exposure plan only: start guiding before the exposures. Default true.", defaultValue: true);
         arguments.Boolean("autofocus_at_start", "Exposure plan only: run autofocus after centering. Default false.", defaultValue: false);
-        arguments.Integer("dither_every", "Exposure plan only: dither after every N frames (0 = never, max 100). Default 0.", minimum: 0, maximum: 100, defaultValue: 0);
+        arguments.Integer("dither_every", "Exposure plan only: dither after every N frames (0 = never, max 32 like NINA). Default 0.", minimum: 0, maximum: 32, defaultValue: 0);
     }
 
     protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
@@ -282,7 +282,7 @@ internal sealed class ClearTargetsTool : ObservatoryTool {
         + "warm-up instructions) stay. Unsaved targets are lost. Refused while the sequence runs. Use it before building a "
         + "fresh plan with add_target.";
 
-    public override ToolAnnotations Annotations => ToolAnnotations.Change;
+    public override ToolAnnotations Annotations => ToolAnnotations.ChangeDestructive;
 
     public override SequenceGuard Guard => SequenceGuard.Strict;
 
@@ -308,9 +308,12 @@ internal sealed class SaveSequenceTool : ObservatoryTool {
     public override string Description =>
         "Saves the current advanced sequence to the profile's sequence folder under 'name' (without extension; it appears "
         + "in list_saved_sequences and can be loaded later with load_sequence). Names may contain letters, digits, spaces, "
-        + "'-', '_' and '.', no path separators. An existing file with that name is only replaced with overwrite: true.";
+        + "'-', '_' and '.', no path separators. An existing file with that name is only replaced with overwrite: true. "
+        + "Allowed while the sequence runs (it only writes a file).";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Change;
+
+    public override SequenceGuard Guard => SequenceGuard.None;
 
     protected override void DefineArguments(ToolSchema arguments) {
         arguments.String("name", "File name without extension, e.g. \"M42 Ha-OIII 2026-10-11\".", required: true, maxLength: MaxNameLength + 5);
@@ -374,7 +377,12 @@ internal sealed class StartSequenceTool : ObservatoryTool {
         + "(devices connected, filters exist, ...) and refuses with the issues listed; skip_validation bypasses that check "
         + "(not recommended). While it runs, other hardware and change tools are refused unless force is passed. Monitor "
         + "with get_status, get_sequence and get_recent_images; stop with stop_sequence (or stop_all). Finished items are "
-        + "skipped on a new start: reset_sequence first to run everything again.";
+        + "skipped on a new start: reset_sequence first to run everything again. Refused while a job started over MCP "
+        + "(slew, capture, autofocus, focuser move, filter change, guiding start, switch) still runs: wait for it with "
+        + "get_job or stop it with cancel_job. A running camera cooling job does not block the start.";
+
+    /// <summary>Job resources the sequence would fight over. Cooling (camera_cooler) is deliberately not listed.</summary>
+    internal static readonly string[] HardwareResources = ["mount", "camera", "focuser", "filter_wheel", "guider", "switch"];
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -386,6 +394,14 @@ internal sealed class StartSequenceTool : ObservatoryTool {
 
     protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var skipValidation = arguments.GetBool("skip_validation") ?? false;
+        var busy = RunningJobsHolding(context.Jobs, HardwareResources);
+
+        if (busy.Count > 0) {
+            var jobs = string.Join(", ", busy.Select(job => $"{job.Id} ({job.Description})"));
+
+            return ToolCallResult.Error(
+                $"Refused: MCP jobs still use the hardware the sequence needs: {jobs}. Wait for them with get_job or stop them with cancel_job, then retry.");
+        }
 
         return FromOperation(await Observatory.StartSequenceAsync(skipValidation, cancellationToken).ConfigureAwait(false));
     }
@@ -430,7 +446,7 @@ internal sealed class ResetSequenceTool : ObservatoryTool {
         "Resets the progress of every item in the advanced sequence (finished exposures count from zero again) so that "
         + "start_sequence runs it from the beginning. Does not touch hardware. Refused while the sequence runs.";
 
-    public override ToolAnnotations Annotations => ToolAnnotations.Change;
+    public override ToolAnnotations Annotations => ToolAnnotations.ChangeDestructive;
 
     public override SequenceGuard Guard => SequenceGuard.Strict;
 

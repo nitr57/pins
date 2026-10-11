@@ -5,6 +5,17 @@ namespace NINA.Mcp.Tools;
 /// <summary>The compact guide returned as <c>instructions</c> from <c>initialize</c>.</summary>
 internal static class PinsInstructions {
 
+    private const string ReadOnlyNote =
+        """
+
+        READ-ONLY MODE: this server only exposes queries plus stop_all and cancel_job. Hardware and sequence editing tools are not available (the administrator enables them by setting PINS_MCP_TOKEN on the pins box). Do not plan steps that need them; describe what the user would have to do instead.
+        """;
+
+    /// <summary>The instructions, with a note on the restricted tool set when the server runs read-only.</summary>
+    public static string Build(bool readOnly) {
+        return readOnly ? Text + ReadOnlyNote : Text;
+    }
+
     public const string Text =
         """
         pins (PI 'N' Stars) is a headless Linux build of N.I.N.A. that controls a real telescope: mount, camera, focuser, filter wheel, guider, rotator, dome, switches. Tools act on physical hardware outdoors; confirm with the user before moving the mount, switching power or starting a sequence, and never guess coordinates.
@@ -14,10 +25,10 @@ internal static class PinsInstructions {
         - Temperatures °C, exposures seconds, focuser positions steps, guiding RMS arcsec, HFR pixels.
 
         Jobs
-        Long operations (connect, slew, park, capture, cool, focus, filter change, guiding, switches) run as background jobs. The tool waits up to wait_seconds (default 30, max 120) and returns { job: { id, state, outcome } }. If state is "running", poll get_job (with wait_seconds to long-poll) or check get_status. A device busy with another job refuses new jobs; cancel_job stops one job.
+        Long operations (connect, slew, park, capture, cool, focus, filter change, guiding, switches) run as background jobs. The tool waits up to wait_seconds (default 30, max 55) and returns { job: { id, state, outcome } }. If state is "running", poll get_job (with wait_seconds to long-poll) or check get_status. A device busy with another job refuses new jobs; cancel_job stops one job.
 
         Safety guard
-        While the advanced sequence runs, hardware and editing tools are refused so they cannot disturb it. Pass force: true only when the user explicitly wants that; load_sequence, clear_targets, reset_sequence and start_sequence need the sequence stopped (stop_sequence). stop_all is the emergency stop: it stops the sequence, cancels all jobs, aborts the exposure, stops slewing and the focuser. It is never refused, not even in read-only mode. Use it when the user says stop or something looks wrong.
+        While the advanced sequence runs, hardware and editing tools are refused so they cannot disturb it. Pass force: true only when the user explicitly wants that; load_sequence, clear_targets, reset_sequence and start_sequence need the sequence stopped (stop_sequence). stop_all is the emergency stop: it stops the sequence, cancels all jobs, aborts the exposure, stops slewing and the focuser. It is never refused, not even in read-only mode (cancel_job neither). Use it when the user says stop or something looks wrong.
 
         Typical imaging session
         1. get_status (what is connected, sequence state, running jobs).

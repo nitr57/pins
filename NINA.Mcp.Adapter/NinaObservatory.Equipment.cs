@@ -151,18 +151,31 @@ public sealed partial class NinaObservatory {
         }
 
         try {
-            return telescopeMediator.SetTrackingEnabled(enabled)
+            // TelescopeVM.SetTrackingEnabled returns the mount's tracking state after the change, not a success flag.
+            var state = telescopeMediator.SetTrackingEnabled(enabled);
+
+            for (var attempt = 0; state != enabled && attempt < 10; attempt++) {
+                Thread.Sleep(200);
+                state = telescopeMediator.GetInfo()?.TrackingEnabled == true;
+            }
+
+            return state == enabled
                 ? OperationResult.Ok(enabled ? "Tracking enabled." : "Tracking disabled.")
-                : OperationResult.Fail("The mount rejected the tracking change.");
+                : OperationResult.Fail(enabled ? "The mount did not start tracking." : "The mount did not stop tracking.");
         } catch (Exception ex) {
             Logger.Error("MCP: setting tracking failed", ex);
             return OperationResult.Fail($"Setting tracking failed: {ex.Message}");
         }
     }
 
+    /// <summary>
+    /// Aborts a running slew. Sends nothing to an idle mount: on several drivers the abort command also stops tracking.
+    /// </summary>
     public void StopSlew() {
         try {
-            if (telescopeMediator.GetInfo()?.Connected == true) {
+            var info = telescopeMediator.GetInfo();
+
+            if (info?.Connected == true && info.Slewing) {
                 telescopeMediator.StopSlew();
             }
         } catch (Exception ex) {
@@ -219,20 +232,35 @@ public sealed partial class NinaObservatory {
                 return new CaptureResult(false, "The camera returned no image.", null);
             }
 
+            // ImagingVM assigned the history id; create the entry so that get_recent_images lists the frame (NINA only fills
+            // existing entries when an image is saved).
+            var imageId = exposure.MetaData?.Image?.Id ?? -1;
+
+            if (imageId >= 0) {
+                imageHistory.Add(imageId, imageType);
+            }
+
             var rendered = await imagingMediator.PrepareImage(exposure, new PrepareImageParameters(autoStretch: false, detectStars: false), cancellationToken);
             var analysed = await rendered.DetectStars(false, StarSensitivityEnum.Normal, NoiseReductionEnum.None, cancellationToken, progress);
             var imageData = analysed.RawImageData;
             var statistics = await imageData.Statistics.Task;
             var stars = imageData.StarDetectionAnalysis;
 
+            if (imageId >= 0 && statistics != null) {
+                imageHistory.PopulateStatistics(imageId, statistics);
+            }
+
             if (request.Save) {
                 await imageSaveMediator.Enqueue(imageData, Task.FromResult(analysed), progress, cancellationToken);
             }
 
-            var usedFilter = filter?.Name ?? filterWheelMediator.GetInfo()?.SelectedFilter?.Name;
+            // The filter actually in place (a failed change leaves the old one).
+            var usedFilter = filterWheelMediator.GetInfo()?.Connected == true
+                ? filterWheelMediator.GetInfo()?.SelectedFilter?.Name
+                : null;
 
             var record = new ImageRecord(
-                0,
+                Math.Max(imageId, 0),
                 DateTimeOffset.Now,
                 imageType,
                 string.IsNullOrEmpty(usedFilter) ? null : usedFilter,
@@ -246,6 +274,13 @@ public sealed partial class NinaObservatory {
                 null,
                 null,
                 null);
+
+            if (filter != null && !string.Equals(usedFilter, filter.Name, StringComparison.Ordinal)) {
+                return new CaptureResult(
+                    false,
+                    $"The frame was taken, but the filter wheel did not reach {filter.Name} (current filter: {usedFilter ?? "unknown"}).",
+                    record);
+            }
 
             var message = request.Save
                 ? Invariant($"Captured {request.ExposureSeconds:0.###} s light frame; it is being saved like a sequence frame.")
@@ -283,6 +318,10 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail("This camera has no regulated cooler.");
         }
 
+        if (info.TempChangeRunning) {
+            return OperationResult.Fail("A cooling or warming ramp is already running (started in pins or Touch-N-Stars).");
+        }
+
         try {
             var success = await cameraMediator.CoolCamera(targetCelsius, duration, CreateProgress(), cancellationToken);
 
@@ -310,6 +349,10 @@ public sealed partial class NinaObservatory {
 
         if (!info.CanSetTemperature) {
             return OperationResult.Fail("This camera has no regulated cooler.");
+        }
+
+        if (info.TempChangeRunning) {
+            return OperationResult.Fail("A cooling or warming ramp is already running (started in pins or Touch-N-Stars).");
         }
 
         try {
@@ -460,9 +503,15 @@ public sealed partial class NinaObservatory {
 
             cancellationToken.ThrowIfCancellationRequested();
 
+            // FilterWheelVM returns null when the position is unknown and the old filter after its timeout.
             var now = result ?? filterWheelMediator.GetInfo()?.SelectedFilter;
 
-            return OperationResult.Ok($"Filter is now {now?.Name ?? filter.Name} (position {now?.Position ?? filter.Position}).");
+            if (now == null || now.Position != filter.Position) {
+                return OperationResult.Fail(
+                    $"The filter wheel did not reach {filter.Name} (position {filter.Position}); current filter: {now?.Name ?? "unknown"}.");
+            }
+
+            return OperationResult.Ok($"Filter is now {now.Name} (position {now.Position}).");
         } catch (OperationCanceledException) {
             throw;
         } catch (Exception ex) {
@@ -502,9 +551,10 @@ public sealed partial class NinaObservatory {
         try {
             var success = await guiderMediator.StopGuiding(cancellationToken);
 
+            // PHD2 returns false when it was already stopped; nothing is guiding either way.
             return success
                 ? OperationResult.Ok("Guiding stopped.")
-                : OperationResult.Fail("The guider did not confirm that guiding stopped.");
+                : OperationResult.Ok("Guiding was not active (the guider reported nothing to stop).");
         } catch (OperationCanceledException) {
             throw;
         } catch (Exception ex) {
@@ -543,7 +593,19 @@ public sealed partial class NinaObservatory {
         }
 
         try {
+            // SwitchVM swallows its own timeout; read the value back.
             await switchMediator.SetSwitchValue((short)index, value, CreateProgress(), cancellationToken);
+
+            var reached = ReadWritableSwitchValue(index);
+
+            for (var attempt = 0; (reached is null || Math.Abs(reached.Value - value) > 1e-5) && attempt < 10; attempt++) {
+                await Task.Delay(200, cancellationToken);
+                reached = ReadWritableSwitchValue(index);
+            }
+
+            if (reached is null || Math.Abs(reached.Value - value) > 1e-5) {
+                return OperationResult.Fail(Invariant($"Switch {index} ({target.Name}) did not reach {value}; it reports {reached?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "no value"}."));
+            }
 
             return OperationResult.Ok(Invariant($"Switch {index} ({target.Name}) set to {value}."));
         } catch (OperationCanceledException) {
@@ -552,5 +614,15 @@ public sealed partial class NinaObservatory {
             Logger.Error("MCP: setting a switch failed", ex);
             return OperationResult.Fail($"Setting switch {index} failed: {ex.Message}");
         }
+    }
+
+    private double? ReadWritableSwitchValue(int index) {
+        var switches = switchMediator.GetInfo()?.WritableSwitches;
+
+        if (switches == null || index >= switches.Count) {
+            return null;
+        }
+
+        return switches[index].Value;
     }
 }

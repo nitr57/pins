@@ -126,6 +126,15 @@ internal abstract class ObservatoryTool : McpTool {
         });
     }
 
+    /// <summary>Running jobs that hold one of <paramref name="resources"/> (case-insensitive).</summary>
+    protected static IReadOnlyList<JobInfo> RunningJobsHolding(IJobManager jobs, IReadOnlyCollection<string> resources) {
+        return jobs.List()
+            .Where(job => job.State == JobState.Running
+                && job.Resource is not null
+                && resources.Contains(job.Resource, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+    }
+
     private static void EnsureIdle(IJobManager jobs, IReadOnlyList<string> resources) {
         if (resources.Count == 0) {
             return;

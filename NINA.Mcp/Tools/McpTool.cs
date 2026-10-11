@@ -53,6 +53,9 @@ public sealed record ToolAnnotations(bool ReadOnly, bool Destructive, bool Idemp
     /// <summary>Changes state without moving hardware or discarding work (e.g. load a sequence into the editor).</summary>
     public static ToolAnnotations Change { get; } = new(ReadOnly: false, Destructive: false, Idempotent: false);
 
+    /// <summary>Edits pins state and can discard work (unsaved sequence edits, progress) without moving hardware.</summary>
+    public static ToolAnnotations ChangeDestructive { get; } = new(ReadOnly: false, Destructive: true, Idempotent: false);
+
     /// <summary>Moves hardware, switches power or can discard work. Clients should confirm with the user.</summary>
     public static ToolAnnotations Hardware { get; } = new(ReadOnly: false, Destructive: true, Idempotent: false);
 

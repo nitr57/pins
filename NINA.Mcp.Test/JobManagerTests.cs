@@ -210,6 +210,48 @@ public class JobManagerTests {
     }
 
     [Test]
+    public async Task CancelAll_CallbackThrows_StillCancelsEveryJob() {
+        var first = jobs.Start("slew", "Slew", "mount", async token => {
+            using (token.Register(() => throw new InvalidOperationException("driver halt failed"))) {
+                await Task.Delay(Timeout.Infinite, token);
+            }
+
+            return JobOutcome.Ok();
+        });
+
+        var second = jobs.Start("capture", "Capture", "camera", async token => {
+            await Task.Delay(Timeout.Infinite, token);
+
+            return JobOutcome.Ok();
+        });
+
+        Assert.That(() => jobs.CancelAll(), Throws.Nothing);
+
+        var firstDone = await jobs.WaitAsync(first.Id, TestTimeout, CancellationToken.None);
+        var secondDone = await jobs.WaitAsync(second.Id, TestTimeout, CancellationToken.None);
+
+        Assert.That(firstDone!.State, Is.EqualTo(JobState.Cancelled));
+        Assert.That(secondDone!.State, Is.EqualTo(JobState.Cancelled));
+    }
+
+    [Test]
+    public async Task Cancel_CallbackThrows_ReturnsTrueAndCancels() {
+        var job = jobs.Start("slew", "Slew", "mount", async token => {
+            using (token.Register(() => throw new InvalidOperationException("driver halt failed"))) {
+                await Task.Delay(Timeout.Infinite, token);
+            }
+
+            return JobOutcome.Ok();
+        });
+
+        Assert.That(jobs.Cancel(job.Id), Is.True);
+
+        var done = await jobs.WaitAsync(job.Id, TestTimeout, CancellationToken.None);
+
+        Assert.That(done!.State, Is.EqualTo(JobState.Cancelled));
+    }
+
+    [Test]
     public async Task CancelAll_CancelsEveryRunningJob() {
         Func<CancellationToken, Task<JobOutcome>> forever = async token => {
             await Task.Delay(Timeout.Infinite, token);

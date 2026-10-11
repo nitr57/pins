@@ -176,8 +176,9 @@ public sealed record ImageRecord(
     string? FilePath);
 
 /// <summary>
-/// One exposure. Null fields keep the camera's current setting. <see cref="Save"/> writes the frame like a normal
-/// light frame (image type "LIGHT"); otherwise it is a snapshot that is analysed but not saved.
+/// One exposure. Null gain/offset use the profile defaults, null binning keeps the camera's current binning, null filter
+/// keeps the current filter. <see cref="Save"/> writes the frame like a normal light frame (image type "LIGHT");
+/// otherwise it is a snapshot that is analysed but not saved. Either way it is added to the image history.
 /// </summary>
 public sealed record CaptureRequest(
     double ExposureSeconds,

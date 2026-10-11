@@ -24,7 +24,11 @@ public sealed class McpServerOptions {
     /// </summary>
     public IReadOnlyList<string> AllowedOrigins { get; init; } = [];
 
-    /// <summary>PINS_MCP_READONLY: "1"/"true" lists and allows only tools whose annotations are read-only.</summary>
+    /// <summary>
+    /// PINS_MCP_READONLY: "1"/"true" lists and allows only query tools plus the stop tools (<c>stop_all</c>,
+    /// <c>cancel_job</c>); "0"/"false" allows everything. When the variable is not set, the endpoint is read-only unless
+    /// PINS_MCP_TOKEN is set: without a token anyone on the network could otherwise move the telescope.
+    /// </summary>
     public bool ReadOnly { get; init; }
 
     /// <summary>Version reported in <c>serverInfo</c>. Set by the host (pins version).</summary>
@@ -49,7 +53,7 @@ public sealed class McpServerOptions {
             AllowedOrigins = string.IsNullOrWhiteSpace(origins)
                 ? []
                 : origins.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-            ReadOnly = ParseBool(getVariable("PINS_MCP_READONLY"), defaultValue: false),
+            ReadOnly = ParseBool(getVariable("PINS_MCP_READONLY"), defaultValue: string.IsNullOrWhiteSpace(token)),
             ServerVersion = serverVersion
         };
     }

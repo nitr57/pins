@@ -259,8 +259,22 @@ public sealed class JobManager : IJobManager {
 
         public Task Completion => completion.Task;
 
-        public void RequestCancel() {
-            cancellation.Cancel();
+        /// <summary>
+        /// Cancels the job's token. Never throws: <see cref="CancellationTokenSource.Cancel()"/> runs every registered
+        /// callback (driver halts such as stop slew or abort exposure) and only then throws an <see cref="AggregateException"/>
+        /// if one of them failed. The token is cancelled either way, so a failing callback must not stop
+        /// <see cref="CancelAll"/> from reaching the remaining jobs.
+        /// </summary>
+        public Exception? RequestCancel() {
+            try {
+                cancellation.Cancel();
+
+                return null;
+            } catch (AggregateException ex) {
+                return ex;
+            } catch (ObjectDisposedException) {
+                return null;
+            }
         }
 
         public void Finish(JobState state, JobOutcome outcome, DateTimeOffset finishedAt) {

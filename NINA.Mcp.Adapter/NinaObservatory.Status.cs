@@ -3,6 +3,7 @@
 using NINA.Astrometry;
 using NINA.Core.Utility;
 using NINA.Equipment.Equipment;
+using NINA.Equipment.Interfaces;
 using NINA.Mcp.Observatory;
 using NINA.WPF.Base.Model;
 
@@ -191,21 +192,23 @@ public sealed partial class NinaObservatory {
     private void FillMount(Dictionary<string, object?> p) {
         var info = telescopeMediator.GetInfo();
 
-        p["raHours"] = Number(info.RightAscension);
-        p["decDegrees"] = Number(info.Declination);
-        p["mountEpoch"] = info.EquatorialSystem.ToString();
-
+        // raHours/decDegrees are J2000 like every coordinate the tools accept; the mount's own epoch (usually JNow) is
+        // reported separately.
         try {
             var coordinates = info.Coordinates;
 
             if (coordinates != null) {
                 var j2000 = coordinates.Transform(Epoch.J2000);
-                p["raHoursJ2000"] = Number(j2000.RA);
-                p["decDegreesJ2000"] = Number(j2000.Dec);
+                p["raHours"] = Number(j2000.RA);
+                p["decDegrees"] = Number(j2000.Dec);
             }
         } catch (Exception ex) {
             Logger.Debug($"MCP: J2000 transform of the mount position failed: {ex.Message}");
         }
+
+        p["raHoursMount"] = Number(info.RightAscension);
+        p["decDegreesMount"] = Number(info.Declination);
+        p["mountEpoch"] = info.EquatorialSystem.ToString();
 
         p["altitude"] = Number(info.Altitude);
         p["azimuth"] = Number(info.Azimuth);
@@ -258,6 +261,7 @@ public sealed partial class NinaObservatory {
         var info = guiderMediator.GetInfo();
         var rms = info.RMSError;
 
+        p["state"] = (guiderMediator.GetDevice() as IGuider)?.State;
         p["pixelScaleArcsecPerPixel"] = Number(info.PixelScale);
 
         if (rms != null) {

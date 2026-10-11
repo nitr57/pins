@@ -180,6 +180,10 @@ public sealed class McpHttpEndpoint {
         await WriteJsonAsync(context, StatusCodes.Status200OK, result.Response!).ConfigureAwait(false);
     }
 
+    private const string BatchProtocolVersion = "2025-03-26";
+
+    private const int MaxBatchSize = 16;
+
     private async Task HandleBatchAsync(HttpContext context, JsonElement root, CancellationToken cancellationToken) {
         if (root.GetArrayLength() == 0) {
             var error = JsonRpc.Error(null, JsonRpcErrorCodes.InvalidRequest, "Empty batch.");
@@ -189,6 +193,23 @@ public sealed class McpHttpEndpoint {
         }
 
         if (!await CheckSessionAsync(context).ConfigureAwait(false)) {
+            return;
+        }
+
+        // JSON-RPC batching exists only in protocol 2025-03-26; later versions removed it.
+        var session = sessions.Get(GetSessionId(context.Request)!);
+
+        if (session is not null && session.ProtocolVersion != BatchProtocolVersion) {
+            var error = JsonRpc.Error(null, JsonRpcErrorCodes.InvalidRequest, $"Batches are only supported with protocol version {BatchProtocolVersion}.");
+
+            await WriteJsonAsync(context, StatusCodes.Status400BadRequest, error).ConfigureAwait(false);
+            return;
+        }
+
+        if (root.GetArrayLength() > MaxBatchSize) {
+            var error = JsonRpc.Error(null, JsonRpcErrorCodes.InvalidRequest, $"Batches are limited to {MaxBatchSize} messages.");
+
+            await WriteJsonAsync(context, StatusCodes.Status400BadRequest, error).ConfigureAwait(false);
             return;
         }
 
