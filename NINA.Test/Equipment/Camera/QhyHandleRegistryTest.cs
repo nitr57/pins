@@ -52,8 +52,6 @@ namespace NINA.Test.Equipment.Camera {
             guide.Open(Guide);
 
             Assert.That(native.Opened, Is.EqualTo(new[] { Main, Guide }));
-            Assert.That(main.OpenedShared, Is.False);
-            Assert.That(guide.OpenedShared, Is.False);
         }
 
         [Test]
@@ -65,13 +63,35 @@ namespace NINA.Test.Equipment.Camera {
             filterWheel.Open(Main);
 
             Assert.That(native.Opened, Has.Count.EqualTo(1));
-            Assert.That(filterWheel.OpenedShared, Is.True);
 
             camera.Close();
             Assert.That(native.Closed, Is.Empty, "the filter wheel still uses the handle");
 
             filterWheel.Close();
             Assert.That(native.Closed, Is.EqualTo(new[] { native.HandleOf(Main) }));
+        }
+
+        [Test]
+        public void HandleInitialized_IsSharedByTheDevicesOnOneCamera_AndResetByANewHandle() {
+            var camera = Sdk();
+            var filterWheel = Sdk();
+            camera.Open(Main);
+            filterWheel.Open(Main);
+
+            Assert.That(filterWheel.HandleInitialized, Is.False, "a handle that is only open isn't set up yet");
+
+            // What QhySdk.InitCamera records once InitQHYCCD succeeded on the camera's handle.
+            var entry = registry.Acquire(Main);
+            entry.Initialized = true;
+            registry.Return(entry);
+
+            Assert.That(filterWheel.HandleInitialized, Is.True);
+
+            camera.Close();
+            filterWheel.Close();
+            filterWheel.Open(Main);
+
+            Assert.That(filterWheel.HandleInitialized, Is.False, "a reopened camera has a new handle");
         }
 
         [Test]
@@ -132,6 +152,62 @@ namespace NINA.Test.Equipment.Camera {
         }
 
         [Test]
+        public void ReturningAHandleTooOften_DoesNotCloseTheNextHandleOfThatCamera() {
+            var first = registry.Acquire(Main);
+            registry.Return(first);
+            var second = registry.Acquire(Main);
+
+            registry.Return(first);
+
+            Assert.That(native.Closed, Has.Count.EqualTo(1));
+            Assert.That(second.RefCount, Is.EqualTo(1));
+            Assert.That(registry.Release(), Is.False, "the second handle is still open");
+        }
+
+        [Test]
+        public void ACallWaitingForAHandle_GetsAZeroHandle_OnceTheHandleWasClosed() {
+            var entry = registry.Acquire(Main);
+
+            using (entry.Enter(out var whileOpen)) {
+                Assert.That(whileOpen, Is.EqualTo(native.HandleOf(Main)));
+            }
+
+            // A caller that read the entry before its device closed it reaches the lock only afterwards.
+            registry.Return(entry);
+
+            using (entry.Enter(out var afterClose)) {
+                Assert.That(afterClose, Is.EqualTo(IntPtr.Zero));
+            }
+        }
+
+        [Test]
+        public void CloseQHYCCD_RunsUnderTheSdkLock() {
+            native.Registry = registry;
+            var sdk = Sdk();
+            sdk.Open(Main);
+
+            sdk.Close();
+
+            Assert.That(native.ClosedUnderSdkLock, Is.True, "closing changes the SDK's device list like open and scan");
+        }
+
+        [Test]
+        public void AFailedRelease_KeepsTheSdkInitialized() {
+            var sdk = Sdk();
+            sdk.InitSdk();
+            native.ReleaseResult = QhySdk.QHYCCD_ERROR;
+
+            Assert.Throws<QhySdk.QHYCameraException>(() => sdk.ReleaseSdk());
+            Assert.That(registry.IsInitialized, Is.True);
+
+            native.ReleaseResult = QhySdk.QHYCCD_SUCCESS;
+            sdk.ReleaseSdk();
+
+            Assert.That(registry.IsInitialized, Is.False);
+            Assert.That(native.Inits, Is.EqualTo(1));
+        }
+
+        [Test]
         public void ACameraThatFailsToOpen_LeavesNothingOpen() {
             native.Unopenable.Add(Guide);
             var sdk = Sdk();
@@ -147,7 +223,7 @@ namespace NINA.Test.Equipment.Camera {
             var main = Sdk();
             var guide = Sdk();
             main.Open(Main);
-            var mainEntry = registry.Acquire(Main, out _);
+            var mainEntry = registry.Acquire(Main);
             var busy = new ManualResetEventSlim();
             var finishReadout = new ManualResetEventSlim();
 
@@ -158,20 +234,32 @@ namespace NINA.Test.Equipment.Camera {
                     finishReadout.Wait();
                 }
             });
-            busy.Wait();
 
-            registry.Return(mainEntry);
-            var closing = Task.Run(main.Close);
-            await Task.Delay(100);
+            try {
+                Assert.That(busy.Wait(MaxWait), Is.True);
 
-            guide.Open(Guide);
-            Assert.That(guide.Scan(), Is.EqualTo(2), "scan and open of the other camera don't wait for the readout");
-            Assert.That(closing.IsCompleted, Is.False);
+                registry.Return(mainEntry);
+                var closing = Task.Run(main.Close);
 
-            finishReadout.Set();
-            await readout;
-            await closing;
-            Assert.That(native.Closed, Is.EqualTo(new[] { native.HandleOf(Main) }));
+                // The last reference is gone, so the close is past its bookkeeping and waits for the readout.
+                await WaitUntil(() => mainEntry.RefCount == 0);
+
+                var other = Task.Run(() => {
+                    guide.Open(Guide);
+                    return guide.Scan();
+                });
+
+                Assert.That(other.Wait(MaxWait), Is.True, "scan and open of the other camera don't wait for the readout");
+                Assert.That(other.Result, Is.EqualTo(2));
+                Assert.That(closing.IsCompleted, Is.False);
+
+                finishReadout.Set();
+                await readout;
+                await closing;
+                Assert.That(native.Closed, Is.EqualTo(new[] { native.HandleOf(Main) }));
+            } finally {
+                finishReadout.Set();
+            }
         }
 
         [Test]
@@ -194,8 +282,10 @@ namespace NINA.Test.Equipment.Camera {
             Assert.That(native.Opened, Is.EqualTo(new[] { Main, Main }));
         }
 
+        private static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(10);
+
         private static async Task WaitUntil(Func<bool> condition) {
-            var deadline = DateTime.UtcNow.AddSeconds(10);
+            var deadline = DateTime.UtcNow + MaxWait;
 
             while (!condition()) {
                 Assert.That(DateTime.UtcNow, Is.LessThan(deadline), "timed out");
@@ -217,6 +307,12 @@ namespace NINA.Test.Equipment.Camera {
 
             public volatile bool CloseRequested;
 
+            public QhyHandleRegistry? Registry { get; set; }
+
+            public bool ClosedUnderSdkLock { get; private set; }
+
+            public uint ReleaseResult { get; set; } = QhySdk.QHYCCD_SUCCESS;
+
             public int Inits { get; private set; }
 
             public int Releases { get; private set; }
@@ -234,7 +330,7 @@ namespace NINA.Test.Equipment.Camera {
 
             public uint ReleaseResource() {
                 Releases++;
-                return QhySdk.QHYCCD_SUCCESS;
+                return ReleaseResult;
             }
 
             public uint Scan() {
@@ -254,6 +350,7 @@ namespace NINA.Test.Equipment.Camera {
 
             public uint Close(IntPtr handle) {
                 CloseRequested = true;
+                ClosedUnderSdkLock = Registry?.SdkLock.IsHeldByCurrentThread == true;
                 BlockClose.Wait();
 
                 lock (Closed) {

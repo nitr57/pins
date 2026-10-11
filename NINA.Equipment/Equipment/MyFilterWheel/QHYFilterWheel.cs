@@ -74,9 +74,9 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
                 Sdk.Open(Info.Id);
 
                 try {
-                    // The camera this CFW is plugged into may already have the handle open and set up (stream mode,
-                    // resolution, bit depth); InitQHYCCD would reset that under it.
-                    if (!Sdk.OpenedShared) {
+                    // The camera this CFW is plugged into may already have initialized and set up the handle (stream
+                    // mode, resolution, bit depth); InitQHYCCD would reset that under it.
+                    if (!Sdk.HandleInitialized) {
                         Sdk.InitCamera();
                     }
 
@@ -86,8 +86,13 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
                         throw new InvalidOperationException(errMessage);
                     }
                 } catch {
-                    Sdk.Close();
-                    Sdk.ReleaseSdk();
+                    try {
+                        Sdk.Close();
+                        Sdk.ReleaseSdk();
+                    } catch (Exception ex) {
+                        Logger.Error("QHYCFW: Failed to close the camera after a failed connect", ex);
+                    }
+
                     throw;
                 }
 

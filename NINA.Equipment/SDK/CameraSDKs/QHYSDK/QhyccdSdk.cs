@@ -50,29 +50,38 @@ namespace QHYCCD {
             this.registry = registry;
         }
 
-        /// <summary>True when the camera was already open on another device (e.g. the camera of this CFW) at Open.</summary>
-        public bool OpenedShared { get; private set; }
+        /// <summary>True when InitQHYCCD already ran on the attached handle, e.g. by the camera of this CFW.</summary>
+        public bool HandleInitialized => Volatile.Read(ref camera)?.Initialized == true;
 
         /// <summary>
         /// Takes the lock of the handle this instance is attached to and the handle itself from one read of
         /// <see cref="camera"/>, so a concurrent Close/Open can't pair one camera's lock with another's handle.
-        /// Before Open (or after Close) it takes the SDK lock and yields a zero handle, which the SDK rejects.
+        /// Before Open, after Close, or when the handle was closed while waiting for its lock, it yields a zero
+        /// handle, which the SDK rejects.
         /// </summary>
         private HandleScope EnterHandle() {
             var current = Volatile.Read(ref camera);
 
-            return new HandleScope(current?.Lock ?? registry.SdkLock, current?.Handle ?? IntPtr.Zero);
+            if (current == null) {
+                return new HandleScope(registry.SdkLock.EnterScope(), IntPtr.Zero, null);
+            }
+
+            var scope = current.Enter(out var handle);
+            return new HandleScope(scope, handle, current);
         }
 
         private ref struct HandleScope {
             private Lock.Scope scope;
 
-            public HandleScope(Lock lockObject, IntPtr handle) {
-                scope = lockObject.EnterScope();
+            public HandleScope(Lock.Scope scope, IntPtr handle, QhyHandleRegistry.Entry entry) {
+                this.scope = scope;
                 Handle = handle;
+                Entry = entry;
             }
 
             public IntPtr Handle { get; }
+
+            public QhyHandleRegistry.Entry Entry { get; }
 
             public void Dispose() {
                 scope.Dispose();
@@ -119,9 +128,7 @@ namespace QHYCCD {
                     throw new QHYCameraException($"This instance already has camera {camera.Id} open", MethodBase.GetCurrentMethod(), new object[] { id });
                 }
 
-                var entry = registry.Acquire(id, out var shared);
-                OpenedShared = shared;
-                Volatile.Write(ref camera, entry);
+                Volatile.Write(ref camera, registry.Acquire(id));
             }
         }
 
@@ -135,7 +142,6 @@ namespace QHYCCD {
                 }
 
                 Volatile.Write(ref camera, null);
-                OpenedShared = false;
                 registry.Return(entry);
             }
         }
@@ -143,6 +149,10 @@ namespace QHYCCD {
         public void InitCamera() {
             using (var scope = EnterHandle()) {
                 CheckReturn(InitQHYCCD(scope.Handle), MethodBase.GetCurrentMethod(), scope.Handle);
+
+                if (scope.Entry != null) {
+                    scope.Entry.Initialized = true;
+                }
             }
         }
 
@@ -382,7 +392,7 @@ namespace QHYCCD {
         }
 
         public string GetSdkVersion() {
-            using (var scope = EnterHandle()) {
+            lock (registry.SdkLock) {
                 uint year = 0, month = 0, day = 0, subday = 0;
                 CheckReturn(GetQHYCCDSDKVersion(ref year, ref month, ref day, ref subday), MethodBase.GetCurrentMethod());
 

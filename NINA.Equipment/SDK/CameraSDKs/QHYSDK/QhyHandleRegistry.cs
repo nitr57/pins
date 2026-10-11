@@ -23,10 +23,10 @@ namespace QHYCCD {
     /// <summary>
     /// Process-wide bookkeeping of the QHY SDK and its camera handles.
     ///
-    /// InitQHYCCDResource/ReleaseQHYCCDResource and ScanQHYCCD act on every camera at once, so they run under
-    /// <see cref="SdkLock"/>, and the SDK is released only when no handle is open or closing. Handles are per
-    /// camera id: the main camera and the guide camera get separate handles, while a camera and the CFW plugged
-    /// into it share one (reference counted). Every call on a handle is serialized by that handle's
+    /// InitQHYCCDResource/ReleaseQHYCCDResource, ScanQHYCCD, OpenQHYCCD and CloseQHYCCD act on the SDK's device
+    /// list, so they run under <see cref="SdkLock"/>, and the SDK is released only when no handle is open or closing.
+    /// Handles are per camera id: the main camera and the guide camera get separate handles, while a camera and the
+    /// CFW plugged into it share one (reference counted). Every call on a handle is serialized by that handle's
     /// <see cref="Entry.Lock"/>, so a readout on one camera never waits for the other camera. This mirrors the
     /// INDI QHY driver: one SDK init per process, one handle per camera opened by id, one lock per camera.
     /// </summary>
@@ -47,6 +47,7 @@ namespace QHYCCD {
         }
 
         internal sealed class Entry(string id, IntPtr handle) {
+            private volatile bool initialized;
 
             public string Id { get; } = id;
 
@@ -57,6 +58,26 @@ namespace QHYCCD {
             public int RefCount { get; set; }
 
             public ManualResetEventSlim Closed { get; } = new(false);
+
+            /// <summary>Set under <see cref="Lock"/> before the handle is closed.</summary>
+            public bool IsClosed { get; set; }
+
+            /// <summary>Whether InitQHYCCD succeeded on this handle, e.g. by the camera the CFW is plugged into.</summary>
+            public bool Initialized {
+                get => initialized;
+                set => initialized = value;
+            }
+
+            /// <summary>
+            /// Takes <see cref="Lock"/> and yields the handle, or a zero handle (which the SDK rejects) when it was
+            /// closed while the caller waited for the lock: a caller that read this entry before its device closed it
+            /// must not reach the closed handle, nor a new handle the SDK may hand out at the same address.
+            /// </summary>
+            public Lock.Scope Enter(out IntPtr handle) {
+                var scope = Lock.EnterScope();
+                handle = IsClosed ? IntPtr.Zero : Handle;
+                return scope;
+            }
         }
 
         private readonly INative native;
@@ -94,8 +115,8 @@ namespace QHYCCD {
                     return false;
                 }
 
-                initialized = false;
                 QhySdk.CheckReturn(native.ReleaseResource(), MethodBase.GetCurrentMethod());
+                initialized = false;
                 return true;
             }
         }
@@ -108,10 +129,9 @@ namespace QHYCCD {
 
         /// <summary>
         /// Takes a reference on the handle of camera <paramref name="id"/>, opening it if no device holds it yet.
-        /// <paramref name="shared"/> tells whether another device (e.g. the camera of a CFW) already had it open.
         /// Initializes the SDK if needed, and waits if the same camera is still being closed.
         /// </summary>
-        public Entry Acquire(string id, out bool shared) {
+        public Entry Acquire(string id) {
             while (true) {
                 Entry pending;
 
@@ -119,8 +139,7 @@ namespace QHYCCD {
                     if (!closing.TryGetValue(id, out pending)) {
                         InitLocked();
 
-                        shared = open.TryGetValue(id, out var entry);
-                        if (!shared) {
+                        if (!open.TryGetValue(id, out var entry)) {
                             Logger.Trace($"QhyccdSdk: Opening {id}");
 
                             var handle = native.Open(id);
@@ -144,12 +163,18 @@ namespace QHYCCD {
         }
 
         /// <summary>
-        /// Drops a reference taken by <see cref="Acquire"/>. The last reference closes the handle, after any call
-        /// still running on it, without holding <see cref="SdkLock"/>, so the other camera can be opened, closed or
-        /// scanned meanwhile.
+        /// Drops a reference taken by <see cref="Acquire"/>. The last reference closes the handle once the call still
+        /// running on it is done. <see cref="SdkLock"/> is taken only for the close itself, so the other camera can
+        /// be opened or scanned while this one waits for its readout, but never while CloseQHYCCD changes the SDK's
+        /// device list.
         /// </summary>
         public void Return(Entry entry) {
             lock (SdkLock) {
+                if (!open.TryGetValue(entry.Id, out var current) || current != entry) {
+                    Logger.Error($"QhyccdSdk: {entry.Id} was returned more often than it was acquired");
+                    return;
+                }
+
                 entry.RefCount--;
                 Logger.Trace($"QhyccdSdk: Closing {entry.Id}, refCount={entry.RefCount}");
 
@@ -164,7 +189,11 @@ namespace QHYCCD {
             uint result;
             try {
                 lock (entry.Lock) {
-                    result = native.Close(entry.Handle);
+                    entry.IsClosed = true;
+
+                    lock (SdkLock) {
+                        result = native.Close(entry.Handle);
+                    }
                 }
             } finally {
                 lock (SdkLock) {

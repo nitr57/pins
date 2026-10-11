@@ -27,10 +27,10 @@ namespace QHYCCD {
         void Close();
 
         /// <summary>
-        /// True when the last Open found the camera already open on another device, e.g. the camera that a
-        /// filter wheel is plugged into. Such a handle is already initialized and must not be re-initialized.
+        /// True when InitQHYCCD already ran on the opened handle, e.g. by the camera that a filter wheel is plugged
+        /// into. Such a handle is set up for that camera and must not be re-initialized.
         /// </summary>
-        bool OpenedShared => false;
+        bool HandleInitialized => false;
 
         void InitCamera();
 
