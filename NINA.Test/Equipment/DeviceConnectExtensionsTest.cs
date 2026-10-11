@@ -187,6 +187,50 @@ namespace NINA.Test.Equipment {
             device.Verify(x => x.Disconnect(), Times.Never);
         }
 
+        /// <summary>
+        /// Verifies that cancel also returns when the driver blocks synchronously inside Connect before handing back a
+        /// Task (native SDK / serial init), and that the late success is still torn down.
+        /// </summary>
+        [Test]
+        public async Task ConnectWithCancellation_WhenDriverBlocksSynchronously_StillReturnsOnCancel() {
+            Mock<IDevice> device = CreateDevice();
+            using ManualResetEventSlim driverGate = new ManualResetEventSlim(false);
+            device.Setup(x => x.Connect(It.IsAny<CancellationToken>())).Returns(() => {
+                driverGate.Wait(ConditionTimeout);
+                return Task.FromResult(true);
+            });
+            using CancellationTokenSource cts = new CancellationTokenSource();
+
+            Task<bool> connect = device.Object.ConnectWithCancellation(cts.Token);
+            cts.Cancel();
+
+            await AssertCancelled(connect);
+            driverGate.Set();
+
+            await WaitUntil(() => DisconnectCalls(device) == 1);
+        }
+
+        /// <summary>
+        /// Verifies that with disconnectAbandonedAlways an abandoned attempt is disconnected even when it fails, so devices
+        /// whose connect leaves partial state (guiders) are still cleaned up as before.
+        /// </summary>
+        [Test]
+        public async Task ConnectWithCancellation_WithDisconnectAbandonedAlways_DisconnectsFailedAttempt() {
+            Mock<IDevice> device = CreateDevice();
+            TaskCompletionSource<bool> driverConnect = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            device.Setup(x => x.Connect(It.IsAny<CancellationToken>())).Returns(driverConnect.Task);
+            using CancellationTokenSource cts = new CancellationTokenSource();
+
+            Task<bool> connect = device.Object.ConnectWithCancellation(cts.Token, disconnectAbandonedAlways: true);
+            cts.Cancel();
+            await AssertCancelled(connect);
+            device.Verify(x => x.Disconnect(), Times.Never);
+
+            driverConnect.SetResult(false);
+
+            await WaitUntil(() => DisconnectCalls(device) == 1);
+        }
+
         // Each test gets its own Id by default: abandoned attempts are tracked per Id in static state.
         private static Mock<IDevice> CreateDevice(string? id = null) {
             Mock<IDevice> device = new Mock<IDevice>();

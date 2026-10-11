@@ -44,7 +44,15 @@ namespace NINA.Equipment.Utility {
         /// background and the device is disconnected again if it finishes successfully, so a late
         /// success cannot leave a half-adopted connection behind.
         /// </summary>
-        public static async Task<bool> ConnectWithCancellation(this IDevice device, CancellationToken token) {
+        /// <param name="device">The device to connect.</param>
+        /// <param name="token">Cancels the connect from the caller's point of view.</param>
+        /// <param name="disconnectAbandonedAlways">
+        /// When true, an abandoned attempt is disconnected once it settles whatever its outcome (also when it
+        /// failed or honoured the token), for devices whose connect leaves partial state that only
+        /// <see cref="IDevice.Disconnect"/> cleans up (e.g. guiders starting an external process). By default only a
+        /// late success is torn down.
+        /// </param>
+        public static async Task<bool> ConnectWithCancellation(this IDevice device, CancellationToken token, bool disconnectAbandonedAlways = false) {
             ArgumentNullException.ThrowIfNull(device);
 
             var key = GetKey(device);
@@ -57,7 +65,10 @@ namespace NINA.Equipment.Utility {
             // and then have to be torn down again) when the caller already gave up.
             token.ThrowIfCancellationRequested();
 
-            var connectTask = device.Connect(token);
+            // Run the driver's Connect off the caller's thread: some drivers block synchronously before they
+            // hand back a Task (native SDK or serial-port init), which would otherwise make the cancel wait
+            // for them, too.
+            var connectTask = Task.Run(() => device.Connect(token));
             try {
                 return await connectTask.WaitAsync(token).ConfigureAwait(false);
             } catch (OperationCanceledException) when (token.IsCancellationRequested) {
@@ -68,7 +79,7 @@ namespace NINA.Equipment.Utility {
                     Logger.Warning($"{device.Name} - Connect cancelled while the driver is still busy. Abandoning the attempt; the device will be disconnected if it connects late");
                 }
                 var cleanup = connectTask.ContinueWith(
-                    t => CleanupAbandonedConnect(device, t),
+                    t => CleanupAbandonedConnect(device, t, disconnectAbandonedAlways),
                     CancellationToken.None,
                     TaskContinuationOptions.None,
                     TaskScheduler.Default);
@@ -84,7 +95,7 @@ namespace NINA.Equipment.Utility {
             }
         }
 
-        private static void CleanupAbandonedConnect(IDevice device, Task<bool> connectTask) {
+        private static void CleanupAbandonedConnect(IDevice device, Task<bool> connectTask, bool disconnectAlways) {
             try {
                 if (connectTask.IsFaulted) {
                     Logger.Debug($"{device.Name} - Abandoned connect attempt failed: {connectTask.Exception?.GetBaseException().Message}");
@@ -95,6 +106,9 @@ namespace NINA.Equipment.Utility {
                 // and probing Connected here could observe - and kill - a different connection.
                 if (connectTask.IsCompletedSuccessfully && connectTask.Result) {
                     Logger.Info($"{device.Name} - Abandoned connect attempt completed after cancellation. Disconnecting");
+                    device.Disconnect();
+                } else if (disconnectAlways) {
+                    Logger.Info($"{device.Name} - Abandoned connect attempt finished without connecting. Disconnecting to clean up partial state");
                     device.Disconnect();
                 } else {
                     Logger.Info($"{device.Name} - Abandoned connect attempt finished without connecting");

@@ -202,6 +202,8 @@ namespace NINA.Equipment.Equipment {
                     Logger.Trace($"{Name} - Creating instance for {Id}");
                     var concreteDevice = GetInstance();
                     device = concreteDevice;
+                    // GetInstance() can wait several seconds for the driver's CONNECTION property without a token.
+                    token.ThrowIfCancellationRequested();
 
                     Logger.Trace($"{Name} - Calling Connect for {Id}");
 

@@ -730,6 +730,9 @@ namespace NINA.INDI.Devices
             }
             else
             {
+                // SetSwitchValueAsync sends before it looks at the token. Do not open the driver's port just
+                // to close it again (and race the next attempt's CONNECT) when the caller already gave up.
+                ct.ThrowIfCancellationRequested();
                 attempt.ConnectSent = true;
                 success = await SetSwitchValueAsync("CONNECTION", "CONNECT", true, TimeSpan.FromSeconds(30), ct);
                 // SetSwitchValueAsync reports cancellation as a plain failure; do not log a user

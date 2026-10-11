@@ -229,6 +229,22 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
         }
 
         public async Task<bool> Connect() {
+            // Registered before waiting so CancelConnect() also reaches a queued call and every call in flight.
+            var connectCancellation = pendingConnects.Begin();
+            var token = connectCancellation.Token;
+            await connectSemaphore.WaitAsync();
+            try {
+                if (token.IsCancellationRequested) {
+                    return false;
+                }
+                return await ConnectCore(token);
+            } finally {
+                pendingConnects.End(connectCancellation);
+                connectSemaphore.Release();
+            }
+        }
+
+        private async Task<bool> ConnectCore(CancellationToken token) {
             ResetGraphValues();
 
             bool connected = false;
@@ -239,12 +255,13 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
                     Guider.PropertyChanged -= Guider_PropertyChanged;
                     Guider.GuideEvent -= Guider_GuideEvent;
                 }
-                _cancelConnectGuiderSource?.Dispose();
-                _cancelConnectGuiderSource = new CancellationTokenSource();
                 Guider = (IGuider)DeviceChooserVM.SelectedDevice;
-                connected = await Guider.ConnectWithCancellation(_cancelConnectGuiderSource.Token);
+                // Guider connects can leave partial state (e.g. a started PHD2 process) that only Disconnect()
+                // cleans up, so an abandoned attempt is disconnected whatever its outcome - as before this
+                // change, where a cancelled connect always ended in Disconnect().
+                connected = await Guider.ConnectWithCancellation(token, disconnectAbandonedAlways: true);
                 connectReturned = true;
-                _cancelConnectGuiderSource.Token.ThrowIfCancellationRequested();
+                token.ThrowIfCancellationRequested();
                 connected = connected && Guider.Connected;
 
                 if (connected) {
@@ -278,13 +295,14 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
 
                     await (Connected?.InvokeAsync(this, new EventArgs()) ?? Task.CompletedTask);
                 }
-            } catch (OperationCanceledException) when (!connectReturned && _cancelConnectGuiderSource.Token.IsCancellationRequested) {
-                // The connect was abandoned while the driver is still busy. Calling Guider.Disconnect()
-                // now would race the in-flight connect; ConnectWithCancellation disconnects it once it
-                // settles. Only reset the VM state here.
+            } catch (OperationCanceledException) when (!connectReturned && token.IsCancellationRequested) {
+                // Cancelled by the user before the driver's connect returned. Calling Guider.Disconnect() now
+                // could race a still running connect; ConnectWithCancellation disconnects the attempt once it
+                // settles (disconnectAbandonedAlways). Only reset the VM state here and notify like Disconnect().
                 Guider = null;
                 GuiderInfo.Reset();
                 BroadcastGuiderInfo();
+                await (Disconnected?.InvokeAsync(this, new EventArgs()) ?? Task.CompletedTask);
                 return false;
             } catch (OperationCanceledException) {
                 connected = false;
@@ -508,7 +526,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
         public void CancelConnect() => CancelConnectGuider(null);
 
         private void CancelConnectGuider(object o) {
-            try { _cancelConnectGuiderSource?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
         public string Action(string actionName, string actionParameters = "") {
@@ -596,7 +614,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
 
         private IGuiderMediator guiderMediator;
         private IApplicationStatusMediator applicationStatusMediator;
-        private CancellationTokenSource _cancelConnectGuiderSource;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
+        private readonly SemaphoreSlim connectSemaphore = new SemaphoreSlim(1, 1);
 
         public event Func<object, EventArgs, Task> Connected;
         public event Func<object, EventArgs, Task> Disconnected;
