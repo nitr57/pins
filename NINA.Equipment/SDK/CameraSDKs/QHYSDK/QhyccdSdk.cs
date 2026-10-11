@@ -50,24 +50,27 @@ namespace QHYCCD {
             this.registry = registry;
         }
 
-        /// <summary>True when InitQHYCCD already ran on the attached handle, e.g. by the camera of this CFW.</summary>
-        public bool HandleInitialized => Volatile.Read(ref camera)?.Initialized == true;
-
         /// <summary>
         /// Takes the lock of the handle this instance is attached to and the handle itself from one read of
         /// <see cref="camera"/>, so a concurrent Close/Open can't pair one camera's lock with another's handle.
-        /// Before Open, after Close, or when the handle was closed while waiting for its lock, it yields a zero
-        /// handle, which the SDK rejects.
+        /// Before Open, after Close, or when the handle was closed while waiting for its lock, it takes the SDK lock
+        /// instead and yields a zero handle, which the SDK rejects; the SDK lock keeps that call out of a
+        /// concurrent release of the SDK.
         /// </summary>
         private HandleScope EnterHandle() {
             var current = Volatile.Read(ref camera);
 
-            if (current == null) {
-                return new HandleScope(registry.SdkLock.EnterScope(), IntPtr.Zero, null);
+            if (current != null) {
+                var scope = current.Enter(out var handle);
+
+                if (handle != IntPtr.Zero) {
+                    return new HandleScope(scope, handle, current);
+                }
+
+                scope.Dispose();
             }
 
-            var scope = current.Enter(out var handle);
-            return new HandleScope(scope, handle, current);
+            return new HandleScope(registry.SdkLock.EnterScope(), IntPtr.Zero, null);
         }
 
         private ref struct HandleScope {
@@ -99,6 +102,8 @@ namespace QHYCCD {
             public IntPtr Open(string id) => OpenQHYCCD(id);
 
             public uint Close(IntPtr handle) => CloseQHYCCD(handle);
+
+            public uint InitCamera(IntPtr handle) => InitQHYCCD(handle);
         }
 
         #region Call Wrappers
@@ -148,11 +153,36 @@ namespace QHYCCD {
 
         public void InitCamera() {
             using (var scope = EnterHandle()) {
-                CheckReturn(InitQHYCCD(scope.Handle), MethodBase.GetCurrentMethod(), scope.Handle);
+                InitHandle(scope.Handle, scope.Entry, MethodBase.GetCurrentMethod());
+            }
+        }
 
-                if (scope.Entry != null) {
-                    scope.Entry.Initialized = true;
+        /// <summary>
+        /// Runs InitQHYCCD unless it already succeeded on the handle, e.g. by the camera of this CFW. The check and
+        /// the init run under one hold of the handle's lock, so a camera that sets the handle up meanwhile is never
+        /// reset under it.
+        /// </summary>
+        public void InitCameraIfNeeded() {
+            using (var scope = EnterHandle()) {
+                if (scope.Entry?.Initialized == true) {
+                    Logger.Trace($"QhyccdSdk: {scope.Entry.Id} is already initialized");
+                    return;
                 }
+
+                InitHandle(scope.Handle, scope.Entry, MethodBase.GetCurrentMethod());
+            }
+        }
+
+        private void InitHandle(IntPtr handle, QhyHandleRegistry.Entry entry, MethodBase callingMethod) {
+            // A failed InitQHYCCD leaves the handle in need of another one, also after an earlier init succeeded.
+            if (entry != null) {
+                entry.Initialized = false;
+            }
+
+            CheckReturn(registry.Native.InitCamera(handle), callingMethod, handle);
+
+            if (entry != null) {
+                entry.Initialized = true;
             }
         }
 
@@ -541,10 +571,17 @@ namespace QHYCCD {
                 sb.AppendLine("Error '" + message + "' from call to ");
                 sb.Append("QHY" + callingMethod.Name + "(");
                 var paramNames = callingMethod.GetParameters().Select(x => x.Name);
+                var appended = false;
                 foreach (var line in paramNames.Zip(parameters, (s, o) => string.Format("{0}={1}, ", s, o))) {
                     sb.Append(line);
+                    appended = true;
                 }
-                sb.Remove(sb.Length - 2, 2);
+
+                // Drop the trailing ", ", but not the "(" and the end of the name when nothing was listed.
+                if (appended) {
+                    sb.Remove(sb.Length - 2, 2);
+                }
+
                 sb.Append(")");
                 return sb.ToString();
             }

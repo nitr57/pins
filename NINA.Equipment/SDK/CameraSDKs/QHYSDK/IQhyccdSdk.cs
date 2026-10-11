@@ -26,13 +26,13 @@ namespace QHYCCD {
 
         void Close();
 
-        /// <summary>
-        /// True when InitQHYCCD already ran on the opened handle, e.g. by the camera that a filter wheel is plugged
-        /// into. Such a handle is set up for that camera and must not be re-initialized.
-        /// </summary>
-        bool HandleInitialized => false;
-
         void InitCamera();
+
+        /// <summary>
+        /// Runs InitQHYCCD unless it already succeeded on the opened handle, e.g. by the camera that a filter wheel
+        /// is plugged into: such a handle is set up for that camera and must not be re-initialized under it.
+        /// </summary>
+        void InitCameraIfNeeded() => InitCamera();
 
         uint Scan();
 

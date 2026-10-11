@@ -32,7 +32,7 @@ namespace QHYCCD {
     /// </summary>
     internal sealed class QhyHandleRegistry {
 
-        /// <summary>The native calls the registry needs; replaced by a fake in tests.</summary>
+        /// <summary>The native calls the registry and the handle setup need; replaced by a fake in tests.</summary>
         internal interface INative {
 
             uint InitResource();
@@ -44,10 +44,11 @@ namespace QHYCCD {
             IntPtr Open(string id);
 
             uint Close(IntPtr handle);
+
+            uint InitCamera(IntPtr handle);
         }
 
         internal sealed class Entry(string id, IntPtr handle) {
-            private volatile bool initialized;
 
             public string Id { get; } = id;
 
@@ -62,11 +63,11 @@ namespace QHYCCD {
             /// <summary>Set under <see cref="Lock"/> before the handle is closed.</summary>
             public bool IsClosed { get; set; }
 
-            /// <summary>Whether InitQHYCCD succeeded on this handle, e.g. by the camera the CFW is plugged into.</summary>
-            public bool Initialized {
-                get => initialized;
-                set => initialized = value;
-            }
+            /// <summary>
+            /// Whether the last InitQHYCCD on this handle succeeded, e.g. by the camera the CFW is plugged into.
+            /// Read and written under <see cref="Lock"/>.
+            /// </summary>
+            public bool Initialized { get; set; }
 
             /// <summary>
             /// Takes <see cref="Lock"/> and yields the handle, or a zero handle (which the SDK rejects) when it was
@@ -91,6 +92,8 @@ namespace QHYCCD {
 
         /// <summary>Serializes the process-wide SDK calls (init, release, scan, id and model lookups).</summary>
         public Lock SdkLock { get; } = new();
+
+        public INative Native => native;
 
         public bool IsInitialized {
             get {

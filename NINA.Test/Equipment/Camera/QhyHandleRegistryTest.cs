@@ -16,6 +16,7 @@ using NUnit.Framework;
 using QHYCCD;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -72,26 +73,66 @@ namespace NINA.Test.Equipment.Camera {
         }
 
         [Test]
-        public void HandleInitialized_IsSharedByTheDevicesOnOneCamera_AndResetByANewHandle() {
+        public void InitCameraIfNeeded_SkipsAHandleTheCameraAlreadyInitialized() {
             var camera = Sdk();
             var filterWheel = Sdk();
             camera.Open(Main);
             filterWheel.Open(Main);
 
-            Assert.That(filterWheel.HandleInitialized, Is.False, "a handle that is only open isn't set up yet");
+            camera.InitCamera();
+            filterWheel.InitCameraIfNeeded();
 
-            // What QhySdk.InitCamera records once InitQHYCCD succeeded on the camera's handle.
-            var entry = registry.Acquire(Main);
-            entry.Initialized = true;
-            registry.Return(entry);
+            Assert.That(native.CameraInits, Has.Count.EqualTo(1), "the filter wheel must not reset the camera's setup");
+        }
 
-            Assert.That(filterWheel.HandleInitialized, Is.True);
+        [Test]
+        public void InitCameraIfNeeded_InitializesAHandleThatIsOnlyOpen_AndAgainAfterAReopen() {
+            var filterWheelScan = Sdk();
+            var filterWheel = Sdk();
 
-            camera.Close();
+            // A filter wheel rescan holds the handle without initializing it.
+            filterWheelScan.Open(Main);
+            filterWheel.Open(Main);
+            filterWheel.InitCameraIfNeeded();
+
+            Assert.That(native.CameraInits, Has.Count.EqualTo(1));
+
+            filterWheelScan.Close();
             filterWheel.Close();
             filterWheel.Open(Main);
+            filterWheel.InitCameraIfNeeded();
 
-            Assert.That(filterWheel.HandleInitialized, Is.False, "a reopened camera has a new handle");
+            Assert.That(native.CameraInits, Has.Count.EqualTo(2), "a reopened camera has a new handle");
+        }
+
+        [Test]
+        public void AFailedInit_IsRepeatedByTheNextInitCameraIfNeeded() {
+            var camera = Sdk();
+            var filterWheel = Sdk();
+            camera.Open(Main);
+            filterWheel.Open(Main);
+            camera.InitCamera();
+
+            native.InitCameraResult = QhySdk.QHYCCD_ERROR;
+            Assert.Throws<QhySdk.QHYCameraException>(camera.InitCamera);
+
+            native.InitCameraResult = QhySdk.QHYCCD_SUCCESS;
+            filterWheel.InitCameraIfNeeded();
+
+            Assert.That(native.CameraInits, Has.Count.EqualTo(3));
+        }
+
+        [Test]
+        public void ACallWithoutAnOpenHandle_GetsAZeroHandle_UnderTheSdkLock() {
+            native.Registry = registry;
+            var sdk = Sdk();
+
+            Assert.That(
+                () => sdk.InitCamera(),
+                Throws.TypeOf<QhySdk.QHYCameraException>().With.Message.Contains("QHYInitCamera()"));
+
+            Assert.That(native.CameraInits, Is.EqualTo(new[] { IntPtr.Zero }));
+            Assert.That(native.CameraInitUnderSdkLock, Is.True, "a zero-handle call must not overlap a release of the SDK");
         }
 
         [Test]
@@ -266,20 +307,41 @@ namespace NINA.Test.Equipment.Camera {
         public async Task ReopeningACamera_WaitsUntilItsOldHandleIsClosed() {
             var first = Sdk();
             first.Open(Main);
-            native.BlockClose.Reset();
+            var entry = registry.Acquire(Main);
+            var busy = new ManualResetEventSlim();
+            var finishReadout = new ManualResetEventSlim();
 
-            var closing = Task.Run(first.Close);
-            await WaitUntil(() => native.CloseRequested);
+            // Simulates a readout holding the old handle, so its close waits outside the SDK lock.
+            var readout = Task.Run(() => {
+                lock (entry.Lock) {
+                    busy.Set();
+                    finishReadout.Wait();
+                }
+            });
 
-            var second = Sdk();
-            var reopening = Task.Run(() => second.Open(Main));
-            await Task.Delay(100);
-            Assert.That(reopening.IsCompleted, Is.False, "the camera is opened again only after its old handle is closed");
+            try {
+                Assert.That(busy.Wait(MaxWait), Is.True);
 
-            native.BlockClose.Set();
-            await closing;
-            await reopening;
-            Assert.That(native.Opened, Is.EqualTo(new[] { Main, Main }));
+                registry.Return(entry);
+                var closing = Task.Run(first.Close);
+                await WaitUntil(() => entry.RefCount == 0);
+
+                var second = Sdk();
+                var reopening = Task.Run(() => second.Open(Main));
+
+                Assert.That(Task.Run(registry.Scan).Wait(MaxWait), Is.True, "the SDK lock is free while the close waits");
+                await Task.Delay(100);
+                Assert.That(reopening.IsCompleted, Is.False, "the camera is opened again only after its old handle is closed");
+                Assert.That(native.Opened, Has.Count.EqualTo(1));
+
+                finishReadout.Set();
+                await readout;
+                await closing;
+                Assert.That(reopening.Wait(MaxWait), Is.True);
+                Assert.That(native.Calls, Is.EqualTo(new[] { "open " + Main, "close " + Main, "open " + Main }));
+            } finally {
+                finishReadout.Set();
+            }
         }
 
         private static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(10);
@@ -303,15 +365,19 @@ namespace NINA.Test.Equipment.Camera {
 
             public HashSet<string> Unopenable { get; } = new();
 
-            public ManualResetEventSlim BlockClose { get; } = new(true);
+            public List<string> Calls { get; } = new();
 
-            public volatile bool CloseRequested;
+            public List<IntPtr> CameraInits { get; } = new();
 
             public QhyHandleRegistry? Registry { get; set; }
 
             public bool ClosedUnderSdkLock { get; private set; }
 
+            public bool CameraInitUnderSdkLock { get; private set; }
+
             public uint ReleaseResult { get; set; } = QhySdk.QHYCCD_SUCCESS;
+
+            public uint InitCameraResult { get; set; } = QhySdk.QHYCCD_SUCCESS;
 
             public int Inits { get; private set; }
 
@@ -344,20 +410,28 @@ namespace NINA.Test.Equipment.Camera {
                 }
 
                 Opened.Add(id);
+                Calls.Add("open " + id);
                 handles[id] = new IntPtr(next++);
                 return handles[id];
             }
 
             public uint Close(IntPtr handle) {
-                CloseRequested = true;
                 ClosedUnderSdkLock = Registry?.SdkLock.IsHeldByCurrentThread == true;
-                BlockClose.Wait();
 
                 lock (Closed) {
                     Closed.Add(handle);
+                    Calls.Add("close " + handles.First(h => h.Value == handle).Key);
                 }
 
                 return QhySdk.QHYCCD_SUCCESS;
+            }
+
+            public uint InitCamera(IntPtr handle) {
+                CameraInitUnderSdkLock = Registry?.SdkLock.IsHeldByCurrentThread == true;
+                CameraInits.Add(handle);
+
+                // Like libqhyccd, reject a call without a handle.
+                return handle == IntPtr.Zero ? QhySdk.QHYCCD_ERROR : InitCameraResult;
             }
         }
     }

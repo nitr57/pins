@@ -71,14 +71,14 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
                 Sdk.InitSdk();
 
                 Logger.Debug($"QHYCFW: Connecting to filter wheel {Name}");
-                Sdk.Open(Info.Id);
 
                 try {
+                    // Inside the try: a camera that can't be opened must not leave the SDK initialized.
+                    Sdk.Open(Info.Id);
+
                     // The camera this CFW is plugged into may already have initialized and set up the handle (stream
                     // mode, resolution, bit depth); InitQHYCCD would reset that under it.
-                    if (!Sdk.HandleInitialized) {
-                        Sdk.InitCamera();
-                    }
+                    Sdk.InitCameraIfNeeded();
 
                     if (!Sdk.IsCfwPlugged()) {
                         string errMessage = $"CFW {Name} is not found on the connected camera!";
