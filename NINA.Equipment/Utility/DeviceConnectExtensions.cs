@@ -51,8 +51,13 @@ namespace NINA.Equipment.Utility {
             var connectTask = device.Connect(token);
             try {
                 return await connectTask.WaitAsync(token).ConfigureAwait(false);
-            } catch (OperationCanceledException) when (token.IsCancellationRequested && !connectTask.IsCompleted) {
-                Logger.Warning($"{device.Name} - Connect cancelled while the driver is still busy. Abandoning the attempt; the device will be disconnected if it connects late");
+            } catch (OperationCanceledException) when (token.IsCancellationRequested) {
+                // Also covers the race where the connect completed at the same moment the token
+                // fired: the caller treats the attempt as cancelled, so a connection that did come
+                // up must be torn down rather than leaked. ContinueWith runs immediately then.
+                if (!connectTask.IsCompleted) {
+                    Logger.Warning($"{device.Name} - Connect cancelled while the driver is still busy. Abandoning the attempt; the device will be disconnected if it connects late");
+                }
                 var cleanup = connectTask.ContinueWith(
                     t => CleanupAbandonedConnect(device, t),
                     CancellationToken.None,
