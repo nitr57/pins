@@ -210,5 +210,97 @@ namespace NINA.Test.Focuser {
             deviceInfo.Temperature.Should().Be(temperature);
             mockFocuserMediator.Verify(m => m.Broadcast(It.Is<FocuserInfo>(info => info.Connected && info.Name == "TestFocuserName" && info.Position == position)), Times.AtLeastOnce);
         }
+
+        /// <summary>
+        /// Issue #33: CancelConnect() must return a connect whose driver hangs and ignores the token, without reading
+        /// Connected on the attempted device (for ASCOM/Alpaca that getter blocks on the lock the hung connect holds), and
+        /// a late success of the abandoned attempt must be disconnected again instead of being adopted.
+        /// </summary>
+        [Test]
+        public async Task CancelConnect_WhileDriverHangs_ReturnsWithoutAdoptingAndDisconnectsLateSuccess() {
+            using ManualResetEventSlim driverLock = new ManualResetEventSlim(false);
+            TaskCompletionSource<bool> driverConnect = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource connectEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            SetupHangingFocuser(driverConnect, connectEntered);
+            // Simulates AscomDevice: the Connected getter waits for the lock held by the hung Connected = true setter.
+            mockFocuser.SetupGet(m => m.Connected).Returns(() => {
+                driverLock.Wait(CancelTimeout);
+                return false;
+            });
+
+            Task<bool> connect = sut.Connect();
+            await connectEntered.Task.WaitAsync(CancelTimeout);
+
+            sut.CancelConnect();
+
+            (await connect.WaitAsync(TimeSpan.FromSeconds(2))).Should().BeFalse("cancel must not wait for the hung driver");
+            sut.Focuser.Should().BeNull();
+            mockFocuser.Verify(m => m.Disconnect(), Times.Never);
+
+            driverLock.Set();
+            driverConnect.SetResult(true);
+
+            await WaitUntil(() => CountInvocations(mockFocuser, nameof(IFocuser.Disconnect)) == 1);
+            sut.Focuser.Should().BeNull();
+        }
+
+        /// <summary>
+        /// A second connect queued behind a hanging one must not make the hanging attempt uncancellable: CancelConnect()
+        /// cancels every call in flight. The queued call must then return without tearing anything down or starting a
+        /// second driver connect.
+        /// </summary>
+        [Test]
+        public async Task CancelConnect_WithQueuedSecondConnect_CancelsBothAndQueuedCallDoesNothing() {
+            TaskCompletionSource<bool> driverConnect = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource connectEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            SetupHangingFocuser(driverConnect, connectEntered);
+
+            Task<bool> first = sut.Connect();
+            await connectEntered.Task.WaitAsync(CancelTimeout);
+            Task<bool> queued = sut.Connect();
+
+            sut.CancelConnect();
+
+            (await first.WaitAsync(CancelTimeout)).Should().BeFalse();
+            (await queued.WaitAsync(CancelTimeout)).Should().BeFalse();
+            mockFocuser.Verify(m => m.Connect(It.IsAny<CancellationToken>()), Times.Once);
+            sut.Focuser.Should().BeNull();
+
+            driverConnect.SetResult(false);
+        }
+
+        private static readonly TimeSpan CancelTimeout = TimeSpan.FromSeconds(5);
+
+        private void SetupHangingFocuser(TaskCompletionSource<bool> driverConnect, TaskCompletionSource connectEntered) {
+            mockProfileService.Setup(m => m.ActiveProfile.FocuserSettings.BacklashCompensationModel)
+                .Returns(BacklashCompensationModel.ABSOLUTE);
+            // Unique Id: abandoned attempts are tracked per device Id in static state.
+            mockFocuser.SetupGet(m => m.Id).Returns(Guid.NewGuid().ToString());
+            mockFocuserChooserVm.Setup(m => m.SelectedDevice).Returns(mockFocuser.Object);
+            mockFocuser.Setup(m => m.Connect(It.IsAny<CancellationToken>())).Returns(() => {
+                connectEntered.TrySetResult();
+                return driverConnect.Task;
+            });
+        }
+
+        private static int CountInvocations(Mock mock, string methodName) {
+            int calls = 0;
+            foreach (var invocation in mock.Invocations) {
+                if (invocation.Method.Name == methodName) {
+                    calls++;
+                }
+            }
+            return calls;
+        }
+
+        private static async Task WaitUntil(Func<bool> condition) {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            while (!condition()) {
+                if (stopwatch.Elapsed > CancelTimeout) {
+                    Assert.Fail("Condition was not met within the timeout");
+                }
+                await Task.Delay(20);
+            }
+        }
     }
 }

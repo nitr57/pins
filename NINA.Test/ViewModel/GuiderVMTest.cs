@@ -93,6 +93,53 @@ namespace NINA.Test.ViewModel {
         }
 
         /// <summary>
+        /// Issue #33: cancelling a guider connect whose driver hangs returns immediately, resets the VM state and raises
+        /// Disconnected without calling Disconnect() on the guider while its connect is still running. Once the abandoned
+        /// attempt settles - even unsuccessfully - the guider is disconnected to clean up partial state (e.g. a started
+        /// PHD2 process), as a cancelled connect did before.
+        /// </summary>
+        [Test]
+        public async Task CancelConnect_WhileGuiderConnectHangs_ResetsStateAndDisconnectsAbandonedAttemptLater() {
+            GuiderVM vm = CreateVm();
+            Mock<IGuider> guider = CreateGuider(connects: false);
+            // Unique Id: abandoned attempts are tracked per device Id in static state.
+            guider.SetupGet(x => x.Id).Returns(Guid.NewGuid().ToString());
+            TaskCompletionSource<bool> driverConnect = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource connectEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            guider.Setup(x => x.Connect(It.IsAny<CancellationToken>())).Returns(() => {
+                connectEntered.TrySetResult();
+                return driverConnect.Task;
+            });
+            deviceChooser.SetupGet(x => x.SelectedDevice).Returns(guider.Object);
+            int disconnectedRaised = 0;
+            vm.Disconnected += (_, _) => {
+                Interlocked.Increment(ref disconnectedRaised);
+                return Task.CompletedTask;
+            };
+
+            Task<bool> connect = vm.Connect();
+            await connectEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            vm.CancelConnect();
+
+            (await connect.WaitAsync(TimeSpan.FromSeconds(5))).Should().BeFalse();
+            vm.Guider.Should().BeNull();
+            vm.GuiderInfo.Connected.Should().BeFalse();
+            Volatile.Read(ref disconnectedRaised).Should().Be(1);
+            guider.Verify(x => x.Disconnect(), Times.Never, "the driver's connect is still running");
+
+            driverConnect.SetResult(false);
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            while (guider.Invocations.Count(i => i.Method.Name == nameof(IGuider.Disconnect)) == 0) {
+                if (stopwatch.Elapsed > TimeSpan.FromSeconds(5)) {
+                    Assert.Fail("The abandoned guider attempt was not disconnected");
+                }
+                await Task.Delay(20);
+            }
+        }
+
+        /// <summary>
         /// Verifies that a failed guider connection clears state and broadcasts disconnected info.
         /// This protects retry behavior when a guider driver reports that it could not connect.
         /// </summary>
