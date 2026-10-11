@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+### Fixed
+- DSLR and mirrorless cameras (native RAW, e.g. Nikon NEF over libgphoto2): the flat wizard's auto brightness overexposed the flats, and the preview turned black once the frame saturated. RAW pixels are not scaled, yet their range was taken from the profile's camera bit depth (16 by default), so a 14-bit NEF read four times darker than it is (a 12-bit NEF sixteen times) and the wizard drove the panel into saturation, where the stretch maps a flat, clipped frame to black. The bit depth of a RAW image now also follows the white level LibRaw reads from the file and is lowered to the range the data actually reaches (the pixel values and saved files stay unchanged). Auto brightness flats, auto exposure flats and sky flats now measure their histogram target against the bit depth of the converted image instead of the profile's, which also fixes flats that came out four times too dark with bit scaling on and a bit depth below 16. Histogram targets that were lowered to work around this (e.g. 3%) need to go back to normal values.
+
 ## 1.1.64 - 2026-10-10
 ### Added
 - Internal guider: choose the guide star yourself. While the guider is looping (not guiding), `IAdvancedGuider.SelectGuideStar(x, y)` makes the star nearest the position the guide star on the next frame, like clicking a star in PHD2; in multi-star mode its secondary stars are found around it (PHD2 guides a clicked star alone). It answers with the star and the number of secondary stars, or why it was refused (no star there, too close to the edge, busy guiding, calibrating or running the Guiding Coach, not looping, cancelled, no frame in time). The Touch-N-Stars plugin offers it as `POST /api/internal-guider/select-star`, for choosing the guide star by tapping it in the guide frame

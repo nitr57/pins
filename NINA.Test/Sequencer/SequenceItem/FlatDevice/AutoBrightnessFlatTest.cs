@@ -5,6 +5,7 @@ using NINA.Equipment.Equipment.MyCamera;
 using NINA.Equipment.Equipment.MyFlatDevice;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Model;
+using NINA.Image.ImageData;
 using NINA.Image.Interfaces;
 using NINA.Profile.Interfaces;
 using NINA.Sequencer.Conditions;
@@ -86,6 +87,33 @@ namespace NINA.Test.Sequencer.SequenceItem.FlatDevice {
             var exposureData = new Mock<IExposureData>();
             exposureData.SetupGet(x => x.BitDepth).Returns(16);
             var imageData = new Mock<IImageData>();
+            imageData.SetupGet(x => x.Properties).Returns(new ImageProperties(100, 100, 16, true, 100, 0));
+            var statistics = new Mock<IImageStatistics>();
+            statistics.SetupGet(x => x.Mean).Returns(30000);
+
+            imagingMediator.Setup(x => x.CaptureImage(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>(), "")).ReturnsAsync(exposureData.Object);
+            imageData.Setup(x => x.Statistics).Returns(new Nito.AsyncEx.AsyncLazy<IImageStatistics>(async () => statistics.Object));
+            exposureData.Setup(x => x.ToImageData(It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>())).ReturnsAsync(imageData.Object);
+
+            await sut.Execute(default, default);
+
+            sut.GetSetBrightnessItem().Brightness.Should().Be(5000);
+            imageSaveMediator.Verify(x => x.Enqueue(imageData.Object, It.IsAny<Task<IRenderedImage>>(), It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        /// <summary>
+        /// A RAW converter can report a different bit depth than the exposure carried (bit scaling to 16 bits, or a
+        /// profile bit depth above the RAW data's), so the histogram target must use the bit depth of the converted pixels.
+        /// </summary>
+        [Test]
+        public async Task Execute_ConvertedImageBitDepthDiffersFromExposureBitDepth_UsesConvertedImageBitDepth() {
+            sut.MinBrightness = 0;
+            sut.MaxBrightness = 10000;
+
+            var exposureData = new Mock<IExposureData>();
+            exposureData.SetupGet(x => x.BitDepth).Returns(14);
+            var imageData = new Mock<IImageData>();
+            imageData.SetupGet(x => x.Properties).Returns(new ImageProperties(100, 100, 16, true, 100, 0));
             var statistics = new Mock<IImageStatistics>();
             statistics.SetupGet(x => x.Mean).Returns(30000);
 
@@ -107,6 +135,7 @@ namespace NINA.Test.Sequencer.SequenceItem.FlatDevice {
             var exposureData = new Mock<IExposureData>();
             exposureData.SetupGet(x => x.BitDepth).Returns(16);
             var imageData = new Mock<IImageData>();
+            imageData.SetupGet(x => x.Properties).Returns(new ImageProperties(100, 100, 16, true, 100, 0));
 
             var statistics1 = new Mock<IImageStatistics>();
             statistics1.SetupGet(x => x.Mean).Returns(10000);
@@ -138,6 +167,7 @@ namespace NINA.Test.Sequencer.SequenceItem.FlatDevice {
             var exposureData = new Mock<IExposureData>();
             exposureData.SetupGet(x => x.BitDepth).Returns(16);
             var imageData = new Mock<IImageData>();
+            imageData.SetupGet(x => x.Properties).Returns(new ImageProperties(100, 100, 16, true, 100, 0));
 
             var statistics1 = new Mock<IImageStatistics>();
             statistics1.SetupGet(x => x.Mean).Returns(10000);
@@ -173,6 +203,7 @@ namespace NINA.Test.Sequencer.SequenceItem.FlatDevice {
             var exposureData = new Mock<IExposureData>();
             exposureData.SetupGet(x => x.BitDepth).Returns(16);
             var imageData = new Mock<IImageData>();
+            imageData.SetupGet(x => x.Properties).Returns(new ImageProperties(100, 100, 16, true, 100, 0));
 
             var statistics1 = new Mock<IImageStatistics>();
             statistics1.SetupGet(x => x.Mean).Returns(50000);
@@ -204,6 +235,7 @@ namespace NINA.Test.Sequencer.SequenceItem.FlatDevice {
             var exposureData = new Mock<IExposureData>();
             exposureData.SetupGet(x => x.BitDepth).Returns(16);
             var imageData = new Mock<IImageData>();
+            imageData.SetupGet(x => x.Properties).Returns(new ImageProperties(100, 100, 16, true, 100, 0));
 
             var statistics1 = new Mock<IImageStatistics>();
             statistics1.SetupGet(x => x.Mean).Returns(50000);

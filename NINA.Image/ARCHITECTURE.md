@@ -60,6 +60,7 @@ The project is responsible for the code that understands supported image formats
 - TIFF (`.tif`, `.tiff`)
 - common WIC-backed bitmap formats such as GIF, JPEG, and PNG
 - supported RAW DSLR formats through LibRaw (`.cr2`, `.cr3`, `.nef`, `.raf`, `.raw`, `.pef`, `.dng`, `.arw`, `.orf`, `.rw2`)
+  RAW pixels keep their unpacked values unless the profile's bit scaling shifts them to 16 bits. The image's reported bit depth is the range statistics, stretching and flat histogram targets measure against: `LibRawConverter` lowers it to what LibRaw's white level and the brightest pixel actually reach, so it can be below the profile's camera bit depth. Consumers that interpret pixel values must use `IImageData.Properties.BitDepth`, not the bit depth an `IExposureData` was created with.
 
 The executable project ships the runtime files such as:
 

@@ -354,7 +354,7 @@ namespace NINA.Sequencer.SequenceItem.FlatDevice {
 
                 var mean = statistics.Mean;
 
-                var check = HistogramMath.GetExposureAduState(mean, HistogramTargetPercentage, image.BitDepth, HistogramTolerancePercentage);
+                var check = HistogramMath.GetExposureAduState(mean, HistogramTargetPercentage, imageData.Properties.BitDepth, HistogramTolerancePercentage);
 
                 DeterminedHistogramADU = mean;
                 determinedHistogramADUpercentage = (mean / (Math.Pow(2, imageData.Properties.BitDepth) - 1));
