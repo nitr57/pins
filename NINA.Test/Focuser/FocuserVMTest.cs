@@ -24,6 +24,7 @@ using NINA.WPF.Base.Interfaces.Mediator;
 using NINA.Core.Model;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Interfaces;
+using NINA.Equipment.Utility;
 using NINA.WPF.Base.ViewModel.Equipment.Focuser;
 
 namespace NINA.Test.Focuser {
@@ -266,7 +267,11 @@ namespace NINA.Test.Focuser {
             mockFocuser.Verify(m => m.Connect(It.IsAny<CancellationToken>()), Times.Once);
             sut.Focuser.Should().BeNull();
 
+            // Let the abandoned attempt settle and wait for its cleanup (a connect for the same Id waits for it), so no
+            // background work touches the shared mocks while the next test resets them.
             driverConnect.SetResult(false);
+            (await mockFocuser.Object.ConnectWithCancellation(CancellationToken.None).WaitAsync(CancelTimeout)).Should().BeFalse();
+            mockFocuser.Verify(m => m.Disconnect(), Times.Never);
         }
 
         private static readonly TimeSpan CancelTimeout = TimeSpan.FromSeconds(5);
