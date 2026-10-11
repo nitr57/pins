@@ -344,6 +344,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
         public event Func<object, EventArgs, Task> Disconnected;
 
         public async Task<bool> Connect() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            _connectRotatorCts = connectCancellation;
+            var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
                 await Disconnect();
@@ -369,9 +374,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
                 );
 
                 var rotator = (IRotator)DeviceChooserVM.SelectedDevice;
-                _connectRotatorCts?.Dispose();
-                _connectRotatorCts = new CancellationTokenSource();
-                var token = _connectRotatorCts.Token;
                 if (rotator != null) {
                     try {
                         var connected = await rotator.ConnectWithCancellation(token);
@@ -422,7 +424,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
                             return false;
                         }
                     } catch (OperationCanceledException) {
-                        if (rotator?.Connected == true) { await Disconnect(); }
+                        // Only tear down a device this VM adopted. Reading Connected on an abandoned attempt
+                        // would block on the driver lock until the hung connect returns; the abandoned
+                        // attempt is cleaned up by ConnectWithCancellation.
+                        if (rotator != null && ReferenceEquals(this.Rotator, rotator)) { await Disconnect(); }
                         return false;
                     } catch (Exception ex) {
                         Notification.ShowError(ex.Message);

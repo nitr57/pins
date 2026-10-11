@@ -695,6 +695,8 @@ namespace NINA.INDI.Devices
             // Call hook to configure connection properties before connecting
             if (!await OnPreConnect(ct))
             {
+                // The async setters inside OnPreConnect swallow cancellation and report false.
+                ct.ThrowIfCancellationRequested();
                 Logger.Error($"OnPreConnect failed for {DeviceName}");
                 return false;
             }
@@ -730,6 +732,9 @@ namespace NINA.INDI.Devices
             {
                 attempt.ConnectSent = true;
                 success = await SetSwitchValueAsync("CONNECTION", "CONNECT", true, TimeSpan.FromSeconds(30), ct);
+                // SetSwitchValueAsync reports cancellation as a plain failure; do not log a user
+                // cancel as a connect error.
+                ct.ThrowIfCancellationRequested();
             }
 
             if (success)

@@ -232,6 +232,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
             ResetGraphValues();
 
             bool connected = false;
+            bool connectReturned = false;
 
             try {
                 if (Guider != null) {
@@ -242,6 +243,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
                 _cancelConnectGuiderSource = new CancellationTokenSource();
                 Guider = (IGuider)DeviceChooserVM.SelectedDevice;
                 connected = await Guider.ConnectWithCancellation(_cancelConnectGuiderSource.Token);
+                connectReturned = true;
                 _cancelConnectGuiderSource.Token.ThrowIfCancellationRequested();
                 connected = connected && Guider.Connected;
 
@@ -276,6 +278,14 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
 
                     await (Connected?.InvokeAsync(this, new EventArgs()) ?? Task.CompletedTask);
                 }
+            } catch (OperationCanceledException) when (!connectReturned) {
+                // The connect was abandoned while the driver is still busy. Calling Guider.Disconnect()
+                // now would race the in-flight connect; ConnectWithCancellation disconnects it once it
+                // settles. Only reset the VM state here.
+                Guider = null;
+                GuiderInfo.Reset();
+                BroadcastGuiderInfo();
+                return false;
             } catch (OperationCanceledException) {
                 connected = false;
             } catch (Exception ex) {

@@ -174,6 +174,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FlatDevice {
         private CancellationTokenSource connectFlatDeviceCts;
 
         public async Task<bool> Connect() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            connectFlatDeviceCts = connectCancellation;
+            var token = connectCancellation.Token;
             await ssConnect.WaitAsync();
             try {
                 await Disconnect();
@@ -200,9 +205,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FlatDevice {
                     }
                 );
                 var newDevice = (IFlatDevice)device;
-                connectFlatDeviceCts?.Dispose();
-                connectFlatDeviceCts = new CancellationTokenSource();
-                var token = connectFlatDeviceCts.Token;
                 try {
                     var connected = await newDevice.ConnectWithCancellation(token);
                     if (connected) {

@@ -295,6 +295,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
         }
 
         private async Task<bool> ChooseFocuser() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            cancelChooseFocuserCts = connectCancellation;
+            var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
                 await Disconnect();
@@ -314,9 +319,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 progress.Report(new ApplicationStatus { Status = Loc.Instance["LblConnecting"] });
 
                 var newFocuser = GetBacklashCompensationFocuser(profileService, (IFocuser)DeviceChooserVM.SelectedDevice);
-                cancelChooseFocuserCts?.Dispose();
-                cancelChooseFocuserCts = new CancellationTokenSource();
-                var token = cancelChooseFocuserCts.Token;
                 try {
                     var connected = await newFocuser.ConnectWithCancellation(token);
                     if (connected) {
@@ -371,7 +373,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                         return false;
                     }
                 } catch (OperationCanceledException) {
-                    if (newFocuser?.Connected == true) { await Disconnect(); }
+                    // Only tear down a device this VM adopted. Reading Connected on an abandoned attempt
+                    // would block on the driver lock until the hung connect returns; the abandoned
+                    // attempt is cleaned up by ConnectWithCancellation.
+                    if (newFocuser != null && ReferenceEquals(Focuser, newFocuser)) { await Disconnect(); }
                     return false;
                 } catch (Exception ex) {
                     Notification.ShowError(ex.Message);

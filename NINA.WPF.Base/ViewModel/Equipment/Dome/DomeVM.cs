@@ -126,6 +126,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
 
         private async Task<bool> ChooseDome() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            cancelChooseDomeSource = connectCancellation;
+            var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
                 await Disconnect();
@@ -151,9 +156,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
                 );
 
                 var dome = (IDome)DeviceChooserVM.SelectedDevice;
-                cancelChooseDomeSource?.Dispose();
-                cancelChooseDomeSource = new CancellationTokenSource();
-                var token = cancelChooseDomeSource.Token;
                 if (dome != null) {
                     try {
                         var connected = await dome.ConnectWithCancellation(token);
@@ -206,7 +208,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
                             return false;
                         }
                     } catch (OperationCanceledException) {
-                        if (dome?.Connected == true) { await Disconnect(); }
+                        // Only tear down a device this VM adopted. Reading Connected on an abandoned attempt
+                        // would block on the driver lock until the hung connect returns; the abandoned
+                        // attempt is cleaned up by ConnectWithCancellation.
+                        if (dome != null && ReferenceEquals(Dome, dome)) { await Disconnect(); }
                         return false;
                     }  catch (Exception ex) {
                         Notification.ShowError(ex.Message);

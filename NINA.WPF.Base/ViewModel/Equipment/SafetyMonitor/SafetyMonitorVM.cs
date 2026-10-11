@@ -117,6 +117,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.SafetyMonitor {
         }
 
         public async Task<bool> Connect() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            connectCts = connectCancellation;
+            var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
                 await Disconnect();
@@ -142,9 +147,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.SafetyMonitor {
                 );
 
                 var sm = (ISafetyMonitor)DeviceChooserVM.SelectedDevice;
-                connectCts?.Dispose();
-                connectCts = new CancellationTokenSource();
-                var token = connectCts.Token;
                 if (sm != null) {
                     try {
                         var connected = await sm.ConnectWithCancellation(token);
@@ -184,7 +186,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.SafetyMonitor {
                             return false;
                         }
                     } catch (OperationCanceledException) {
-                        if (sm?.Connected == true) { await Disconnect(); }
+                        // Only tear down a device this VM adopted. Reading Connected on an abandoned attempt
+                        // would block on the driver lock until the hung connect returns; the abandoned
+                        // attempt is cleaned up by ConnectWithCancellation.
+                        if (sm != null && ReferenceEquals(this.SafetyMonitor, sm)) { await Disconnect(); }
                         return false;
                     } catch (Exception ex) {
                         Notification.ShowError(ex.Message);

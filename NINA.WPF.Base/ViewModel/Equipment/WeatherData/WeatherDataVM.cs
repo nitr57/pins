@@ -80,6 +80,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.WeatherData {
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
 
         private async Task<bool> ChooseWeatherData() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            _cancelChooseWeatherDataSource = connectCancellation;
+            var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
                 await Disconnect();
@@ -105,9 +110,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.WeatherData {
                 );
 
                 var weatherdev = (IWeatherData)DeviceChooserVM.SelectedDevice;
-                _cancelChooseWeatherDataSource?.Dispose();
-                _cancelChooseWeatherDataSource = new CancellationTokenSource();
-                var token = _cancelChooseWeatherDataSource.Token;
                 if (weatherdev != null) {
                     try {
                         var connected = await weatherdev.ConnectWithCancellation(token);
@@ -159,7 +161,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.WeatherData {
                             return false;
                         }
                     } catch (OperationCanceledException) {
-                        if (weatherdev?.Connected == true) { await Disconnect(); }
+                        // Only tear down a device this VM adopted. Reading Connected on an abandoned attempt
+                        // would block on the driver lock until the hung connect returns; the abandoned
+                        // attempt is cleaned up by ConnectWithCancellation.
+                        if (weatherdev != null && ReferenceEquals(WeatherData, weatherdev)) { await Disconnect(); }
                         return false;
                     } catch (Exception ex) {
                         Notification.ShowError(ex.Message);

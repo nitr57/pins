@@ -187,6 +187,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
         public event Func<object, EventArgs, Task> Disconnected;
 
         public async Task<bool> Connect() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            connectSwitchCts = connectCancellation;
+            var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
                 await Disconnect();
@@ -212,11 +217,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
                 );
 
                 var switchHub = (ISwitchHub)DeviceChooserVM.SelectedDevice;
-                try { connectSwitchCts?.Dispose(); } catch { }
-                connectSwitchCts = new CancellationTokenSource();
                 if (switchHub != null) {
                     try {
-                        var token = connectSwitchCts.Token;
                         var connected = await switchHub.ConnectWithCancellation(token);
                         if (connected) {
                             this.SwitchHub = switchHub;

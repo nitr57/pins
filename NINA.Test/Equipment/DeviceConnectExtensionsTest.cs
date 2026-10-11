@@ -56,8 +56,7 @@ namespace NINA.Test.Equipment {
             Task<bool> connect = device.Object.ConnectWithCancellation(cts.Token);
             cts.Cancel();
 
-            Func<Task> awaitConnect = () => connect;
-            await awaitConnect.Should().ThrowAsync<OperationCanceledException>();
+            await AssertCancelled(connect);
             device.Verify(x => x.Disconnect(), Times.Never);
 
             driverConnect.SetResult(true);
@@ -66,25 +65,27 @@ namespace NINA.Test.Equipment {
         }
 
         /// <summary>
-        /// Verifies that an abandoned attempt which ends without connecting does not trigger a disconnect.
+        /// Verifies that an abandoned attempt which ends without connecting does not trigger a disconnect,
+        /// even when the device reports Connected (e.g. because a newer connection exists) - the cleanup must
+        /// only act on the abandoned attempt's own result.
         /// </summary>
         [Test]
         public async Task ConnectWithCancellation_WhenAbandonedAttemptFails_DoesNotDisconnect() {
             Mock<IDevice> device = CreateDevice();
+            device.SetupGet(x => x.Connected).Returns(true);
             TaskCompletionSource<bool> driverConnect = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             device.Setup(x => x.Connect(It.IsAny<CancellationToken>())).Returns(driverConnect.Task);
             using CancellationTokenSource cts = new CancellationTokenSource();
 
             Task<bool> connect = device.Object.ConnectWithCancellation(cts.Token);
             cts.Cancel();
-            Func<Task> awaitConnect = () => connect;
-            await awaitConnect.Should().ThrowAsync<OperationCanceledException>();
+            await AssertCancelled(connect);
 
             driverConnect.SetException(new InvalidOperationException("driver timed out"));
 
             // A second connect waits for the abandoned attempt's cleanup, so once it returns the cleanup has run.
             device.Setup(x => x.Connect(It.IsAny<CancellationToken>())).ReturnsAsync(false);
-            (await device.Object.ConnectWithCancellation(CancellationToken.None)).Should().BeFalse();
+            (await device.Object.ConnectWithCancellation(CancellationToken.None).WaitAsync(ConditionTimeout)).Should().BeFalse();
             device.Verify(x => x.Disconnect(), Times.Never);
         }
 
@@ -104,8 +105,7 @@ namespace NINA.Test.Equipment {
 
             Task<bool> first = device.Object.ConnectWithCancellation(cts.Token);
             cts.Cancel();
-            Func<Task> awaitFirst = () => first;
-            await awaitFirst.Should().ThrowAsync<OperationCanceledException>();
+            await AssertCancelled(first);
 
             Task<bool> second = device.Object.ConnectWithCancellation(CancellationToken.None);
             await Task.Delay(200);
@@ -119,27 +119,86 @@ namespace NINA.Test.Equipment {
         }
 
         /// <summary>
-        /// Verifies that a driver honouring the token propagates its cancellation without being treated as abandoned.
+        /// Verifies that the serialization also holds across different wrapper instances of the same physical device.
+        /// The VMs wrap devices in a fresh decorator on every attempt (PersistSettingsCameraDecorator, backlash focuser
+        /// decorators) and a rescan creates new instances, so the abandoned attempt must be tracked by device Id. The late
+        /// cleanup must only disconnect the abandoned wrapper, never the newer connection.
         /// </summary>
         [Test]
-        public async Task ConnectWithCancellation_WhenDriverHonoursToken_PropagatesCancellationWithoutCleanup() {
+        public async Task ConnectWithCancellation_WhenNewWrapperForSameDevice_WaitsAndCleanupLeavesNewConnectionAlone() {
+            string id = Guid.NewGuid().ToString();
+            Mock<IDevice> firstWrapper = CreateDevice(id);
+            Mock<IDevice> secondWrapper = CreateDevice(id);
+            TaskCompletionSource<bool> firstConnect = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            firstWrapper.Setup(x => x.Connect(It.IsAny<CancellationToken>())).Returns(firstConnect.Task);
+            secondWrapper.Setup(x => x.Connect(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+            using CancellationTokenSource cts = new CancellationTokenSource();
+
+            Task<bool> first = firstWrapper.Object.ConnectWithCancellation(cts.Token);
+            cts.Cancel();
+            await AssertCancelled(first);
+
+            Task<bool> second = secondWrapper.Object.ConnectWithCancellation(CancellationToken.None);
+            await Task.Delay(200);
+            second.IsCompleted.Should().BeFalse();
+            secondWrapper.Verify(x => x.Connect(It.IsAny<CancellationToken>()), Times.Never);
+
+            firstConnect.SetResult(true);
+
+            (await second.WaitAsync(ConditionTimeout)).Should().BeTrue();
+            DisconnectCalls(firstWrapper).Should().Be(1, "the late success of the abandoned attempt must be torn down before the next connect starts");
+            secondWrapper.Verify(x => x.Disconnect(), Times.Never);
+        }
+
+        /// <summary>
+        /// Verifies that a driver honouring the token propagates its cancellation, is not disconnected, and does not delay
+        /// a following connect.
+        /// </summary>
+        [Test]
+        public async Task ConnectWithCancellation_WhenDriverHonoursToken_PropagatesCancellationWithoutDisconnect() {
             Mock<IDevice> device = CreateDevice();
             device.Setup(x => x.Connect(It.IsAny<CancellationToken>()))
-                .Returns((CancellationToken ct) => Task.FromCanceled<bool>(ct));
+                .Returns((CancellationToken ct) => Task.Delay(Timeout.Infinite, ct).ContinueWith(_ => true, ct, TaskContinuationOptions.None, TaskScheduler.Default));
             using CancellationTokenSource cts = new CancellationTokenSource();
+
+            Task<bool> connect = device.Object.ConnectWithCancellation(cts.Token);
             cts.Cancel();
+            await AssertCancelled(connect);
 
-            Func<Task> connect = () => device.Object.ConnectWithCancellation(cts.Token);
-
-            await connect.Should().ThrowAsync<OperationCanceledException>();
+            device.Setup(x => x.Connect(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+            (await device.Object.ConnectWithCancellation(CancellationToken.None).WaitAsync(ConditionTimeout)).Should().BeTrue();
             device.Verify(x => x.Disconnect(), Times.Never);
         }
 
-        private static Mock<IDevice> CreateDevice() {
+        /// <summary>
+        /// Verifies that no real connect is started when the caller already cancelled, so a token-ignoring driver is not
+        /// connected only to be torn down again.
+        /// </summary>
+        [Test]
+        public async Task ConnectWithCancellation_WhenTokenAlreadyCancelled_DoesNotStartConnect() {
+            Mock<IDevice> device = CreateDevice();
+            device.Setup(x => x.Connect(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+            using CancellationTokenSource cts = new CancellationTokenSource();
+            cts.Cancel();
+
+            await AssertCancelled(device.Object.ConnectWithCancellation(cts.Token));
+
+            device.Verify(x => x.Connect(It.IsAny<CancellationToken>()), Times.Never);
+            device.Verify(x => x.Disconnect(), Times.Never);
+        }
+
+        // Each test gets its own Id by default: abandoned attempts are tracked per Id in static state.
+        private static Mock<IDevice> CreateDevice(string id = null) {
             Mock<IDevice> device = new Mock<IDevice>();
+            device.SetupGet(x => x.Id).Returns(id ?? Guid.NewGuid().ToString());
             device.SetupGet(x => x.Name).Returns("TestDevice");
             device.SetupGet(x => x.Connected).Returns(false);
             return device;
+        }
+
+        private static async Task AssertCancelled(Task<bool> connect) {
+            Func<Task> awaitConnect = () => connect.WaitAsync(ConditionTimeout);
+            await awaitConnect.Should().ThrowAsync<OperationCanceledException>();
         }
 
         private static int DisconnectCalls(Mock<IDevice> device) {

@@ -374,6 +374,11 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Telescope {
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
 
         private async Task<bool> ChooseTelescope() {
+            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
+            // this attempt is still queued or rescanning is not lost on the previous token source.
+            var connectCancellation = new CancellationTokenSource();
+            _cancelChooseTelescopeSource = connectCancellation;
+            var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
                 await Disconnect();
@@ -399,9 +404,6 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Telescope {
                 );
 
                 var telescope = (ITelescope)DeviceChooserVM.SelectedDevice;
-                _cancelChooseTelescopeSource?.Dispose();
-                _cancelChooseTelescopeSource = new CancellationTokenSource();
-                var token = _cancelChooseTelescopeSource.Token;
                 if (telescope != null) {
                     try {
                         var connected = await telescope.ConnectWithCancellation(token);
@@ -543,10 +545,16 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Telescope {
                             return false;
                         }
                     } catch (OperationCanceledException ex) {
-                        if (telescope?.Connected == true) {
+                        // Only tear down a device this VM adopted. Reading Connected on an abandoned attempt
+                        // would block on the driver lock until the hung connect returns; the abandoned
+                        // attempt is cleaned up by ConnectWithCancellation.
+                        if (telescope != null && ReferenceEquals(Telescope, telescope)) {
                             await Disconnect();
                         }
-                        Notification.ShowError(ex.Message);
+                        if (!token.IsCancellationRequested) {
+                            // A user cancel is not an error; only surface cancellations from elsewhere.
+                            Notification.ShowError(ex.Message);
+                        }
                         return false;
                     } catch (Exception ex) {
                         Notification.ShowError(ex.Message);
