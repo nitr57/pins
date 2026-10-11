@@ -168,14 +168,19 @@ public sealed partial class NinaSequenceService {
     public OperationResult StopSequence() {
         try {
             if (!sequenceNavigation.Initialized) {
-                return OperationResult.Fail(NotInitializedMessage);
+                return OperationResult.Ok("The advanced sequencer is not initialized yet, so nothing is running.");
             }
 
-            if (!IsRunning()) {
+            bool running = IsRunning();
+
+            // Also cancels a start that is still preparing (IsRunning not yet set). When idle this only cancels the
+            // token of the last, finished run, which Sequence2VM.CancelSequence tolerates.
+            RunOnDispatcher(() => sequenceMediator.CancelAdvancedSequence());
+
+            if (!running) {
                 return OperationResult.Ok("The advanced sequence is not running.");
             }
 
-            RunOnDispatcher(() => sequenceMediator.CancelAdvancedSequence());
             Logger.Info("MCP: advanced sequence stop requested");
             return OperationResult.Ok(
                 "Stop requested. The running instruction is cancelled; the sequence ends within a few seconds.");
@@ -247,10 +252,21 @@ public sealed partial class NinaSequenceService {
             try {
                 await Task.Delay(StartPollInterval, cancellationToken).ConfigureAwait(false);
             } catch (OperationCanceledException) {
-                return OperationResult.Fail(
-                    "Stopped waiting, but the start had already been requested. Check get_status and use "
-                    + "stop_sequence if the sequence should not run.");
+                return CancelPendingStart();
             }
+        }
+    }
+
+    /// <summary>The start job was cancelled while the sequencer was still preparing: cancel the run as well.</summary>
+    private OperationResult CancelPendingStart() {
+        try {
+            RunOnDispatcher(() => sequenceMediator.CancelAdvancedSequence());
+            Logger.Info("MCP: advanced sequence start cancelled while preparing");
+            return OperationResult.Fail("Start cancelled; the sequence was stopped before it began running.");
+        } catch (Exception ex) {
+            Logger.Error("MCP: cancelling the pending sequence start failed", ex);
+            return OperationResult.Fail(
+                $"Start cancelled, but stopping the pending run failed ({ex.Message}). Check get_status and use stop_sequence.");
         }
     }
 

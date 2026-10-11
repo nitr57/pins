@@ -22,6 +22,7 @@ namespace NINA.Mcp.Adapter.Sequence;
 public sealed partial class NinaSequenceService {
     private const int MaxSnapshotDepth = 20;
     private const int MaxSavedSequences = 500;
+    private const int MaxScannedSequenceFiles = 5000;
 
     /// <summary>
     /// Tree of the advanced sequence. <see cref="SequenceSnapshot.Nodes"/> holds one node, the root (path ""), whose
@@ -78,13 +79,15 @@ public sealed partial class NinaSequenceService {
                     Logger.Warning($"MCP: reading sequence file info for {file} failed: {ex.Message}");
                 }
 
-                if (result.Count >= MaxSavedSequences) {
+                if (result.Count >= MaxScannedSequenceFiles) {
+                    Logger.Warning($"MCP: more than {MaxScannedSequenceFiles} sequence files below {folder}; listing stops there");
                     break;
                 }
             }
 
             return result
                 .OrderByDescending(info => info.LastModified)
+                .Take(MaxSavedSequences)
                 .ToList();
         } catch (Exception ex) {
             Logger.Error("MCP: listing saved sequences failed", ex);
@@ -143,8 +146,11 @@ public sealed partial class NinaSequenceService {
         var details = new Dictionary<string, object?>();
         AddDetails(item, details);
 
+        // The root is an IImmutableContainer too, but its areas are what callers want to see.
+        bool expandable = item is ISequenceRootContainer || item is not IImmutableContainer;
+
         var children = new List<SequenceNode>();
-        if (item is ISequenceContainer container && item is not IImmutableContainer) {
+        if (item is ISequenceContainer container && expandable) {
             ICollection<ISequenceItem> items = container.GetItemsSnapshot();
             if (remainingDepth > 1) {
                 int index = 0;
@@ -248,8 +254,9 @@ public sealed partial class NinaSequenceService {
         }
 
         details["exposureSeconds"] = Finite(exposure.ExposureTime);
-        details["gain"] = exposure.Gain < 0 ? null : exposure.Gain;
-        details["offset"] = exposure.Offset < 0 ? null : exposure.Offset;
+        // -1 means "camera default" in NINA.
+        details["gain"] = exposure.Gain < 0 ? null : (object)exposure.Gain;
+        details["offset"] = exposure.Offset < 0 ? null : (object)exposure.Offset;
         details["binning"] = exposure.Binning?.Name;
         details["imageType"] = exposure.ImageType;
 

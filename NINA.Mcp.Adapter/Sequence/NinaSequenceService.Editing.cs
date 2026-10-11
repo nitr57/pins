@@ -221,11 +221,10 @@ public sealed partial class NinaSequenceService {
             root = loadedRoot;
             root.SequenceTitle = title;
             kind = "sequence";
-        } else if (container is IDeepSkyObjectContainer || container is not IImmutableContainer) {
+        } else {
+            // Like Sequence2VM.LoadSequenceFromFile: a saved target or template goes into a new sequence's target area.
             root = WrapInNewRoot(access.Factory, container);
             kind = $"single {container.GetType().Name} (wrapped into a new sequence)";
-        } else {
-            throw new InvalidOperationException($"Unsupported sequence content: {container.GetType().Name}.");
         }
 
         sequenceMediator.SetAdvancedSequence(root);
@@ -266,8 +265,9 @@ public sealed partial class NinaSequenceService {
     /// <summary>Runs on the dispatcher. The same steps as SkyAtlasVM/FramingAssistantVM "add target from template".</summary>
     private OperationResult AddTargetFromTemplate(TargetRequest request) {
         IReadOnlyList<IDeepSkyObjectContainer> templates = GetTemplates();
-        IDeepSkyObjectContainer? template = templates.FirstOrDefault(
-            t => string.Equals(t.Name, request.TemplateName!.Trim(), StringComparison.OrdinalIgnoreCase));
+        string wanted = request.TemplateName!.Trim();
+        IDeepSkyObjectContainer? template = templates.FirstOrDefault(t => string.Equals(t.Name, wanted, StringComparison.Ordinal))
+            ?? templates.FirstOrDefault(t => string.Equals(t.Name, wanted, StringComparison.OrdinalIgnoreCase));
         if (template == null) {
             string available = templates.Count == 0
                 ? "There are no target templates."
