@@ -18,7 +18,4 @@
       <Link>Properties\CommonAssemblyInfo.cs</Link>
     </Compile>
   </ItemGroup>
-  <ItemGroup>
-    <InternalsVisibleTo Include="NINA.Mcp.Test" />
-  </ItemGroup>
 </Project>
