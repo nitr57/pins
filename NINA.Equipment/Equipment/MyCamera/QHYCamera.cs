@@ -828,7 +828,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 Sdk.InitCamera();
 
                 if (CheckUvloIsActive()) {
-                    Sdk.Close();
+                    CloseAfterFailedConnect();
                     Notification.ShowError(Loc.Instance["LblQhyUvloActiveError"]);
                     return false;
                 }
@@ -1073,9 +1073,31 @@ namespace NINA.Equipment.Equipment.MyCamera {
             } catch (Exception ex) {
                 Logger.Error(ex);
                 Notification.ShowError(ex.Message);
-                Disconnect();
+
+                if (Connected && !internalReconnect) {
+                    Disconnect();
+                } else {
+                    CloseAfterFailedConnect();
+                }
             }
             return success;
+        }
+
+        /// <summary>
+        /// Drops the handle taken by a connect that didn't complete. Disconnect() returns early while Connected is
+        /// false, so without this the handle stayed referenced for the rest of the session and the SDK was never
+        /// released; a later connect then reused the half-initialized handle.
+        /// </summary>
+        private void CloseAfterFailedConnect() {
+            try {
+                Sdk.Close();
+
+                if (!internalReconnect) {
+                    Sdk.ReleaseSdk();
+                }
+            } catch (Exception ex) {
+                Logger.Error("QHYCCD: Failed to close the camera after a failed connect", ex);
+            }
         }
 
         public void Disconnect() {

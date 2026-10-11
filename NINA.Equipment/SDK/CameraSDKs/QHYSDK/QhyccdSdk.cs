@@ -29,182 +29,174 @@ namespace QHYCCD {
         private const string DLLNAME = "libqhyccd.so";
 
         /*
-         * The QHY SDK is process wide: InitQHYCCDResource/ReleaseQHYCCDResource, ScanQHYCCD and
-         * GetQHYCCDId act on every camera at once, so they run under one global lock and the SDK is
-         * released only once no camera handle is open any more.
-         *
-         * Camera handles are per device. Each QHYCamera (and QHYFilterWheel) owns its own QhySdk
-         * instance; Open(id) attaches it to the shared handle for that camera id, so the main camera
-         * and the guide camera get separate handles, while a camera and the CFW plugged into it share
-         * one. Calls on a handle are serialized per handle, so a long readout on one camera does not
-         * block exposures on the other.
+         * Each QHYCamera and QHYFilterWheel owns its own QhySdk instance. Open(id) attaches the instance to the
+         * handle of that camera in the process-wide QhyHandleRegistry, which keeps one handle per camera id, so the
+         * main camera and the guide camera get separate handles while a camera and its CFW share one.
          */
-        private static readonly Lock sdkLock = new();
-        private static readonly Dictionary<string, OpenCamera> openCameras = new(StringComparer.Ordinal);
-        private static bool sdkIsInitialized = false;
-
-        private static readonly Lazy<bool> dllLoaded = new(() => {
+        private static readonly Lazy<QhyHandleRegistry> sharedRegistry = new(() => {
             Logger.Trace("QhyccdSdk: Loading QHY SDK");
             DllLoader.LoadDll(Path.Combine("QHYCCD", DLLNAME));
-            return true;
+            return new QhyHandleRegistry(new PInvokeNative());
         });
 
-        private sealed class OpenCamera(string id, IntPtr handle) {
-            public string Id { get; } = id;
-            public IntPtr Handle { get; } = handle;
-            public Lock Lock { get; } = new();
-            public int RefCount { get; set; }
+        private readonly QhyHandleRegistry registry;
+        private readonly Lock instanceLock = new();
+        private QhyHandleRegistry.Entry camera;
+
+        public QhySdk() : this(sharedRegistry.Value) {
         }
 
-        private OpenCamera camera;
+        internal QhySdk(QhyHandleRegistry registry) {
+            this.registry = registry;
+        }
 
-        /// <summary>Handle of the camera this instance is attached to, or zero before Open.</summary>
-        private IntPtr handle => camera?.Handle ?? IntPtr.Zero;
+        /// <summary>True when the camera was already open on another device (e.g. the camera of this CFW) at Open.</summary>
+        public bool OpenedShared { get; private set; }
 
-        /// <summary>Per-handle lock; before Open it falls back to the global SDK lock.</summary>
-        private Lock lockobj => camera?.Lock ?? sdkLock;
+        /// <summary>
+        /// Takes the lock of the handle this instance is attached to and the handle itself from one read of
+        /// <see cref="camera"/>, so a concurrent Close/Open can't pair one camera's lock with another's handle.
+        /// Before Open (or after Close) it takes the SDK lock and yields a zero handle, which the SDK rejects.
+        /// </summary>
+        private HandleScope EnterHandle() {
+            var current = Volatile.Read(ref camera);
 
-        public QhySdk() {
-            _ = dllLoaded.Value;
+            return new HandleScope(current?.Lock ?? registry.SdkLock, current?.Handle ?? IntPtr.Zero);
+        }
+
+        private ref struct HandleScope {
+            private Lock.Scope scope;
+
+            public HandleScope(Lock lockObject, IntPtr handle) {
+                scope = lockObject.EnterScope();
+                Handle = handle;
+            }
+
+            public IntPtr Handle { get; }
+
+            public void Dispose() {
+                scope.Dispose();
+            }
+        }
+
+        private sealed class PInvokeNative : QhyHandleRegistry.INative {
+
+            public uint InitResource() => InitQHYCCDResource();
+
+            public uint ReleaseResource() => ReleaseQHYCCDResource();
+
+            public uint Scan() => ScanQHYCCD();
+
+            public IntPtr Open(string id) => OpenQHYCCD(id);
+
+            public uint Close(IntPtr handle) => CloseQHYCCD(handle);
         }
 
         #region Call Wrappers
 
         public void InitSdk() {
-            lock (sdkLock) {
-                Logger.Trace($"QhyccdSdk: Initializing QHY SDK, sdkIsInitialized={sdkIsInitialized}, openCameras={openCameras.Count}");
-
-                if (!sdkIsInitialized) {
-                    CheckReturn(InitQHYCCDResource(), MethodBase.GetCurrentMethod());
-                    sdkIsInitialized = true;
-                }
-            }
+            registry.Init();
         }
 
         public void ReleaseSdk() {
-            lock (sdkLock) {
-                Logger.Trace($"QhyccdSdk: Releasing QHY SDK, openCameras={openCameras.Count}");
-
-                if (sdkIsInitialized && camera == null && openCameras.Count == 0) {
-                    CheckReturn(ReleaseQHYCCDResource(), MethodBase.GetCurrentMethod());
-                    sdkIsInitialized = false;
+            lock (instanceLock) {
+                if (camera != null) {
+                    return;
                 }
+
+                registry.Release();
             }
         }
 
         public void Open(string id) {
-            lock (sdkLock) {
+            lock (instanceLock) {
                 if (camera != null) {
                     if (camera.Id == id) {
                         Logger.Trace($"QhyccdSdk: {id} is already open on this instance");
                         return;
                     }
+
                     throw new QHYCameraException($"This instance already has camera {camera.Id} open", MethodBase.GetCurrentMethod(), new object[] { id });
                 }
 
-                if (!sdkIsInitialized) {
-                    throw new QHYCameraException("QHY SDK is not initialized", MethodBase.GetCurrentMethod(), new object[] { id });
-                }
-
-                if (!openCameras.TryGetValue(id, out var entry)) {
-                    Logger.Trace($"QhyccdSdk: Opening {id}");
-                    var h = OpenQHYCCD(id);
-
-                    if (h == IntPtr.Zero) {
-                        throw new QHYCameraException("Unable to open camera", MethodBase.GetCurrentMethod(), new object[] { id });
-                    }
-
-                    entry = new OpenCamera(id, h);
-                    openCameras[id] = entry;
-                }
-
-                entry.RefCount++;
-                camera = entry;
-                Logger.Trace($"QhyccdSdk: Opened {id}, refCount={entry.RefCount}");
+                var entry = registry.Acquire(id, out var shared);
+                OpenedShared = shared;
+                Volatile.Write(ref camera, entry);
             }
         }
 
         public void Close() {
-            lock (sdkLock) {
+            lock (instanceLock) {
                 var entry = camera;
+
                 if (entry == null) {
                     Logger.Trace("QhyccdSdk: Close called without an open camera");
                     return;
                 }
 
-                camera = null;
-                entry.RefCount--;
-                Logger.Trace($"QhyccdSdk: Closing {entry.Id}, refCount={entry.RefCount}");
-
-                if (entry.RefCount <= 0) {
-                    openCameras.Remove(entry.Id);
-                    // Wait for any call still running on this handle before it is closed.
-                    lock (entry.Lock) {
-                        CheckReturn(CloseQHYCCD(entry.Handle), MethodBase.GetCurrentMethod(), entry.Handle);
-                    }
-                }
+                Volatile.Write(ref camera, null);
+                OpenedShared = false;
+                registry.Return(entry);
             }
         }
 
         public void InitCamera() {
-            lock (lockobj) {
-                CheckReturn(InitQHYCCD(handle), MethodBase.GetCurrentMethod(), handle);
+            using (var scope = EnterHandle()) {
+                CheckReturn(InitQHYCCD(scope.Handle), MethodBase.GetCurrentMethod(), scope.Handle);
             }
         }
 
         public uint Scan() {
-            lock (sdkLock) {
-                return ScanQHYCCD();
-            }
+            return registry.Scan();
         }
 
         public uint SetBinMode(uint binX, uint binY) {
-            lock (lockobj) {
-                return SetQHYCCDBinMode(handle, binX, binY);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDBinMode(scope.Handle, binX, binY);
             }
         }
 
         public uint SetBitsMode(uint bitDepth) {
-            lock (lockobj) {
-                return SetQHYCCDBitsMode(handle, bitDepth);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDBitsMode(scope.Handle, bitDepth);
             }
         }
 
         public uint SetStreamMode(byte mode) {
-            lock (lockobj) {
-                return SetQHYCCDStreamMode(handle, mode);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDStreamMode(scope.Handle, mode);
             }
         }
 
         public uint SetDebayerOnOff(bool onoff) {
-            lock (lockobj) {
-                return SetQHYCCDDebayerOnOff(handle, onoff);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDDebayerOnOff(scope.Handle, onoff);
             }
         }
 
         public uint GetReadMode(ref uint mode) {
-            lock (lockobj) {
-                return GetQHYCCDReadMode(handle, ref mode);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDReadMode(scope.Handle, ref mode);
             }
         }
 
         public uint SetReadMode(uint mode) {
-            lock (lockobj) {
-                return SetQHYCCDReadMode(handle, mode);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDReadMode(scope.Handle, mode);
             }
         }
 
         public uint GetNumberOfReadModes(ref uint numModes) {
-            lock (lockobj) {
-                return GetQHYCCDNumberOfReadModes(handle, ref numModes);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDNumberOfReadModes(scope.Handle, ref numModes);
             }
         }
 
         public uint GetReadModeName(uint mode, out string modeName) {
-            lock (lockobj) {
+            using (var scope = EnterHandle()) {
                 modeName = string.Empty;
                 byte[] buffer = new byte[QHYCCD_READMODE_NAME_LEN];
-                uint result = GetQHYCCDReadModeName(handle, mode, buffer);
+                uint result = GetQHYCCDReadModeName(scope.Handle, mode, buffer);
 
                 if (result == QHYCCD_SUCCESS) {
                     modeName = NullTerminatedBytesToString(buffer);
@@ -215,19 +207,19 @@ namespace QHYCCD {
         }
 
         public uint ControlTemp(double targetTemp) {
-            lock (lockobj) {
-                return ControlQHYCCDTemp(handle, targetTemp);
+            using (var scope = EnterHandle()) {
+                return ControlQHYCCDTemp(scope.Handle, targetTemp);
             }
         }
 
         public uint ControlShutter(byte shutterState) {
-            lock (lockobj) {
-                return ControlQHYCCDShutter(handle, shutterState);
+            using (var scope = EnterHandle()) {
+                return ControlQHYCCDShutter(scope.Handle, shutterState);
             }
         }
 
         public void GetId(uint index, out string id) {
-            lock (sdkLock) {
+            lock (registry.SdkLock) {
                 id = string.Empty;
                 byte[] buffer = new byte[QHYCCD_ID_LEN];
 
@@ -239,7 +231,7 @@ namespace QHYCCD {
         }
 
         public void GetModel(string id, out string model) {
-            lock (sdkLock) {
+            lock (registry.SdkLock) {
                 model = string.Empty;
                 byte[] modelBuffer = new byte[QHYCCD_MODEL_LEN];
 
@@ -251,74 +243,74 @@ namespace QHYCCD {
         }
 
         public uint GetParamMinMaxStep(CONTROL_ID controlId, ref double min, ref double max, ref double step) {
-            lock (lockobj) {
-                return GetQHYCCDParamMinMaxStep(handle, controlId, ref min, ref max, ref step);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDParamMinMaxStep(scope.Handle, controlId, ref min, ref max, ref step);
             }
         }
 
         public uint GetChipInfo(ref double chipW, ref double chipH, ref uint imageX, ref uint imageY, ref double pixelX, ref double pixelY, ref uint bpp) {
-            lock (lockobj) {
-                return GetQHYCCDChipInfo(handle, ref chipW, ref chipH, ref imageX, ref imageY, ref pixelX, ref pixelY, ref bpp);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDChipInfo(scope.Handle, ref chipW, ref chipH, ref imageX, ref imageY, ref pixelX, ref pixelY, ref bpp);
             }
         }
 
         public uint GetEffectiveArea(ref uint startX, ref uint startY, ref uint imageX, ref uint imageY) {
-            lock (lockobj) {
-                return GetQHYCCDEffectiveArea(handle, ref startX, ref startY, ref imageX, ref imageY);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDEffectiveArea(scope.Handle, ref startX, ref startY, ref imageX, ref imageY);
             }
         }
 
         public uint SetResolution(uint x, uint y, uint xSize, uint ySize) {
-            lock (lockobj) {
-                return SetQHYCCDResolution(handle, x, y, xSize, ySize);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDResolution(scope.Handle, x, y, xSize, ySize);
             }
         }
 
         public uint ExpSingleFrame() {
-            lock (lockobj) {
-                return ExpQHYCCDSingleFrame(handle);
+            using (var scope = EnterHandle()) {
+                return ExpQHYCCDSingleFrame(scope.Handle);
             }
         }
 
         public uint GetSingleFrame(ref uint sizeX, ref uint sizeY, ref uint bpp, ref uint channels, [Out] byte[] rawArray) {
-            lock (lockobj) {
-                return GetQHYCCDSingleFrame(handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDSingleFrame(scope.Handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
             }
         }
 
         public uint GetSingleFrame(ref uint sizeX, ref uint sizeY, ref uint bpp, ref uint channels, [Out] ushort[] rawArray) {
-            lock (lockobj) {
-                return GetQHYCCDSingleFrame(handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDSingleFrame(scope.Handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
             }
         }
 
         public uint CancelExposingAndReadout() {
-            lock (lockobj) {
-                return CancelQHYCCDExposingAndReadout(handle);
+            using (var scope = EnterHandle()) {
+                return CancelQHYCCDExposingAndReadout(scope.Handle);
             }
         }
 
         public uint GetExposureRemaining() {
-            lock (lockobj) {
-                return GetQHYCCDExposureRemaining(handle);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDExposureRemaining(scope.Handle);
             }
         }
 
         public uint GetPressure(ref double hpa) {
-            lock (lockobj) {
-                return GetQHYCCDPressure(handle, ref hpa);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDPressure(scope.Handle, ref hpa);
             }
         }
 
         public uint GetHumidity(ref double rh) {
-            lock (lockobj) {
-                return GetQHYCCDHumidity(handle, ref rh);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDHumidity(scope.Handle, ref rh);
             }
         }
 
         public bool IsCfwPlugged() {
-            lock (lockobj) {
-                if (IsQHYCCDCFWPlugged(handle) == QHYCCD_SUCCESS) {
+            using (var scope = EnterHandle()) {
+                if (IsQHYCCDCFWPlugged(scope.Handle) == QHYCCD_SUCCESS) {
                     return true;
                 }
 
@@ -327,14 +319,14 @@ namespace QHYCCD {
         }
 
         public uint GetCfwStatus(byte[] status) {
-            lock (lockobj) {
-                return GetQHYCCDCFWStatus(handle, status);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDCFWStatus(scope.Handle, status);
             }
         }
 
         public uint SendOrderToCfw(string order, int length) {
-            lock (lockobj) {
-                return SendOrder2QHYCCDCFW(handle, order, length);
+            using (var scope = EnterHandle()) {
+                return SendOrder2QHYCCDCFW(scope.Handle, order, length);
             }
         }
 
@@ -343,10 +335,10 @@ namespace QHYCCD {
         #region Utility Methods
 
         public bool IsControl(CONTROL_ID type) {
-            lock (lockobj) {
+            using (var scope = EnterHandle()) {
                 bool result = false;
 
-                if (IsQHYCCDControlAvailable(handle, type) == QHYCCD_SUCCESS) {
+                if (IsQHYCCDControlAvailable(scope.Handle, type) == QHYCCD_SUCCESS) {
                     Logger.Debug($"QHYCCD: Control {type} exists");
                     result = true;
                 } else {
@@ -358,10 +350,10 @@ namespace QHYCCD {
         }
 
         public double GetControlValue(CONTROL_ID type) {
-            lock (lockobj) {
+            using (var scope = EnterHandle()) {
                 double rv;
 
-                if ((rv = GetQHYCCDParam(handle, type)) != QHYCCD_ERROR) {
+                if ((rv = GetQHYCCDParam(scope.Handle, type)) != QHYCCD_ERROR) {
                     Logger.Trace($"QHYCCD: Control {type} = {rv}");
                     return rv;
                 } else {
@@ -372,8 +364,8 @@ namespace QHYCCD {
         }
 
         public bool SetControlValue(CONTROL_ID type, double value) {
-            lock (lockobj) {
-                if (SetQHYCCDParam(handle, type, value) == QHYCCD_SUCCESS) {
+            using (var scope = EnterHandle()) {
+                if (SetQHYCCDParam(scope.Handle, type, value) == QHYCCD_SUCCESS) {
                     Logger.Debug($"QHYCCD: Setting Control {type} to {value}");
                     return true;
                 } else {
@@ -384,13 +376,13 @@ namespace QHYCCD {
         }
 
         public BAYER_ID GetBayerType() {
-            lock (lockobj) {
-                return (BAYER_ID)IsQHYCCDControlAvailable(handle, CONTROL_ID.CAM_COLOR);
+            using (var scope = EnterHandle()) {
+                return (BAYER_ID)IsQHYCCDControlAvailable(scope.Handle, CONTROL_ID.CAM_COLOR);
             }
         }
 
         public string GetSdkVersion() {
-            lock (lockobj) {
+            using (var scope = EnterHandle()) {
                 uint year = 0, month = 0, day = 0, subday = 0;
                 CheckReturn(GetQHYCCDSDKVersion(ref year, ref month, ref day, ref subday), MethodBase.GetCurrentMethod());
 
@@ -399,11 +391,11 @@ namespace QHYCCD {
         }
 
         public string GetFwVersion() {
-            lock (lockobj) {
+            using (var scope = EnterHandle()) {
                 string version = "N/A";
                 byte[] buf = new byte[10];
 
-                if (GetQHYCCDFWVersion(handle, buf) != QHYCCD_ERROR) {
+                if (GetQHYCCDFWVersion(scope.Handle, buf) != QHYCCD_ERROR) {
                     int major = buf[0] >> 4;
                     version = $"{(major <= 9 ? major + 16 : major)}-{buf[0] & 0x0F}-{buf[1]}";
                 }
@@ -413,12 +405,12 @@ namespace QHYCCD {
         }
 
         public string GetFpgaVersion() {
-            lock (lockobj) {
+            using (var scope = EnterHandle()) {
                 string version = "N/A";
                 byte[] buf = new byte[4];
 
                 for (byte i = 0; i <= 3; i++) {
-                    if (GetQHYCCDFPGAVersion(handle, i, buf) != QHYCCD_ERROR) {
+                    if (GetQHYCCDFPGAVersion(scope.Handle, i, buf) != QHYCCD_ERROR) {
                         if (i > 0) {
                             version += ", ";
                         }
@@ -435,75 +427,75 @@ namespace QHYCCD {
 
         // Added for Live view/recording
         public uint BeginQHYCCDLive() {
-            lock (lockobj) {
-                return BeginQHYCCDLive(handle);
+            using (var scope = EnterHandle()) {
+                return BeginQHYCCDLive(scope.Handle);
             }
         }
 
         // These two methods are identical on the C side, they just have different pointer types (they're ABI compatible).
         public uint GetQHYCCDLiveFrame(ref uint sizeX, ref uint sizeY, ref uint bpp, ref uint channels, [Out] byte[] rawArray) {
-            lock (lockobj) {
-                return GetQHYCCDLiveFrame(handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDLiveFrame(scope.Handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
             }
         }
 
         public uint GetQHYCCDLiveFrame(ref uint sizeX, ref uint sizeY, ref uint bpp, ref uint channels, [Out] ushort[] rawArray) {
-            lock (lockobj) {
-                return GetQHYCCDLiveFrame(handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDLiveFrame(scope.Handle, ref sizeX, ref sizeY, ref bpp, ref channels, rawArray);
             }
         }
 
         public uint StopQHYCCDLive() {
-            lock (lockobj) {
-                return StopQHYCCDLive(handle);
+            using (var scope = EnterHandle()) {
+                return StopQHYCCDLive(scope.Handle);
             }
         }
 
         public uint GetQHYCCDMemLength() {
-            lock (lockobj) {
-                return GetQHYCCDMemLength(handle);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDMemLength(scope.Handle);
             }
         }
 
         public uint SetQHYCCDGPSVCOXFreq(ushort freq) {
-            lock (lockobj) {
-                return SetQHYCCDGPSVCOXFreq(handle, freq);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDGPSVCOXFreq(scope.Handle, freq);
             }
         }
 
         public uint SetQHYCCDGPSLedCalMode(byte mode) {
-            lock (lockobj) {
-                return SetQHYCCDGPSLedCalMode(handle, mode);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDGPSLedCalMode(scope.Handle, mode);
             }
         }
 
         public uint SetQHYCCDGPSMasterSlave(byte mode) {
-            lock (lockobj) {
-                return SetQHYCCDGPSMasterSlave(handle, mode);
+            using (var scope = EnterHandle()) {
+                return SetQHYCCDGPSMasterSlave(scope.Handle, mode);
             }
         }
 
         public void SetQHYCCDGPSPOSA(uint pos, byte width) {
-            lock (lockobj) {
-                SetQHYCCDGPSPOSA(handle, pos, width);
+            using (var scope = EnterHandle()) {
+                SetQHYCCDGPSPOSA(scope.Handle, pos, width);
             }
         }
 
         public void SetQHYCCDGPSPOSB(uint pos, byte width) {
-            lock (lockobj) {
-                SetQHYCCDGPSPOSB(handle, pos, width);
+            using (var scope = EnterHandle()) {
+                SetQHYCCDGPSPOSB(scope.Handle, pos, width);
             }
         }
 
         public uint GetQHYCCDPreciseExposureInfo(ref uint pixelPeriod, ref uint linePeriod, ref uint framePeriod, ref uint clocksPerLine, ref uint linesPerFrame, ref uint actualExposureTime, ref byte isLongExposureMode) {
-            lock (lockobj) {
-                return GetQHYCCDPreciseExposureInfo(handle, ref pixelPeriod, ref linePeriod, ref framePeriod, ref clocksPerLine, ref linesPerFrame, ref actualExposureTime, ref isLongExposureMode);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDPreciseExposureInfo(scope.Handle, ref pixelPeriod, ref linePeriod, ref framePeriod, ref clocksPerLine, ref linesPerFrame, ref actualExposureTime, ref isLongExposureMode);
             }
         }
 
         public uint GetQHYCCDRollingShutterEndOffset(uint row, ref double offset) {
-            lock (lockobj) {
-                return GetQHYCCDRollingShutterEndOffset(handle, row, ref offset);
+            using (var scope = EnterHandle()) {
+                return GetQHYCCDRollingShutterEndOffset(scope.Handle, row, ref offset);
             }
         }
 
@@ -517,7 +509,7 @@ namespace QHYCCD {
 
         #region Exception Generator
 
-        private static void CheckReturn(uint code, MethodBase callingMethod, params object[] parameters) {
+        internal static void CheckReturn(uint code, MethodBase callingMethod, params object[] parameters) {
             switch (code) {
                 case QHYCCD_SUCCESS:
                     break;
