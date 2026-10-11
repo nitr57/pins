@@ -33,7 +33,7 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
         private readonly IProfileService profileService;
         private bool moveRequested = false;
         private string destinationPostition = string.Empty;
-        public IQhySdk Sdk { get; set; } = QhySdk.Instance;
+        public IQhySdk Sdk { get; set; } = new QhySdk();
 
         public QHYFilterWheel(string fwheel, IProfileService profileService) {
             this.profileService = profileService;
@@ -47,16 +47,19 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
             Info.Id = FWheelId;
             Sdk.Open(Info.Id);
 
-            if (Sdk.IsCfwPlugged()) {
-                Info.Positions = (uint)Sdk.GetControlValue(QhySdk.CONTROL_ID.CONTROL_CFWSLOTSNUM);
-            } else {
-                Logger.Error($"QHYCFW: {Id} suddenly has no filter wheel!");
-                return;
+            try {
+                if (Sdk.IsCfwPlugged()) {
+                    Info.Positions = (uint)Sdk.GetControlValue(QhySdk.CONTROL_ID.CONTROL_CFWSLOTSNUM);
+                } else {
+                    Logger.Error($"QHYCFW: {Id} suddenly has no filter wheel!");
+                    return;
+                }
+
+                Info.Name = string.Format($"{cameraModel} {Info.Positions}-Slot Filter Wheel");
+            } finally {
+                // The handle is shared with the camera of the same id; leaving it referenced keeps it open forever.
+                Sdk.Close();
             }
-
-            Info.Name = string.Format($"{cameraModel} {Info.Positions}-Slot Filter Wheel");
-
-            Sdk.Close();
 
             Logger.Debug($"QHYCFW: Found filter wheel: {Name}");
         }
@@ -68,15 +71,29 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
                 Sdk.InitSdk();
 
                 Logger.Debug($"QHYCFW: Connecting to filter wheel {Name}");
-                Sdk.Open(Info.Id);
-                Sdk.InitCamera();
 
-                if (!Sdk.IsCfwPlugged()) {
-                    Sdk.Close();
+                try {
+                    // Inside the try: a camera that can't be opened must not leave the SDK initialized.
+                    Sdk.Open(Info.Id);
 
-                    string errMessage = $"CFW {Name} is not found on the connected camera!";
-                    Logger.Error($"QHYCFW: " + errMessage);
-                    throw new InvalidOperationException(errMessage);
+                    // The camera this CFW is plugged into may already have initialized and set up the handle (stream
+                    // mode, resolution, bit depth); InitQHYCCD would reset that under it.
+                    Sdk.InitCameraIfNeeded();
+
+                    if (!Sdk.IsCfwPlugged()) {
+                        string errMessage = $"CFW {Name} is not found on the connected camera!";
+                        Logger.Error($"QHYCFW: " + errMessage);
+                        throw new InvalidOperationException(errMessage);
+                    }
+                } catch {
+                    try {
+                        Sdk.Close();
+                        Sdk.ReleaseSdk();
+                    } catch (Exception ex) {
+                        Logger.Error("QHYCFW: Failed to close the camera after a failed connect", ex);
+                    }
+
+                    throw;
                 }
 
                 return Connected = true;

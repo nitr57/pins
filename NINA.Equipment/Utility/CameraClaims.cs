@@ -26,9 +26,6 @@ namespace NINA.Equipment.Utility {
     /// without an alias share an Id.
     /// </summary>
     public static class CameraClaims {
-        // The QHY SDK wrapper holds one camera handle for the whole process (QhySdk), so QHY cameras all share a key.
-        internal const string QhyCategory = "QHYCCD";
-
         private static readonly Dictionary<object, Claim> claims = [];
 
         private sealed record Claim(string Key, string OwnerName);
@@ -47,9 +44,7 @@ namespace NINA.Equipment.Utility {
                 }
                 var holder = claims.FirstOrDefault(c => c.Value.Key == key).Value;
                 if (holder != null) {
-                    refusal = key == QhyCategory
-                        ? $"{camera.DisplayName} can't be connected: {holder.OwnerName} is already a QHY camera, and pins can only use one QHY camera at a time."
-                        : $"{camera.DisplayName} is already connected as {holder.OwnerName}. Disconnect it there first.";
+                    refusal = $"{camera.DisplayName} is already connected as {holder.OwnerName}. Disconnect it there first.";
                     return false;
                 }
                 claims[owner] = new Claim(key, ownerName);
@@ -81,9 +76,6 @@ namespace NINA.Equipment.Utility {
 
                 case ASICamera asi:
                     return "ZWOptical:" + asi.CameraId;
-            }
-            if (camera.Category == QhyCategory) {
-                return QhyCategory;
             }
             return camera.Category + ":" + camera.Id;
         }

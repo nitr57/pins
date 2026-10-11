@@ -28,6 +28,12 @@ namespace QHYCCD {
 
         void InitCamera();
 
+        /// <summary>
+        /// Runs InitQHYCCD unless it already succeeded on the opened handle, e.g. by the camera that a filter wheel
+        /// is plugged into: such a handle is set up for that camera and must not be re-initialized under it.
+        /// </summary>
+        void InitCameraIfNeeded() => InitCamera();
+
         uint Scan();
 
         uint SetBinMode(uint binX, uint binY);

@@ -62,7 +62,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private double? lastRequestedGain;
         private int? lastRequestedOffset;
 
-        public IQhySdk Sdk { get; set; } = QhySdk.Instance;
+        public IQhySdk Sdk { get; set; } = new QhySdk();
 
         public QHYCamera(uint cameraIdx, IProfileService profileService, IExposureDataFactory exposureDataFactory) {
             this.profileService = profileService;
@@ -805,9 +805,11 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
 
                 /*
-                 * Get our selected camera's ID from the SDK
+                 * Open the camera by the ID recorded at enumeration, not by its scan index: the index
+                 * order is not stable across rescans, and with a second QHY camera in use (e.g. as the
+                 * native guider's guide camera) a stale index opens the other camera.
                  */
-                Sdk.GetId(Info.Index, out cameraID);
+                cameraID = Info.Id;
 
                 /*
                  * CameraP is the handle we use to reference this camera
@@ -826,7 +828,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 Sdk.InitCamera();
 
                 if (CheckUvloIsActive()) {
-                    Sdk.Close();
+                    CloseAfterFailedConnect();
                     Notification.ShowError(Loc.Instance["LblQhyUvloActiveError"]);
                     return false;
                 }
@@ -1071,9 +1073,31 @@ namespace NINA.Equipment.Equipment.MyCamera {
             } catch (Exception ex) {
                 Logger.Error(ex);
                 Notification.ShowError(ex.Message);
-                Disconnect();
+
+                if (Connected && !internalReconnect) {
+                    Disconnect();
+                } else {
+                    CloseAfterFailedConnect();
+                }
             }
             return success;
+        }
+
+        /// <summary>
+        /// Drops the handle taken by a connect that didn't complete. Disconnect() returns early while Connected is
+        /// false, so without this the handle stayed referenced for the rest of the session and the SDK was never
+        /// released; a later connect then reused the half-initialized handle.
+        /// </summary>
+        private void CloseAfterFailedConnect() {
+            try {
+                Sdk.Close();
+
+                if (!internalReconnect) {
+                    Sdk.ReleaseSdk();
+                }
+            } catch (Exception ex) {
+                Logger.Error("QHYCCD: Failed to close the camera after a failed connect", ex);
+            }
         }
 
         public void Disconnect() {

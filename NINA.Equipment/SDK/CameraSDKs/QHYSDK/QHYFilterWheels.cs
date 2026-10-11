@@ -19,7 +19,7 @@ using System.Collections.Generic;
 namespace QHYCCD {
 
     public class QHYFilterWheels {
-        public IQhySdk Sdk { get; set; } = QhySdk.Instance;
+        public IQhySdk Sdk { get; set; } = new QhySdk();
 
         public List<string> GetFilterWheels() {
             var cameraId = string.Empty;
@@ -35,10 +35,11 @@ namespace QHYCCD {
 
             if ((num = Sdk.Scan()) > 0) {
                 for (uint i = 0; i < num; i++) {
-                    Sdk.GetId(i, out cameraId);
-                    Sdk.Open(cameraId);
-
                     try {
+                        // Inside the try: one camera that can't be opened must not hide the filter wheels after it.
+                        Sdk.GetId(i, out cameraId);
+                        Sdk.Open(cameraId);
+
                         if (Sdk.IsCfwPlugged()) {
                             positions = (uint)Sdk.GetControlValue(QhySdk.CONTROL_ID.CONTROL_CFWSLOTSNUM);
 

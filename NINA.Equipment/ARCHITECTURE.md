@@ -81,6 +81,7 @@ The code supports multiple backends in parallel:
 - file-based or built-in utility devices like `FileCamera`
 
 The `Equipment/AscomDevice.cs` base class is the shared adapter foundation for many ASCOM/Alpaca implementations.
+The QHY SDK (`SDK/CameraSDKs/QHYSDK`) is process wide: `QhyHandleRegistry` initializes it once, keeps one handle per camera id and releases the SDK only when no handle is open or closing. Every `QHYCamera` and `QHYFilterWheel` has its own `QhySdk` instance attached to the handle of its camera, so two QHY cameras (imaging and guide) have separate handles, while a camera and the CFW plugged into it share one (`IQhySdk.InitCameraIfNeeded` lets the CFW skip InitQHYCCD when the camera already ran it, checked and run under one hold of the handle's lock). Calls on a handle are serialized by that handle's lock; init, release, scan, open and close by the SDK lock, because they all change libqhyccd's device list. Closing a handle first waits under the handle's lock for the call still running on it and takes the SDK lock only for the close itself, so a readout on one camera never blocks the other. A call that was waiting for the lock of a handle that got closed meanwhile gets a zero handle, which the SDK rejects, and runs under the SDK lock like a call before Open, so it can't overlap a release of the SDK. Scan and open don't wait for calls on open handles, so a camera list rescan runs alongside a readout. `QhyHandleRegistryTest` covers these rules with a fake native layer.
 
 ### OnStepX (pins)
 

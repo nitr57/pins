@@ -24,7 +24,7 @@ namespace QHYCCD {
         private static readonly QHYCamera[] _cameras = new QHYCamera[16];
         private readonly IExposureDataFactory exposureDataFactory = exposureDataFactory;
 
-        public IQhySdk Sdk { get; set; } = QhySdk.Instance;
+        public IQhySdk Sdk { get; set; } = new QhySdk();
 
         public uint Count {
             get {
