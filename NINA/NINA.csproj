@@ -80,6 +80,7 @@
     <ProjectReference Include="..\NINA.Plugin\NINA.Plugin.csproj" />
     <ProjectReference Include="..\NINA.Profile\NINA.Profile.csproj" />
     <ProjectReference Include="..\NINA.Sequencer\NINA.Sequencer.csproj" />
+    <ProjectReference Include="..\NINA.Mcp.Adapter\NINA.Mcp.Adapter.csproj" />
     <ProjectReference Include="..\NINA.WPF.Base\NINA.WPF.Base.csproj" />
   </ItemGroup>
   <ItemGroup>

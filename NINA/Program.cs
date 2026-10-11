@@ -21,6 +21,8 @@ using NINA.Plugin.Interfaces;
 using NINA.INDI;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.WPF.Base.ViewModel.Equipment.Camera;
+using NINA.Mcp;
+using NINA.Mcp.Adapter;
 
 // Disable file watching to prevent inotify limit issues on Linux
 Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "true");
@@ -83,6 +85,10 @@ if (customArgs.Length > 0) {
 // Register application services NOW that we have an active profile
 new IoCBindings(profileService, commandLineOptions).Load(builder.Services);
 
+// MCP endpoint for AI clients (Claude Code etc.) on this web host; configured through PINS_MCP_* environment variables
+var mcpOptions = McpServerOptions.FromEnvironment(CoreUtil.Version);
+builder.Services.AddPinsMcpForNina(mcpOptions);
+
 var app = builder.Build();
 
 // Initialize DialogBroadcaster early so plugins can access it
@@ -118,6 +124,12 @@ app.MapHub<DialogHub>("/hubs/dialogs");
 app.MapHub<MyMessageBoxHub>("/hubs/messageboxes");
 // Progress hub
 app.MapHub<ProgressHub>("/hubs/progress");
+
+// MCP endpoint (Streamable HTTP); maps nothing when PINS_MCP_ENABLED is off
+app.MapPinsMcp();
+if (mcpOptions.Enabled) {
+    Logger.Info($"MCP endpoint enabled at {mcpOptions.Path} (token {(mcpOptions.BearerToken is null ? "off" : "on")}, read-only {(mcpOptions.ReadOnly ? "on" : "off")})");
+}
 
 // Set up the notification broadcaster to use SignalR
 var signalRBroadcaster = app.Services.GetRequiredService<SignalRNotificationBroadcaster>();

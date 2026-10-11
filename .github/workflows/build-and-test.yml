@@ -40,6 +40,12 @@ jobs:
     - name: Build main project
       run: dotnet build NINA/NINA.csproj --configuration Debug --no-restore
 
+    - name: Build MCP server test project
+      run: dotnet build NINA.Mcp.Test/NINA.Mcp.Test.csproj --configuration Debug --no-restore
+
+    - name: Run MCP server unit tests
+      run: dotnet test NINA.Mcp.Test/NINA.Mcp.Test.csproj --configuration Debug --no-build --logger "trx;LogFileName=mcp-test-results.trx" --results-directory ./TestResults
+
     - name: Build test project
       run: dotnet build NINA.Test/NINA.Test.csproj --configuration Debug --no-restore
 

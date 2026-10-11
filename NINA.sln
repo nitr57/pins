@@ -54,6 +54,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NINA.GuideEngine", "NINA.Gu
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NINA.GuideEngine.Test", "NINA.GuideEngine.Test\NINA.GuideEngine.Test.csproj", "{ADBAA0F4-015B-469B-BAC5-D905511586E8}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NINA.Mcp", "NINA.Mcp\NINA.Mcp.csproj", "{44520B8F-42D8-4864-A60F-26CAE6716C48}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NINA.Mcp.Adapter", "NINA.Mcp.Adapter\NINA.Mcp.Adapter.csproj", "{64B67795-2CD2-4599-8967-8897FE5B06E9}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "NINA.Mcp.Test", "NINA.Mcp.Test\NINA.Mcp.Test.csproj", "{2C106492-6A2A-40BA-B8F5-5643002285BF}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -262,6 +268,40 @@ Global
 		{ADBAA0F4-015B-469B-BAC5-D905511586E8}.Release|x64.Build.0 = Release|Any CPU
 		{ADBAA0F4-015B-469B-BAC5-D905511586E8}.SignedRelease|Any CPU.ActiveCfg = Release|Any CPU
 		{ADBAA0F4-015B-469B-BAC5-D905511586E8}.SignedRelease|x64.ActiveCfg = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Debug|x64.Build.0 = Debug|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Release|Any CPU.Build.0 = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Release|x64.ActiveCfg = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.Release|x64.Build.0 = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.SignedRelease|Any CPU.ActiveCfg = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.SignedRelease|Any CPU.Build.0 = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.SignedRelease|x64.ActiveCfg = Release|Any CPU
+		{44520B8F-42D8-4864-A60F-26CAE6716C48}.SignedRelease|x64.Build.0 = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Debug|x64.Build.0 = Debug|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Release|Any CPU.Build.0 = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Release|x64.ActiveCfg = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.Release|x64.Build.0 = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.SignedRelease|Any CPU.ActiveCfg = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.SignedRelease|Any CPU.Build.0 = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.SignedRelease|x64.ActiveCfg = Release|Any CPU
+		{64B67795-2CD2-4599-8967-8897FE5B06E9}.SignedRelease|x64.Build.0 = Release|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Debug|x64.Build.0 = Debug|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Release|x64.ActiveCfg = Release|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.Release|x64.Build.0 = Release|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.SignedRelease|Any CPU.ActiveCfg = Release|Any CPU
+		{2C106492-6A2A-40BA-B8F5-5643002285BF}.SignedRelease|x64.ActiveCfg = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
