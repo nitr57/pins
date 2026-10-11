@@ -246,13 +246,16 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FilterWheel {
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
 
         private async Task<bool> ChooseFW() {
-            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
-            // this attempt is still queued or rescanning is not lost on the previous token source.
-            var connectCancellation = new CancellationTokenSource();
-            _cancelChooseFilterWheelSource = connectCancellation;
+            // Registered before waiting for the semaphore / rescan so CancelConnect() also reaches an
+            // attempt that is still queued or rescanning, and every attempt in flight (not just the latest).
+            var connectCancellation = pendingConnects.Begin();
             var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
+                if (token.IsCancellationRequested) {
+                    // Cancelled while queued: do not tear down the current connection or rescan for nothing.
+                    return false;
+                }
                 await Disconnect();
                 if (updateTimer != null) {
                     await updateTimer.Stop();
@@ -342,6 +345,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FilterWheel {
                     return false;
                 }
             } finally {
+                pendingConnects.End(connectCancellation);
                 ss.Release();
                 applicationStatusMediator.StatusUpdate(
                     new ApplicationStatus() {
@@ -355,10 +359,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FilterWheel {
         public void CancelConnect() => CancelChooseFW(null);
 
         private void CancelChooseFW(object o) {
-            try { _cancelChooseFilterWheelSource?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
-        private CancellationTokenSource _cancelChooseFilterWheelSource;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
 
         private async Task<bool> DisconnectFW() {
             var diag = MyMessageBox.Show(Loc.Instance["LblDisconnectFilterWheel"], "", System.Windows.MessageBoxButton.OKCancel, System.Windows.MessageBoxResult.Cancel);

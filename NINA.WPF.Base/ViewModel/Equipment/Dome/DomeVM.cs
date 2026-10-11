@@ -121,18 +121,21 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
             }
         }
 
-        private CancellationTokenSource cancelChooseDomeSource;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
 
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
 
         private async Task<bool> ChooseDome() {
-            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
-            // this attempt is still queued or rescanning is not lost on the previous token source.
-            var connectCancellation = new CancellationTokenSource();
-            cancelChooseDomeSource = connectCancellation;
+            // Registered before waiting for the semaphore / rescan so CancelConnect() also reaches an
+            // attempt that is still queued or rescanning, and every attempt in flight (not just the latest).
+            var connectCancellation = pendingConnects.Begin();
             var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
+                if (token.IsCancellationRequested) {
+                    // Cancelled while queued: do not tear down the current connection or rescan for nothing.
+                    return false;
+                }
                 await Disconnect();
                 if (updateTimer != null) {
                     await updateTimer.Stop();
@@ -224,6 +227,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
                     return false;
                 }
             } finally {
+                pendingConnects.End(connectCancellation);
                 ss.Release();
                 applicationStatusMediator.StatusUpdate(
                     new ApplicationStatus() {
@@ -237,7 +241,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Dome {
         public void CancelConnect() => CancelChooseDome(null);
 
         private void CancelChooseDome(object o) {
-            try { cancelChooseDomeSource?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
         private Dictionary<string, object> GetDomeValues() {

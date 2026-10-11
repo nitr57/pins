@@ -171,16 +171,19 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FlatDevice {
         }
 
         private readonly SemaphoreSlim ssConnect = new SemaphoreSlim(1, 1);
-        private CancellationTokenSource connectFlatDeviceCts;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
 
         public async Task<bool> Connect() {
-            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
-            // this attempt is still queued or rescanning is not lost on the previous token source.
-            var connectCancellation = new CancellationTokenSource();
-            connectFlatDeviceCts = connectCancellation;
+            // Registered before waiting for the semaphore / rescan so CancelConnect() also reaches an
+            // attempt that is still queued or rescanning, and every attempt in flight (not just the latest).
+            var connectCancellation = pendingConnects.Begin();
             var token = connectCancellation.Token;
             await ssConnect.WaitAsync();
             try {
+                if (token.IsCancellationRequested) {
+                    // Cancelled while queued: do not tear down the current connection or rescan for nothing.
+                    return false;
+                }
                 await Disconnect();
                 if (updateTimer != null) {
                     await updateTimer.Stop();
@@ -266,6 +269,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FlatDevice {
                     return false;
                 }
             } finally {
+                pendingConnects.End(connectCancellation);
                 ssConnect.Release();
                 applicationStatusMediator.StatusUpdate(
                     new ApplicationStatus {
@@ -280,7 +284,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.FlatDevice {
 
         [RelayCommand]
         private void CancelConnect(object o) {
-            try { connectFlatDeviceCts?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
         public async Task Disconnect() {

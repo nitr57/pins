@@ -277,7 +277,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
             return pos;
         }
 
-        private CancellationTokenSource cancelChooseFocuserCts;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
 
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
 
@@ -295,13 +295,16 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
         }
 
         private async Task<bool> ChooseFocuser() {
-            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
-            // this attempt is still queued or rescanning is not lost on the previous token source.
-            var connectCancellation = new CancellationTokenSource();
-            cancelChooseFocuserCts = connectCancellation;
+            // Registered before waiting for the semaphore / rescan so CancelConnect() also reaches an
+            // attempt that is still queued or rescanning, and every attempt in flight (not just the latest).
+            var connectCancellation = pendingConnects.Begin();
             var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
+                if (token.IsCancellationRequested) {
+                    // Cancelled while queued: do not tear down the current connection or rescan for nothing.
+                    return false;
+                }
                 await Disconnect();
 
                 if (DeviceChooserVM.SelectedDevice == null) return false;
@@ -386,6 +389,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                     return false;
                 }
             } finally {
+                pendingConnects.End(connectCancellation);
                 ss.Release();
                 progress.Report(new ApplicationStatus { Status = string.Empty });
             }
@@ -394,7 +398,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
         public void CancelConnect() => CancelChooseFocuser(null);
 
         private void CancelChooseFocuser(object o) {
-            try { cancelChooseFocuserCts?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
         private Dictionary<string, object> GetFocuserValues() {

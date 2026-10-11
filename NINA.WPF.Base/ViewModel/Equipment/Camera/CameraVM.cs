@@ -325,13 +325,16 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
         private readonly SemaphoreSlim ss = new(1, 1);
 
         private async Task<bool> ChooseCamera() {
-            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
-            // this attempt is still queued or rescanning is not lost on the previous token source.
-            var connectCancellation = new CancellationTokenSource();
-            _cancelConnectCameraSource = connectCancellation;
+            // Registered before waiting for the semaphore / rescan so CancelConnect() also reaches an
+            // attempt that is still queued or rescanning, and every attempt in flight (not just the latest).
+            var connectCancellation = pendingConnects.Begin();
             var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
+                if (token.IsCancellationRequested) {
+                    // Cancelled while queued: do not tear down the current connection or rescan for nothing.
+                    return false;
+                }
                 await Disconnect();
                 if (updateTimer != null) {
                     await updateTimer.Stop();
@@ -486,6 +489,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                     return false;
                 }
             } finally {
+                pendingConnects.End(connectCancellation);
                 ss.Release();
                 applicationStatusMediator.StatusUpdate(
                     new ApplicationStatus() {
@@ -518,7 +522,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
         public void CancelConnect() => CancelConnectCamera(null);
 
         private void CancelConnectCamera(object o) {
-            try { _cancelConnectCameraSource?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
         private void UpdateCameraValues(Dictionary<string, object> cameraValues) {
@@ -639,7 +643,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
 
         private readonly DeviceUpdateTimer updateTimer;
 
-        private CancellationTokenSource _cancelConnectCameraSource;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
 
         private async Task<bool> DisconnectDiag() {
             var diag = MyMessageBox.Show(Loc.Instance["LblDisconnectCamera"], "", System.Windows.MessageBoxButton.OKCancel, System.Windows.MessageBoxResult.Cancel);

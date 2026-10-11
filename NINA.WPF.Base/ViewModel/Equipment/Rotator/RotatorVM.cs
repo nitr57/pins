@@ -336,7 +336,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
         public ICommand HaltCommand { get; private set; }
         public ICommand ReverseCommand { get; private set; }
 
-        private CancellationTokenSource _connectRotatorCts;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
         private CancellationTokenSource _moveCts;
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
 
@@ -344,13 +344,16 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
         public event Func<object, EventArgs, Task> Disconnected;
 
         public async Task<bool> Connect() {
-            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
-            // this attempt is still queued or rescanning is not lost on the previous token source.
-            var connectCancellation = new CancellationTokenSource();
-            _connectRotatorCts = connectCancellation;
+            // Registered before waiting for the semaphore / rescan so CancelConnect() also reaches an
+            // attempt that is still queued or rescanning, and every attempt in flight (not just the latest).
+            var connectCancellation = pendingConnects.Begin();
             var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
+                if (token.IsCancellationRequested) {
+                    // Cancelled while queued: do not tear down the current connection or rescan for nothing.
+                    return false;
+                }
                 await Disconnect();
                 if (updateTimer != null) {
                     await updateTimer.Stop();
@@ -440,6 +443,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
                     return false;
                 }
             } finally {
+                pendingConnects.End(connectCancellation);
                 ss.Release();
                 applicationStatusMediator.StatusUpdate(
                     new ApplicationStatus() {
@@ -453,7 +457,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Rotator {
         public void CancelConnect() => CancelConnectRotator(null);
 
         private void CancelConnectRotator(object o) {
-            try { _connectRotatorCts?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
         public async Task Disconnect() {

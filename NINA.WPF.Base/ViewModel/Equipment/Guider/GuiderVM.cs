@@ -278,7 +278,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
 
                     await (Connected?.InvokeAsync(this, new EventArgs()) ?? Task.CompletedTask);
                 }
-            } catch (OperationCanceledException) when (!connectReturned) {
+            } catch (OperationCanceledException) when (!connectReturned && _cancelConnectGuiderSource.Token.IsCancellationRequested) {
                 // The connect was abandoned while the driver is still busy. Calling Guider.Disconnect()
                 // now would race the in-flight connect; ConnectWithCancellation disconnects it once it
                 // settles. Only reset the VM state here.

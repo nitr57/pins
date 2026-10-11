@@ -188,7 +188,7 @@ namespace NINA.Test.Equipment {
         }
 
         // Each test gets its own Id by default: abandoned attempts are tracked per Id in static state.
-        private static Mock<IDevice> CreateDevice(string id = null) {
+        private static Mock<IDevice> CreateDevice(string? id = null) {
             Mock<IDevice> device = new Mock<IDevice>();
             device.SetupGet(x => x.Id).Returns(id ?? Guid.NewGuid().ToString());
             device.SetupGet(x => x.Name).Returns("TestDevice");

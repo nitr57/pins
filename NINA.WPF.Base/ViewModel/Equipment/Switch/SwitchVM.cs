@@ -171,7 +171,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
         }       
 
         public void CancelConnect() {
-            try { connectSwitchCts?.Cancel(); } catch { }
+            pendingConnects.CancelAll();
         }
 
         public IDeviceChooserVM DeviceChooserVM { get; set; }
@@ -181,19 +181,22 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
         private ISwitchMediator switchMediator;
         private readonly SemaphoreSlim ss = new SemaphoreSlim(1, 1);
         private DeviceUpdateTimer updateTimer;
-        private CancellationTokenSource connectSwitchCts;
+        private readonly PendingConnects pendingConnects = new PendingConnects();
 
         public event Func<object, EventArgs, Task> Connected;
         public event Func<object, EventArgs, Task> Disconnected;
 
         public async Task<bool> Connect() {
-            // Created before waiting for the semaphore / rescan so a CancelConnect() issued while
-            // this attempt is still queued or rescanning is not lost on the previous token source.
-            var connectCancellation = new CancellationTokenSource();
-            connectSwitchCts = connectCancellation;
+            // Registered before waiting for the semaphore / rescan so CancelConnect() also reaches an
+            // attempt that is still queued or rescanning, and every attempt in flight (not just the latest).
+            var connectCancellation = pendingConnects.Begin();
             var token = connectCancellation.Token;
             await ss.WaitAsync();
             try {
+                if (token.IsCancellationRequested) {
+                    // Cancelled while queued: do not tear down the current connection or rescan for nothing.
+                    return false;
+                }
                 await Disconnect();
                 if (updateTimer != null) {
                     await updateTimer.Stop();
@@ -286,6 +289,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
                     return false;
                 }
             } finally {
+                pendingConnects.End(connectCancellation);
                 ss.Release();
                 applicationStatusMediator.StatusUpdate(
                     new ApplicationStatus() {
