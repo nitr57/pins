@@ -30,7 +30,7 @@ Build shape from `NINA.Equipment.csproj`:
   - `MyRotator`
   - `MySafetyMonitor`
 - `SDK/`
-  Native/vendor interop wrappers for camera, focuser, filter wheel, and flat device SDKs.
+  Native/vendor interop wrappers for camera, focuser, filter wheel, flat device, rotator and telescope SDKs.
 - `Utility/`
   Discovery and integration helpers such as `ASCOMInteraction` and `AlpacaInteraction`.
 - `Exceptions/` and `Model/`
@@ -81,8 +81,82 @@ The code supports multiple backends in parallel:
 - file-based or built-in utility devices like `FileCamera`
 
 The `Equipment/AscomDevice.cs` base class is the shared adapter foundation for many ASCOM/Alpaca implementations.
-
 The QHY SDK (`SDK/CameraSDKs/QHYSDK`) is process wide: `QhyHandleRegistry` initializes it once, keeps one handle per camera id and releases the SDK only when no handle is open or closing. Every `QHYCamera` and `QHYFilterWheel` has its own `QhySdk` instance attached to the handle of its camera, so two QHY cameras (imaging and guide) have separate handles, while a camera and the CFW plugged into it share one (`IQhySdk.InitCameraIfNeeded` lets the CFW skip InitQHYCCD when the camera already ran it, checked and run under one hold of the handle's lock). Calls on a handle are serialized by that handle's lock; init, release, scan, open and close by the SDK lock, because they all change libqhyccd's device list. Closing a handle first waits under the handle's lock for the call still running on it and takes the SDK lock only for the close itself, so a readout on one camera never blocks the other. A call that was waiting for the lock of a handle that got closed meanwhile gets a zero handle, which the SDK rejects, and runs under the SDK lock like a call before Open, so it can't overlap a release of the SDK. Scan and open don't wait for calls on open handles, so a camera list rescan runs alongside a readout. `QhyHandleRegistryTest` covers these rules with a fake native layer.
+
+### OnStepX (pins)
+
+`SDK/TelescopeSDKs/OnStepXSDK` talks to OnStepX mount controllers over USB serial without INDI. Commands, formats and
+reply types follow INDI's `lx200_OnStep.cpp` and `lx200driver.cpp`; vendor firmware built on OnStepX derives from
+`OnStepXDevice` (`ProxiskyUmiDevice` adds the Proxisky `:P…` commands of INDI's `lx200_proxisky.cpp`), and
+`OnStepXDevice.Connect` picks the class from what the controller reports.
+
+`Equipment/MyTelescope/OnStepXTelescope` is the `ITelescope` on top, listed by `TelescopeChooserVM` and connected on
+`TelescopeSettings.SerialPort`. `OnStepXTelescope.Discover` names the list entry after the model the mount reports: it
+opens the port briefly with short timeouts, but not one this process has open (`OnStepXSerialPort.IsOpenInProcess`);
+a port another program holds exclusively (TIOCEXCL, as INDI and .NET do) fails to open, others are not detected, and a
+scan never replaces a known model with the generic name. `Id` and `Name` stay fixed for the profile's selection. It
+reads the mount's state as one set of reads at most every 250 ms (the UI polls about 30 properties at a time); an
+unreadable state is not retried by the rest of that poll, and the connection counts as lost only after three failures
+over at least 2 s. It handles the OnStep behaviours `INDITelescope` documents: a goto right after tracking was switched
+on is refused as below the horizon (one retry).
+Homing ends when the controller clears its homing flag `h` in `:GU#`; `H` only means the axes are within the home
+tolerance, which the UMi misses after a long slew. The `:GU#` flags are decoded as OnStepX 10.20a writes them
+(`src/telescope/mount/status/Status.command.cpp` of hjd1964/OnStepX at 79492e8, the base of the UMi firmware); INDI
+still reads some of them as OnStep 3.x did (e.g. `W`, the pier side, as a PEC state). Where the firmware answers a
+command INDI sends blind, the driver reads the answer: `:hP#` is `1` or `0` (OnStepX replies `1`/`0` without `#` unless
+a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`).
+
+- It does not use `NINA.Core.Utility.SerialCommunication.SerialSdk`: OnStepX replies end in `#`, are a single bare
+  character, or are absent, and an unknown command is answered with a bare `0`.
+- ESP32 controllers reset while RTS is set and DTR is not. `OnStepXSerialPort` keeps both set, as Linux sets them on
+  open, and never toggles them; clearing DTR before RTS restarts the mount (about 8 s without replies).
+- Refusals: a command answered `0` is followed at once, in the same exchange, by `:GE#` (the controller's last
+  command error, `ProcessCmds.cpp`; codes in `OnStepXCommandError`, the same in 10.20a and 10.24c) and throws
+  `OnStepXCommandRefusedException` with that reason. `:hC#` has no reply but records its error, so `:GE#` follows it
+  too. `OnStepXTelescope` turns refusals of goto, park, unpark, find home and set park into exceptions: `TelescopeVM`
+  ignores the result of `SlewToCoordinates` and reports a park as done unless `Park` throws. A cancelled goto, park or
+  home stops the mount (`:Q#`), as ASCOM drivers do.
+- Park and home: `Park::request` and `Home::request` refuse during a goto (also while it brakes) and any guide motion,
+  so the driver stops everything first and waits until `:GU#` shows neither a slew nor `g`/`G`.
+- Manual moves: `Slewing` covers gotos, homing and manual moves. A move faster than 2x shows as `g`, a slower one as a
+  pulse guide (`G`), so the driver also counts the moves it started, until a status read after the move command shows
+  neither flag. A stop is sent only for an axis known to move, since `:Qn#` and friends also end a guide pulse (and
+  abort homing). Two motions show no motion flag in `:GU#`: homing with home sensors runs as a guide, not a goto
+  (`Home::request`), and a fast move brakes after its stop as `GA_BREAK`, which `Guide::active()` leaves out. The driver
+  counts `h` and, like `INDITelescope`, RA/Dec changing faster than 0.05°/s, taken over at least 0.5 s because `:GR#`
+  has whole seconds.
+- Custom tracking rates are OnStepX's tracking rate offsets (`:SXTR,n.n#`, `:SXTD,n.n#`, `Mount.command.cpp`), in
+  arc-seconds per sidereal second with RA counted in RA: ASCOM's RA rate times 15, its Dec rate (per SI second)
+  divided by 1.0027379. `:GU#` does not show them, so the driver keeps what it set and reads `:GXTR#`/`:GXTD#` only at
+  connect and after homing, which clears them (`Home::reset`). INDI's `lx200_OnStep` sends `:RA`/`:RE` for this, which
+  OnStepX takes as guide rates.
+- Tracking rate and rate compensation come from `:GU#` (`(` lunar, `O` solar, `k` King; `r`/`t` with `s` for one
+  axis). `:TL#`, `:TS#` and `:TK#` turn compensation off and `:TQ#` does not restore it, so the driver restores it on
+  the way back to sidereal.
+- Meridian flip: a plain goto. OnStepX picks the side by its preferred pier side (`:GX96#`/`:SX96,[EWB]#`); with
+  "Best" it stays on the current side until the meridian limit (`Goto.cpp` `setTarget`). The driver sets
+  `TelescopeSettings.PreferredPierSide` at connect and on change (OnStepX forgets it at power off unless built with
+  `PIER_SIDE_PREFERRED_MEMORY`) and treats a flip that ends on the wrong side as failed, so NINA's retries go on.
+- Guide pulses: `:Mg` has no reply, so `OnStepXTransport.SendBlindNow` writes it past a read in progress (only the
+  writing of commands is serialized, and not between a refused command and its `:GE#`) and returns when the command is
+  on the line, estimated from the characters queued at the port's baud rate (`TelescopeSettings.SerialBaudRate`,
+  OnStepX's default 9600). A pulse counts as running until then plus its
+  duration plus 15 ms, and after that until `:GU#` no longer shows `G`, so no guide exposure starts while the mount
+  moves: on a UMi17S most pulses ended 0-15 ms after the estimate, but USB serial now and then delays a command by up
+  to ~80 ms. Pulses the controller would refuse (`Guide::validate`) throw, judged on the last known status, never on a
+  fresh read that would delay the pulse; so does a pulse after a goto, park or home was sent and before a status read
+  after it, since a pulse aborts a goto.
+- Proxisky vendor settings (`ProxiskyUmiDevice.Settings.cs`, `OnStepXTelescope.GetProxiskySettings` and the
+  `SetProxisky…` methods): commands, ranges and replies from INDI's `lx200_proxisky.cpp` and its protocol notes. They
+  are read only when asked for, never polled, so they stay off the line while guiding. A feature counts as present
+  when the mount answers for it; changing the Dec limits and the Dec second home is allowed on a UMi17X only, the PID
+  gains on a UMi20S and UMi17X, as in the vendor's tool. The status LED, auto tracking and the PID gains take effect
+  at the next power cycle and read back the running value until then, so the device keeps the written value per
+  connection and reports it as pending. The PID commit restarts the axis (all gains read 0 for about 70 ms), so it
+  is refused while the mount moves or tracks.
+- Tests: `NINA.Test/Equipment/OnStepX`, with a scripted fake port; `OnStepXHardwareTest` is explicit and runs against
+  a real mount on `ONSTEPX_PORT`: it reads, and its pulse test moves the mount a few arcseconds. Gotos, parks and moves
+  are checked by hand on the mount.
 
 ## Special Integration: SBIG Camera Service
 

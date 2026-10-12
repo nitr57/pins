@@ -118,6 +118,7 @@ public sealed partial class Guider : IAsyncDisposable
     private DateTimeOffset lastSlowAlert = DateTimeOffset.MinValue;
     private GuideErrorInfo? lastError;
     private GuidingStatsSnapshot? lastStats;
+    private readonly CycleTimer cycleTimer = new();
     private GuidePoint lastStarPosition = GuidePoint.Invalid;
 
     public Guider(ICameraSource camera, IPulseOutput output, IMountState mount, IClock? clock = null, GuiderSettings? settings = null,
@@ -176,6 +177,9 @@ public sealed partial class Guider : IAsyncDisposable
 
     /// <summary>Latest statistics snapshot (updated every guide frame).</summary>
     public GuidingStatsSnapshot? Statistics => lastStats;
+
+    /// <summary>The guide loop's timing: the last cycle, recent medians and the frame rate; null before the first cycle.</summary>
+    public GuideTiming? Timing => cycleTimer.Timing;
 
     /// <summary>
     /// When true (default) commands that need exposures start the capture loop automatically. Tests driving the
@@ -700,6 +704,7 @@ public sealed partial class Guider : IAsyncDisposable
 
                 if (fullPause && state == GuiderState.Paused)
                 {
+                    cycleTimer.Discard();
                     await clock.Delay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
                     continue;
                 }
@@ -712,10 +717,12 @@ public sealed partial class Guider : IAsyncDisposable
                 }
 
                 GuideFrame raw;
+                cycleTimer.CaptureStarting(clock.UtcNow, settings.ExposureMs);
                 try
                 {
                     raw = await camera.CaptureAsync(new CaptureRequest(settings.ExposureMs, settings.Binning, default, settings.Gain, settings.Offset), ct)
                         .ConfigureAwait(false);
+                    cycleTimer.FrameReady(clock.UtcNow);
                     cameraRetry.Success();
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -724,6 +731,7 @@ public sealed partial class Guider : IAsyncDisposable
                 }
                 catch (Exception ex)
                 {
+                    cycleTimer.Discard();
                     if (!await HandleCameraFailureAsync(ex, ct).ConfigureAwait(false))
                     {
                         break;
@@ -751,6 +759,7 @@ public sealed partial class Guider : IAsyncDisposable
         }
         finally
         {
+            cycleTimer.Discard();
             DrainCommands();
             if (state.IsGuidingActive() || state == GuiderState.Calibrating)
             {
@@ -862,6 +871,7 @@ public sealed partial class Guider : IAsyncDisposable
         }
 
         frameResult = result;
+        cycleTimer.Processed(clock.UtcNow);
 
         double processingMs = sw.Elapsed.TotalMilliseconds;
         if (processingMs > settings.Safety.SlowProcessingMs && (now - lastSlowAlert).TotalMinutes >= 5)
@@ -886,7 +896,9 @@ public sealed partial class Guider : IAsyncDisposable
             }
 
             framePulses = pulses;
+            cycleTimer.PulsesStarting(clock.UtcNow);
             bool sent = await IssuePulsesAsync(pulses, ct).ConfigureAwait(false);
+            cycleTimer.PulsesDone(clock.UtcNow);
             if (sent && pendingCorrection is { } applied)
             {
                 corrector.CorrectionsApplied(applied.RaPx, applied.DecPx);

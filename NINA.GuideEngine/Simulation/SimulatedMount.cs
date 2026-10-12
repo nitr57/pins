@@ -258,8 +258,14 @@ public sealed class SimulatedMount : IPulseOutput, IMountState
             // the worm turns with the RA axis: its angle in tracking seconds, or the plain time
             double tau = Config.PeriodicErrorFollowsAxis ? AxisSecondsAt(t) : t;
             double pe = 0;
-            foreach (var term in Config.PeriodicError)
-                pe += term.AmplitudeArcsec * Math.Sin(2 * Math.PI * tau / term.PeriodSec + term.PhaseRad);
+            var terms = Config.PeriodicError;
+            for (int i = 0; i < terms.Count; i++)
+            {
+                var term = terms[i];
+                double amplitude = term.AmplitudeArcsec * (1 + Wander(term.AmplitudeChange, term.AmplitudeChangeSec, i, 0, tau));
+                double phase = term.PhaseRad + Wander(term.PhaseChangeRad, term.PhaseChangeSec, i, 1, tau);
+                pe += amplitude * Math.Sin(2 * Math.PI * tau / term.PeriodSec + phase);
+            }
 
             double decDrift = Config.DecDriftArcsecPerMin * t / 60.0 + Config.DecDriftChangePerHour * t * t / (2 * 3600.0 * 60.0);
             var drift = new SkyOffset(Config.RaDriftArcsecPerMin * t / 60.0, decDrift);
@@ -492,6 +498,21 @@ public sealed class SimulatedMount : IPulseOutput, IMountState
             walkRa[i] + (walkRa[i + 1] - walkRa[i]) * f,
             walkDec[i] + (walkDec[i + 1] - walkDec[i]) * f);
     }
+
+    // slow change of a periodic error term (PeriodicErrorTerm remarks): values evenly within ± size at knots lengthSec
+    // apart, joined by a smoothstep; 0 when off
+    private double Wander(double size, double lengthSec, int term, int kind, double tau)
+    {
+        if (size == 0 || !(lengthSec > 0)) return 0;
+        double x = tau / lengthSec;
+        double k = Math.Floor(x), f = x - k;
+        ulong stream = 0x9E00UL + 2 * (ulong)term + (ulong)kind;
+        double a = KnotValue(stream, (long)k), b = KnotValue(stream, (long)k + 1);
+        return size * (a + (b - a) * f * f * (3 - 2 * f));
+    }
+
+    private double KnotValue(ulong stream, long knot) =>
+        2 * ((Hash.Combine((ulong)Config.Seed, stream, (ulong)knot) >> 11) * (1.0 / (1UL << 53))) - 1;
 
     private SkyOffset WindAt(double t)
     {

@@ -9,7 +9,10 @@ namespace NINA.GuideEngine.Algorithms;
 /// <summary>Where the <see cref="PredictiveAlgorithm"/> stands.</summary>
 public enum PredictivePhase
 {
-    /// <summary>Fewer than <see cref="PredictiveAlgorithm.ScoreWindowFrames"/> frames seen: the choice of model is provisional.</summary>
+    /// <summary>
+    /// The scores have been taught for fewer than <see cref="PredictiveAlgorithm.ScoreWindowFrames"/> frames or
+    /// <see cref="PredictiveAlgorithm.ScoreWindowSeconds"/>: the choice of model is provisional.
+    /// </summary>
     Learning,
 
     /// <summary>Learned and settled on a model.</summary>
@@ -24,7 +27,10 @@ public sealed record PredictiveState
     /// <summary>Frames that went into the model scores since the last reset.</summary>
     public int FramesLearned { get; init; }
 
-    /// <summary><see cref="FramesLearned"/> / <see cref="PredictiveAlgorithm.ScoreWindowFrames"/>, at most 1.</summary>
+    /// <summary>
+    /// The smaller of <see cref="FramesLearned"/> / <see cref="PredictiveAlgorithm.ScoreWindowFrames"/> and the seconds
+    /// those frames span / <see cref="PredictiveAlgorithm.ScoreWindowSeconds"/>, at most 1.
+    /// </summary>
     public double Progress { get; init; }
 
     /// <summary>Share of each measurement taken over by the position estimate (Kalman gain, 0 … 1).</summary>
@@ -47,9 +53,9 @@ public sealed record PredictiveState
 
     /// <summary>
     /// Recent prediction error of the model in use (mean square over <see cref="PredictiveAlgorithm.FitWindowFrames"/>
-    /// frames) relative to its long-run one (<see cref="PredictiveAlgorithm.ScoreWindowFrames"/>): about 1 while nothing
-    /// changes, larger when the seeing got worse or the mount moves more, smaller when the seeing got better. Null
-    /// before there is data.
+    /// frames) relative to its long-run one (the score memory, see <see cref="PredictiveAlgorithm.ScoreWindowSeconds"/>):
+    /// about 1 while nothing changes, larger when the seeing got worse or the mount moves more, smaller when the seeing
+    /// got better. Null before there is data.
     /// </summary>
     public double? Fit { get; init; }
 
@@ -135,8 +141,19 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     /// <summary>Smallest <see cref="Pace"/>; below it a real offset takes too many frames to remove.</summary>
     public const double MinPace = 0.1;
 
-    /// <summary>Memory of the prediction scores in frames (exponential forgetting); also the length of the learning phase.</summary>
+    /// <summary>
+    /// Shortest memory of the prediction scores and the seeing estimate in frames (exponential forgetting), and the
+    /// frames the learning phase needs at least: telling the filters apart takes this many prediction errors.
+    /// </summary>
     public const int ScoreWindowFrames = 120;
+
+    /// <summary>
+    /// Memory of the prediction scores in seconds when that is more than <see cref="ScoreWindowFrames"/> frames (short
+    /// exposures), and the time the learning phase needs at least: what the scores average over (the periodic error's
+    /// cycle, a change of seeing) takes time, not frames. 120 frames of 2 s, where the algorithm was tuned, so frame
+    /// intervals of 2 s and longer keep exactly <see cref="ScoreWindowFrames"/>.
+    /// </summary>
+    public const double ScoreWindowSeconds = 240;
 
     /// <summary>Frames between two <see cref="PredictiveNoteKind.Summary"/> notes.</summary>
     public const int SummaryFrames = 50;
@@ -180,8 +197,6 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     // px², i.e. 0.01 px
     private const double MinNoise = 1e-4;
 
-    private const double Lambda = 1.0 - 1.0 / ScoreWindowFrames;
-
     private const double FitLambda = 1.0 - 1.0 / FitWindowFrames;
 
     // notes nobody collects are dropped beyond this
@@ -195,12 +210,15 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     private const int FadeOutFrames = 10;
     private const int StoreEveryFrames = 200;
 
-    // per-frame measurement noise: the usual centroid σ is the median of the last UsualSigmaFrames frames (a cloud
-    // over up to half of them is no new normal); up to MeasurementUncertainty.UsualSigmaSpread × it is the frame-to-frame
-    // scatter, and a variance up to UsualVarianceShare × r beyond it is too small to matter; a frame's variance is at most
-    // MaxNoiseFactor × r. From NoisyFactor on a frame counts as trusted less for the notes; a stretch of them ends after
-    // CalmFrames below it.
+    // per-frame measurement noise: the usual centroid σ is the median of the last UsualSigmaFrames frames or
+    // UsualSigmaSeconds, whichever holds more frames (a cloud over up to half of them is no new normal), from a buffer of
+    // at most MaxUsualSigmaFrames (12 minutes down to 0.18 s per frame); up to MeasurementUncertainty.UsualSigmaSpread ×
+    // it is the frame-to-frame scatter, and a variance up to UsualVarianceShare × r beyond it is too small to matter; a
+    // frame's variance is at most MaxNoiseFactor × r. From NoisyFactor on a frame counts as trusted less for the notes; a
+    // stretch of them ends after CalmFrames below it.
     private const int UsualSigmaFrames = 3 * ScoreWindowFrames;
+    private const double UsualSigmaSeconds = 3 * ScoreWindowSeconds;
+    private const int MaxUsualSigmaFrames = 4000;
     private const double UsualVarianceShare = 0.25;
     private const double MaxNoiseFactor = 100;
     private const double NoisyFactor = 2;
@@ -233,8 +251,11 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     private double seeingSum;
     private double seeingWeight;
 
-    // diagnostics
+    // what the scores were taught: frames, and the seconds they span (the learning phase needs both)
     private int learnedFrames;
+    private double learnedSeconds;
+
+    // diagnostics
     private int takeovers;
     private int? framesSinceTakeover;
     private bool misfit;
@@ -256,8 +277,8 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     // measurement noise: centroid σ of the recent frames (ring buffer, and a copy to sort), the usual one, the usual
     // σ² the seeing estimate r was learned with (0 = none yet), this frame's σ and its measurement variance factor, and
     // the debug notes
-    private readonly double[] sigmas = new double[UsualSigmaFrames];
-    private readonly double[] sortedSigmas = new double[UsualSigmaFrames];
+    private readonly double[] sigmas = new double[MaxUsualSigmaFrames];
+    private readonly double[] sortedSigmas = new double[MaxUsualSigmaFrames];
     private int sigmaCount;
     private int sigmaNext;
     private double usualSigma;
@@ -371,6 +392,12 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     /// <summary>Trusts noisier frames less (<see cref="MeasurementSigmaPx"/>); off only for comparisons.</summary>
     internal bool FrameWeighting { get; set; } = true;
 
+    /// <summary>
+    /// Memories in time with a floor in frames (<see cref="ScoreWindowSeconds"/>); off, they count frames only, as they
+    /// did before. Off only for comparisons.
+    /// </summary>
+    internal bool TimeWindows { get; set; } = true;
+
     /// <summary>The periodic-error estimator (RA), null on an axis without it.</summary>
     internal PeriodicErrorEstimator? PeriodicError => periodic;
 
@@ -418,6 +445,7 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
         seeingSum = 0;
         seeingWeight = 0;
         learnedFrames = 0;
+        learnedSeconds = 0;
         takeovers = 0;
         framesSinceTakeover = null;
         misfit = false;
@@ -592,6 +620,8 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
             double noise = noiseFactor = NoiseFactor();
             double r = SeeingVariance();
             double scale = Math.Clamp(dt / intervalSec, MinIntervalScale, GapIntervals);
+            double lambda = 1.0 - 1.0 / ScoreMemoryFrames;
+            bool wasLearned = Learned;
 
             // the periodic error's change since the last frame is a known input like the correction (same curve for both)
             double periodicStep = context is not null && previousSeconds is { } ps && previousContext is { } pc
@@ -612,10 +642,11 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
             {
                 // a noisier frame teaches the seeing estimate less (its normalised innovation already allows for its noise)
                 double w = 1 / noise;
-                double keep = Keep(Lambda, w);
+                double keep = Keep(lambda, w);
                 seeingSum = keep * seeingSum + w * chosenNu * chosenNu / chosenS;
                 seeingWeight = keep * seeingWeight + w;
                 learnedFrames++;
+                learnedSeconds += dt;
             }
 
             foreach (var f in bank)
@@ -625,13 +656,13 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
                     f.Predict(dt, pendingCorrection - periodicStep, scale, intervalSec);
                 }
 
-                f.Update(input, jump, r, learn, noise);
+                f.Update(input, jump, r, learn, noise, lambda);
             }
 
             foreach (var f in reference)
             {
                 f.Predict(dt, pendingCorrection, scale, intervalSec);
-                f.Update(input, jump, r, learn, noise);
+                f.Update(input, jump, r, learn, noise, lambda);
             }
 
             if (context is not null && periodic is not null)
@@ -653,9 +684,9 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
                     CheckFit();
                 }
 
-                if (!jump && learnedFrames == ScoreWindowFrames)
+                if (!jump && !wasLearned && Learned)
                 {
-                    Note(PredictiveNoteKind.Learned, $"learned after {ScoreWindowFrames} frames: {Describe()}");
+                    Note(PredictiveNoteKind.Learned, $"learned after {learnedFrames} frames: {Describe()}");
                     framesSinceSummary = 0;
                 }
                 else if (++framesSinceSummary >= SummaryFrames)
@@ -782,6 +813,27 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     // exponential forgetting for a sample of weight w: it forgets as much as w samples of weight 1 would
     private static double Keep(double lambda, double w) => w == 1 ? lambda : Math.Pow(lambda, w);
 
+    /// <summary>
+    /// Frames the score memory spans at the current frame interval: <see cref="ScoreWindowSeconds"/> of frames, at least
+    /// <see cref="ScoreWindowFrames"/>. The scores forget by λ = 1 − 1/N per frame.
+    /// </summary>
+    internal double ScoreMemoryFrames => WindowFrames(ScoreWindowFrames, ScoreWindowSeconds);
+
+    /// <summary>Frames the usual centroid σ is the median of at the current frame interval.</summary>
+    internal int UsualSigmaWindow => (int)Math.Min(MaxUsualSigmaFrames, Math.Round(WindowFrames(UsualSigmaFrames, UsualSigmaSeconds)));
+
+    // taught long enough to trust the choice of model: ScoreWindowFrames frames spanning ScoreWindowSeconds; counting both
+    // keeps it learned when a shorter exposure lengthens the memory afterwards
+    private bool Learned => learnedFrames >= ScoreWindowFrames && (!TimeWindows || learnedSeconds >= ScoreWindowSeconds);
+
+    // frames the learning phase takes at the current frame interval, for the debug log
+    private int LearningFrames => (int)Math.Round(ScoreMemoryFrames);
+
+    // N = max(minFrames, seconds / Δt) at the measured frame interval Δt: intervals of seconds / minFrames (2 s) and longer
+    // keep exactly minFrames
+    private double WindowFrames(int minFrames, double seconds) =>
+        TimeWindows && intervalSec > 0 ? Math.Max(minFrames, seconds / intervalSec) : minFrames;
+
     // this frame's measurement variance relative to r (see the remarks); remembers σ for the usual level, and moves r
     // to a new usual level
     private double NoiseFactor()
@@ -845,7 +897,7 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
         learnedUsualVariance = usual;
     }
 
-    // the median σ of the recent frames, 0 while there are fewer than MinScoreWeight
+    // the median σ of the newest UsualSigmaWindow frames, 0 while there are fewer than MinScoreWeight
     private double MedianSigma()
     {
         if (sigmaCount < MinScoreWeight)
@@ -853,10 +905,15 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
             return 0;
         }
 
-        Array.Copy(sigmas, sortedSigmas, sigmaCount);
-        Array.Sort(sortedSigmas, 0, sigmaCount);
-        int m = sigmaCount / 2;
-        return sigmaCount % 2 == 1 ? sortedSigmas[m] : 0.5 * (sortedSigmas[m - 1] + sortedSigmas[m]);
+        int n = Math.Min(sigmaCount, UsualSigmaWindow);
+        for (int k = 0; k < n; k++)
+        {
+            sortedSigmas[k] = sigmas[(sigmaNext - 1 - k + sigmas.Length) % sigmas.Length];
+        }
+
+        Array.Sort(sortedSigmas, 0, n);
+        int m = n / 2;
+        return n % 2 == 1 ? sortedSigmas[m] : 0.5 * (sortedSigmas[m - 1] + sortedSigmas[m]);
     }
 
     // frames trusted less, for the debug log: a note when a stretch of them starts (at most one per SummaryFrames frames),
@@ -1025,7 +1082,7 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     // detector on the innovation variance, for the debug log (see ChangedAbove).
     private void CheckFit()
     {
-        if (bank[selected].Fit is not { } fit || learnedFrames < ScoreWindowFrames)
+        if (bank[selected].Fit is not { } fit || !Learned)
         {
             misfit = false;
             return;
@@ -1069,7 +1126,7 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
         string periodicText = periodic is null || !periodicEnabled ? ""
             : string.Create(Inv, $"; periodic error {periodic.Describe()}, prediction {(gateOn ? "on" : "off")} (weight {periodicWeight:F2}), without it {reference[referenceSelected].Score:G3} px²");
         return string.Create(Inv,
-            $"model {Model(f)}, gain {f.LastGain:F2}, seeing σ {SeeingPx:F3} px{centroid}, wander σ {WanderPx:F3} px, drift {f.D:F4} px/s, frame {intervalSec:F1} s, prediction error {score}{runnerUp}, fit {(f.Fit is { } fit ? fit.ToString("F2", Inv) : "-")}, learned {Math.Min(learnedFrames, ScoreWindowFrames)}/{ScoreWindowFrames} frames, {takeovers} takeovers{periodicText}");
+            $"model {Model(f)}, gain {f.LastGain:F2}, seeing σ {SeeingPx:F3} px{centroid}, wander σ {WanderPx:F3} px, drift {f.D:F4} px/s, frame {intervalSec:F1} s, prediction error {score}{runnerUp}, fit {(f.Fit is { } fit ? fit.ToString("F2", Inv) : "-")}, learned {Math.Min(learnedFrames, LearningFrames)}/{LearningFrames} frames, {takeovers} takeovers{periodicText}");
     }
 
     private void Note(PredictiveNoteKind kind, string message)
@@ -1085,12 +1142,14 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     private void UpdateState()
     {
         var f = bank[selected];
-        var phase = learnedFrames < ScoreWindowFrames ? PredictivePhase.Learning : PredictivePhase.Adapted;
+        var phase = Learned ? PredictivePhase.Adapted : PredictivePhase.Learning;
         state = new PredictiveState
         {
             Phase = phase,
             FramesLearned = learnedFrames,
-            Progress = Math.Min(1.0, learnedFrames / (double)ScoreWindowFrames),
+            Progress = Math.Min(1.0, TimeWindows
+                ? Math.Min(learnedFrames / (double)ScoreWindowFrames, learnedSeconds / ScoreWindowSeconds)
+                : learnedFrames / (double)ScoreWindowFrames),
             Gain = f.LastGain,
             SeeingPx = SeeingPx,
             WanderPx = WanderPx,
@@ -1181,9 +1240,9 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
 
         /// <summary>
         /// Measurement update with the measurement variance <paramref name="noise"/> (units of r, 1 = a usual frame); without
-        /// <paramref name="learn"/> no score and the drift held.
+        /// <paramref name="learn"/> no score and the drift held. The score forgets by <paramref name="lambda"/> per frame.
         /// </summary>
-        public void Update(double z, bool jump, double r, bool learn, double noise)
+        public void Update(double z, bool jump, double r, bool learn, double noise, double lambda)
         {
             double nu = z - E;
             if (jump)
@@ -1195,7 +1254,7 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
             {
                 // a noisier frame counts less in the scores
                 double w = 1 / noise;
-                double keep = Keep(Lambda, w);
+                double keep = Keep(lambda, w);
                 double keepRecent = Keep(FitLambda, w);
                 scoreSum = keep * scoreSum + w * nu * nu;
                 ScoreWeight = keep * ScoreWeight + w;

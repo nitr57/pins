@@ -166,6 +166,10 @@ Pluggable `IGuideAlgorithm` (so PPEC/GP and dark guiding can land in v2).
 * Events use PHD2 names and fields (GuideStep, StarLost, SettleBegin/Settling/SettleDone,
   StartCalibration/Calibrating/CalibrationComplete/CalibrationFailed, GuidingDithered, Paused,
   Resumed, LockPositionSet, StarSelected, Alert, AppState). No PHD2 TCP/JSON-RPC server.
+* `Guider.Timing` (`CycleTimer`): the loop timestamps each cycle (capture start, frame ready, processed, pulses
+  handed over, pulses done) and reports the last cycle, medians of the last 20 and the frame rate. A cycle broken
+  off by a failed capture, a pause or the loop stopping is dropped. Timestamps come from `IClock.UtcNow`, so tests
+  in virtual time measure virtual cycles.
 
 ### Statistics
 RMS RA/Dec/total (population σ over a window, px and ″, dither/settle excluded), peak per axis,

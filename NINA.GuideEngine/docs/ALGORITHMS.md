@@ -17,7 +17,8 @@ measurement z = e + v, with Var(v) = r (seeing and centroid noise), Var(w_e) = q
 
 **Filter bank.** The noise ratios are learned with a bank of 50 filters (multiple-model estimation): one filter per pair
 of q_e/r and q_d/r on a grid, all fed the same measurements and applied corrections. Each scores how well it predicts
-the next measurement (exponentially weighted mean squared innovation, a memory of 120 frames); the best one drives the
+the next measurement (exponentially weighted mean squared innovation, a memory of 240 s and at least 120 frames, see
+*Memory in time*); the best one drives the
 correction. Minimum prediction error is what the correction needs, since it cancels the prediction, and it is
 scale-free: the gains depend on the ratios only, so the filters work in units of r. r itself (the seeing) is estimated
 from the chosen filter's normalised innovations and used to tell a real jump (bump, gust; beyond 4 σ) from noise.
@@ -30,16 +31,26 @@ filtered estimate it only makes the error creep up to its size before each corre
 never passes the PHD2 min-move to it, and the Coach's aggression/min-move advice and the live oscillation hints apply
 to the Classic algorithms only.
 
-**Learning.** The algorithm publishes a state per axis (`PredictiveState`): *Learning* for the first 120 frames (the
-score memory; the first takeover can come after 10), then *Adapted*. Frames while the guider settles (after a dither or
+**Learning.** The algorithm publishes a state per axis (`PredictiveState`): *Learning* until the scores have been
+taught for 120 frames spanning 240 s (the score memory; the first takeover can come after 10), then *Adapted*. Frames while the guider settles (after a dither or
 the start of guiding) still guide, but don't enter the scores, the seeing estimate or the learning progress, and the
 drift is held (a Schmidt update with no gain for it): the large settling corrections would show a small
 calibration-rate error or Dec backlash as seeing, wander and drift. Settings changes rebuild an axis's algorithm only
 when its own settings changed; a Predictive axis also keeps its model when only its parameters change (correction
 pace, min move, e.g. in a Coach trial). A new binning starts it over (its estimates are in pixels), and so does a reconnect.
 
-**Fit, not a phase.** The recent prediction error of the model in use (20-frame memory) against its long-run one (120
-frames) is noted in the debug log when it leaves 0.35 … 2.5 (a change of the seeing σ by about 1.6×). It is no phase of
+**Memory in time.** The score memory (with the seeing estimate) and the learning phase last 240 s, the median of the
+usual centroid σ 12 minutes, each at least its frame count: N = max(N_min, T / Δt) frames at the measured frame interval
+Δt, forgetting by λ = 1 − 1/N per frame. What they average over takes time (a change of seeing, a cloud passage, part
+of a periodic-error cycle); telling the filters apart takes frames, hence the floor (at 8 s, 240 s are only 30 frames).
+240 s and 12 minutes are the 120 and 360 frames of 2 s, where everything above was tuned, so frame intervals of 2 s and
+longer run exactly as before (checked bit for bit on simulated nights at 2 and 2.5 s); at 0.5 s frames (Δt ≈ 0.85 s)
+the memory is 282 frames instead of 120. The learning phase counts frames and seconds both, so it stays over when a
+shorter exposure lengthens the memory afterwards. The median's buffer holds at most 4000 frames (12 minutes down to
+0.18 s per frame). Design: [notes/SHORT-EXPOSURES.md](notes/SHORT-EXPOSURES.md).
+
+**Fit, not a phase.** The recent prediction error of the model in use (20-frame memory) against its long-run one (the
+score memory) is noted in the debug log when it leaves 0.35 … 2.5 (a change of the seeing σ by about 1.6×). It is no phase of
 the algorithm: in steady simulated skies the ratio stays within 0.49 … 1.78, but a large periodic error or Dec backlash
 swing it beyond the bounds too (with dithers every 3 min 10 % and 26 % of the time). Takeovers are no sign of a change
 either: in steady simulated skies the bank still switches between near-equal models (3–4 % apart) a few times per 20
@@ -178,11 +189,11 @@ is not part of it (the star image really moved). Used by Predictive and the Coac
 - A star without an SNR or HFD makes the frame's σ unknown (null); an unknown frame counts as a usual one.
 
 **Predictive.** The measurement variance of a frame is r · f with f = 1 + (σ² − b) / r, clamped to 1 … 100, where r is
-the learned seeing, σ_u the median σ of the last 360 frames, and b = max(1.5² σ_u², σ_u² + r / 4): the frame-to-frame
+the learned seeing, σ_u the median σ of the last 12 minutes and at least 360 frames (*Memory in time*), and b = max(1.5² σ_u², σ_u² + r / 4): the frame-to-frame
 scatter of σ, and a change too small to matter next to the seeing. f enters the Kalman update of every filter of both
 banks, the jump test and the periodic-error fit; the scores and the seeing estimate weight the frame 1/f (and forget as
 much as 1/f of a frame). A usual frame has f = 1 and is treated exactly as without the uncertainty. Noise over more than
-half of the last 360 frames becomes the usual level (after 181 frames of it), and its frames get f = 1. r was learned
+half of that window becomes the usual level (after 181 frames of it at 2 s), and its frames get f = 1. r was learned
 with the old usual σ², so at that frame it takes over the difference to the new one (when that lies beyond the old
 level's band); a lower usual level r learns by itself, trusting its frames less meanwhile, not more.
 
@@ -199,7 +210,7 @@ level's band); a lower usual level r learns by itself, trusting its frames less 
   bright star σ² ≪ r, and such tiny factors (f ≈ 1.001) only perturb the chaotic closed loop: without the band the
   comparison test's HighSeeing Predictive-RA run went from 0.819″ to 0.911″ and failed. With the r / 4 term bright-star
   runs are unchanged frame for frame.
-- *360 frames, not 120.* A median of 120 frames flips to a cloud after a minute of it; with 4-minute passages it gained
+- *360 frames, not 120* (at 2 s; 12 minutes at shorter frame intervals). A median of 120 frames flips to a cloud after a minute of it; with 4-minute passages it gained
   10 % under the clouds against 17 % with 360 (4 seeds, total 0.97× against 0.93×).
 - *r takes over a new usual level at once.* Left to learn it (memory 120 frames, from innovations normalised by the old
   level), r kept the old value while f dropped from about 9 to 1 in one frame, so the frames were trusted far too much:

@@ -133,6 +133,59 @@ internal static class Hash
 }
 
 /// <summary>
+/// Poisson deviates of one fixed mean by inversion of the cumulative distribution, for the sky background of a
+/// frame. Exact to double precision: the table sums the probabilities until the terms fall below 1e-17, and what is
+/// left (the tail and the rounding, of order 1e-16) goes to its last value. O(1) per deviate through a guide table
+/// (Chen and Asau 1974), where <see cref="SimRng.NextPoisson"/> costs O(mean).
+/// </summary>
+internal sealed class PoissonTable
+{
+    private const int GuideBits = 8;
+
+    private readonly double[] cdf;
+    private readonly int[] guide = new int[1 << GuideBits];
+
+    public PoissonTable(double mean)
+    {
+        if (!(mean > 0 && mean < 700)) throw new ArgumentOutOfRangeException(nameof(mean), mean, "0 < mean < 700 (e^−mean must not underflow)");
+        Mean = mean;
+        var list = new List<double>();
+        double p = Math.Exp(-mean), sum = p;
+        list.Add(sum);
+        for (int k = 1; k <= mean || p >= 1e-17; k++)
+        {
+            p *= mean / k;
+            sum += p;
+            list.Add(sum);
+        }
+
+        list[^1] = 1.0;
+        cdf = [.. list];
+        int j = 0;
+        for (int i = 0; i < guide.Length; i++)
+        {
+            double u = (double)i / guide.Length;
+            while (cdf[j] <= u) j++;
+            guide[i] = j;
+        }
+    }
+
+    public double Mean { get; }
+
+    /// <summary>The largest value a deviate can take.</summary>
+    public int MaxValue => cdf.Length - 1;
+
+    /// <summary>A deviate from 64 random bits (the top 53 form the uniform that is inverted).</summary>
+    public int Sample(ulong bits)
+    {
+        double u = (bits >> 11) * (1.0 / (1UL << 53));
+        int k = guide[(int)(bits >> (64 - GuideBits))];
+        while (cdf[k] <= u) k++;
+        return k;
+    }
+}
+
+/// <summary>
 /// Pre-computed table of standard normal deviates used for the per-pixel noise field. Indexing it with
 /// independent uniform 16-bit indices yields i.i.d. samples of a 65536-point empirical normal
 /// distribution (exact mean 0, variance 1), which is statistically adequate for sensor noise and much

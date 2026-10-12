@@ -135,6 +135,12 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
         /// <summary>Processing time of the last frame, ms.</summary>
         public double LastProcessingMs { get; set; }
 
+        /// <summary>
+        /// Timing of the guide loop (frame rate and where the time of a cycle goes); null before the first cycle and while
+        /// the loop does not run.
+        /// </summary>
+        public AdvancedGuideTiming? Timing { get; set; }
+
         /// <summary>Lock position, camera px; null when none.</summary>
         public double? LockX { get; set; }
 
@@ -330,6 +336,50 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
 
         /// <summary>Time covered, s.</summary>
         public double ElapsedSeconds { get; set; }
+    }
+
+    /// <summary>
+    /// Timing of the guide loop, ms: medians over the last <see cref="Cycles"/> cycles (a cycle runs from one capture
+    /// start to the next), and the last cycle's values in the Last* fields.
+    /// </summary>
+    public class AdvancedGuideTiming {
+        /// <summary>Frames per second: 1000 / median cycle.</summary>
+        public double Fps { get; set; }
+
+        /// <summary>Cycles the medians cover.</summary>
+        public int Cycles { get; set; }
+
+        /// <summary>One whole cycle.</summary>
+        public double CycleMs { get; set; }
+
+        /// <summary>The exposure asked for.</summary>
+        public double ExposureMs { get; set; }
+
+        /// <summary>The capture beyond the exposure: starting it, reading out and transferring the frame.</summary>
+        public double CameraMs { get; set; }
+
+        /// <summary>Frame arrived to frame processed (stars, algorithms).</summary>
+        public double ProcessingMs { get; set; }
+
+        /// <summary>Frame arrived to the first pulse handed to the guide output, over cycles with pulses; null when none.
+        /// The command still has to reach the mount (about 9 ms on a 9600 baud serial line).</summary>
+        public double? FrameToPulseMs { get; set; }
+
+        /// <summary>Pulses handed over to reported done, over cycles with pulses.</summary>
+        public double PulseMs { get; set; }
+
+        /// <summary>
+        /// The rest of a cycle: between processing and the pulses, then events, logs and the mount check before the next
+        /// capture. Exposure, camera, processing, pulses and this add up to the cycle; FrameToPulseMs overlaps them.
+        /// </summary>
+        public double OtherMs { get; set; }
+
+        public double LastCycleMs { get; set; }
+        public double LastCameraMs { get; set; }
+        public double LastProcessingMs { get; set; }
+        public double? LastFrameToPulseMs { get; set; }
+        public double LastPulseMs { get; set; }
+        public double LastOtherMs { get; set; }
     }
 
     /// <summary>One guide step: the measured error and the pulses sent for one guide frame.</summary>

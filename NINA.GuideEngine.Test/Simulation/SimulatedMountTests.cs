@@ -126,6 +126,75 @@ public class SimulatedMountTests
     }
 
     [Test]
+    public void A_periodic_error_term_without_change_is_the_plain_sine()
+    {
+        var (mount, _) = Create(new MountSimConfig { DeclinationDeg = 0, PeriodicError = [new PeriodicErrorTerm(8.0, 480.0, 0.3)] });
+        for (double t = 0; t < 2000; t += 13.7) mount.PeriodicErrorAt(t).Should().Be(8.0 * Math.Sin(2 * Math.PI * t / 480.0 + 0.3));
+    }
+
+    [Test]
+    public void The_amplitude_and_phase_of_a_term_change_slowly_within_their_bounds_and_repeat_with_the_seed()
+    {
+        var term = new PeriodicErrorTerm(10.0, 100.0)
+        {
+            AmplitudeChange = 0.3, AmplitudeChangeSec = 2000, PhaseChangeRad = 0.5, PhaseChangeSec = 3000,
+        };
+        var config = new MountSimConfig { DeclinationDeg = 0, PeriodicError = [term], Seed = 3 };
+        var (mount, _) = Create(config);
+        var (same, _) = Create(config);
+        var (other, _) = Create(config with { Seed = 4 });
+
+        // amplitude and phase of each 100 s cycle by a least-squares fit
+        var amplitudes = new List<double>();
+        var phases = new List<double>();
+        const int cycles = 2000;
+        for (int cycle = 0; cycle < cycles; cycle++)
+        {
+            double sc = 0, ss = 0;
+            for (int i = 0; i < 200; i++)
+            {
+                double t = cycle * 100 + i * 0.5;
+                double e = mount.PeriodicErrorAt(t);
+                if (cycle < 100) e.Should().Be(same.PeriodicErrorAt(t));
+                sc += e * Math.Cos(2 * Math.PI * t / 100);
+                ss += e * Math.Sin(2 * Math.PI * t / 100);
+            }
+
+            amplitudes.Add(Math.Sqrt(sc * sc + ss * ss) / 100 / 10.0 - 1);
+            phases.Add(Math.Atan2(sc, ss));
+        }
+
+        Enumerable.Range(0, 300).Count(c => other.PeriodicErrorAt(c * 100 + 25) != mount.PeriodicErrorAt(c * 100 + 25)).Should().BeGreaterThan(290);
+        amplitudes.Should().OnlyContain(a => Math.Abs(a) <= 0.31);
+        phases.Should().OnlyContain(p => Math.Abs(p) <= 0.52);
+
+        // knots evenly within ± size joined by a smoothstep: a standard deviation of about 0.5 × size
+        StandardDeviation(amplitudes).Should().BeInRange(0.35 * 0.3, 0.65 * 0.3);
+        StandardDeviation(phases).Should().BeInRange(0.35 * 0.5, 0.65 * 0.5);
+
+        // slow: neighbouring cycles differ by much less than the spread
+        Enumerable.Range(1, cycles - 1).Average(c => Math.Abs(amplitudes[c] - amplitudes[c - 1])).Should().BeLessThan(0.1 * 0.3);
+    }
+
+    [Test]
+    public void A_changing_curve_on_the_axis_depends_on_the_gear_angle_not_on_the_time()
+    {
+        var term = new PeriodicErrorTerm(10.0, 430.8) { AmplitudeChange = 0.3, AmplitudeChangeSec = 430.8, PhaseChangeRad = 0.5, PhaseChangeSec = 430.8 };
+        var config = new MountSimConfig { DeclinationDeg = 0, PeriodicError = [term], PeriodicErrorFollowsAxis = true, RightAscensionHours = 6 };
+        var (mount, _) = Create(config);
+
+        // a mount that starts 1000 s of axis angle further on the same gear: same curve, 1000 s earlier
+        var (later, _) = Create(config with { SiderealTimeAtStartHours = 6 + 1000 / SimulatedMount.SecondsPerSiderealHour });
+        for (double t = 0; t < 3000; t += 7.1) later.PeriodicErrorAt(t).Should().BeApproximately(mount.PeriodicErrorAt(t + 1000), 1e-9);
+    }
+
+    private static double StandardDeviation(IReadOnlyList<double> values)
+    {
+        double mean = values.Average();
+        return Math.Sqrt(values.Average(v => (v - mean) * (v - mean)));
+    }
+
+    [Test]
     public void Drift_accumulates_linearly()
     {
         var (mount, _) = Create(new MountSimConfig { DecDriftArcsecPerMin = 1.5, RaDriftArcsecPerMin = -0.5 });

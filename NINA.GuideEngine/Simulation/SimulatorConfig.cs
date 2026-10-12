@@ -24,11 +24,34 @@ public readonly record struct SkyOffset(double Ra, double Dec)
     public override string ToString() => FormattableString.Invariant($"(RA {Ra:F3}\", Dec {Dec:F3}\")");
 }
 
-/// <summary>One periodic error harmonic of the RA drive: <c>A·sin(2π·t/P + φ)</c>.</summary>
+/// <summary>
+/// One periodic error harmonic of the RA drive: <c>A·sin(2π·t/P + φ)</c>, optionally with an amplitude and a phase that
+/// change slowly along the gear (a strain-wave gear's curve changes from cycle to cycle).
+/// </summary>
 /// <param name="AmplitudeArcsec">Semi-amplitude (half of peak-to-peak) in arcsec of RA axis angle, i.e. on the sky at dec 0.</param>
 /// <param name="PeriodSec">Period in seconds (worm period for the fundamental).</param>
 /// <param name="PhaseRad">Phase at t = 0 in radians.</param>
-public sealed record PeriodicErrorTerm(double AmplitudeArcsec, double PeriodSec, double PhaseRad = 0.0);
+/// <remarks>
+/// The changes are smooth random curves over the same time as the sine (the RA axis angle with
+/// <see cref="MountSimConfig.PeriodicErrorFollowsAxis"/>): values drawn evenly within ± the given size at knots
+/// <see cref="AmplitudeChangeSec"/> or <see cref="PhaseChangeSec"/> apart, hashed from <see cref="MountSimConfig.Seed"/>,
+/// the term's position in the list and the knot, and joined by a smoothstep. So the same gear angle gives the same curve
+/// again, and the curve stays within the bounds. Size 0 (the default) leaves the term a plain sine.
+/// </remarks>
+public sealed record PeriodicErrorTerm(double AmplitudeArcsec, double PeriodSec, double PhaseRad = 0.0)
+{
+    /// <summary>The amplitude changes by up to ± this fraction (0.1 = ±10 %).</summary>
+    public double AmplitudeChange { get; init; }
+
+    /// <summary>Distance of the amplitude's knots in seconds; about the time over which it changes.</summary>
+    public double AmplitudeChangeSec { get; init; }
+
+    /// <summary>The phase changes by up to ± this many radians.</summary>
+    public double PhaseChangeRad { get; init; }
+
+    /// <summary>Distance of the phase's knots in seconds.</summary>
+    public double PhaseChangeSec { get; init; }
+}
 
 /// <summary>Random wind gusts: Poisson arrivals, each a half-sine bump in a random direction.</summary>
 /// <param name="GustsPerMinute">Mean arrival rate.</param>
@@ -133,6 +156,19 @@ public sealed record SimStar(double EastArcsec, double NorthArcsec, double Magni
 /// <summary>Transparency change (clouds) between two times, with optional linear ramps at both ends.</summary>
 public sealed record TransparencyWindow(double StartSec, double EndSec, double Transmission, double RampSec = 0.0);
 
+/// <summary>
+/// One layer of slow seeing (<see cref="SkySimConfig.SeeingLayers"/>): all stars move together by a value that is
+/// constant within cells of <paramref name="CellSec"/> and independent from cell to cell.
+/// </summary>
+/// <param name="CellSec">Length of a cell in seconds.</param>
+/// <param name="SigmaArcsec">Standard deviation per axis of a cell's displacement, arcsec.</param>
+/// <remarks>
+/// Common to all stars, a simplification on the safe side for multi-star guiding: motion this slow comes from
+/// turbulence on scales of the wind speed times the cell, tens of metres, which in the ground layer the light of all
+/// guide stars crosses together and in a layer at 5 km still largely (a 10′ field there is 15 m wide).
+/// </remarks>
+public sealed record SeeingLayer(double CellSec, double SigmaArcsec);
+
 /// <summary>Star flux forced to zero between two times (star lost). <c>StarIndex</c> null = all stars.</summary>
 public sealed record StarOcclusion(double StartSec, double EndSec, int? StarIndex = null);
 
@@ -168,6 +204,13 @@ public sealed record SkySimConfig
     public double SeeingCommonFraction { get; init; } = 0.5;
 
     public int SeeingSeed { get; init; } = 7;
+
+    /// <summary>
+    /// Slow seeing on top of the fast motion above: layers of image motion that is constant within cells of seconds, so
+    /// successive frames are correlated (the tilt spectrum falls only as f^(−2/3) at low frequencies; Conan, Rousset and
+    /// Madec 1995, JOSA A 12, 1559). Empty (the default): only the fast motion.
+    /// </summary>
+    public IReadOnlyList<SeeingLayer> SeeingLayers { get; init; } = [];
 
     public IReadOnlyList<TransparencyWindow> Transparency { get; init; } = [];
 

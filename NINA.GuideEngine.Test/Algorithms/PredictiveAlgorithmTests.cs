@@ -236,6 +236,104 @@ public class PredictiveAlgorithmTests
         fitNotes.Should().Be(0, "nothing changes: no false alarms in the debug log");
     }
 
+    [TestCase(0.5, 480)]
+    [TestCase(1.0, 240)]
+    [TestCase(2.0, 120)]
+    [TestCase(8.0, 120)]
+    public void TheScoreMemorySpans240SecondsAndAtLeast120Frames(double intervalSec, int frames)
+    {
+        var alg = Predictive();
+        new Plant { SeeingPx = 0.2, WanderPx = 0.05, IntervalSec = intervalSec }.Run(alg, frames: 50);
+        alg.ScoreMemoryFrames.Should().BeApproximately(frames, 1e-9);
+    }
+
+    [Test]
+    public void AtTwoSecondsAndLongerTheScoresForgetExactlyAsBefore()
+    {
+        // 120 frames of memory at 2.1 s and more (2 s exposure plus download): λ is the constant the algorithm was tuned
+        // with, to the bit
+        foreach (double interval in new[] { 2.1, 2.35, 4.0 })
+        {
+            var alg = Predictive();
+            new Plant { SeeingPx = 0.2, WanderPx = 0.05, IntervalSec = interval }.Run(alg, frames: 20);
+            (1.0 - 1.0 / alg.ScoreMemoryFrames).Should().Be(1.0 - 1.0 / 120);
+        }
+    }
+
+    [Test]
+    public void AtShortFrameIntervalsTheLearningTakes240SecondsAndStaysLearnedWhenTheExposureDrops()
+    {
+        // 0.5 s frames: adapted once the learned frames span 240 s (480 frames), not after 120 frames
+        var alg = Predictive();
+        var states = new List<PredictiveState>();
+        new Plant { SeeingPx = 0.3, WanderPx = 0.05, IntervalSec = 0.5, OnFrame = _ => states.Add(alg.State) }.Run(alg, frames: 700);
+        var first = states.First(s => s.Phase == PredictivePhase.Adapted);
+        first.FramesLearned.Should().Be(480);
+        states.SkipWhile(s => s.Phase == PredictivePhase.Learning).Should().OnlyContain(s => s.Phase == PredictivePhase.Adapted);
+        states.Last(s => s.Phase == PredictivePhase.Learning).Progress.Should().BeApproximately(479.0 / 480, 1e-9);
+
+        // learned at 2 s, then the exposure drops to 0.5 s: the memory grows to 480 frames, the phase stays
+        alg = Predictive();
+        new Plant { SeeingPx = 0.3, WanderPx = 0.05, IntervalSec = 2 }.Run(alg, frames: 200);
+        alg.State.Phase.Should().Be(PredictivePhase.Adapted);
+        var phases = new List<PredictivePhase>();
+        new Plant { SeeingPx = 0.3, WanderPx = 0.05, IntervalSec = 0.5, Seed = 8, OnFrame = _ => phases.Add(alg.State.Phase) }.Run(alg, frames: 200);
+        phases.Should().OnlyContain(p => p == PredictivePhase.Adapted);
+        alg.ScoreMemoryFrames.Should().BeApproximately(480, 1e-6, "the frame interval follows within a few frames");
+    }
+
+    [Test]
+    public void WithoutTimeWindowsTheMemoriesAreFramesOnly()
+    {
+        // the comparison setting: today's behaviour before the windows were in time
+        var alg = Predictive();
+        alg.TimeWindows = false;
+        var phases = new List<PredictivePhase>();
+        new Plant { SeeingPx = 0.3, WanderPx = 0.05, IntervalSec = 0.5, OnFrame = _ => phases.Add(alg.State.Phase) }.Run(alg, frames: 300);
+        alg.ScoreMemoryFrames.Should().Be(PredictiveAlgorithm.ScoreWindowFrames);
+        alg.UsualSigmaWindow.Should().Be(3 * PredictiveAlgorithm.ScoreWindowFrames);
+        phases.IndexOf(PredictivePhase.Adapted).Should().Be(PredictiveAlgorithm.ScoreWindowFrames);
+    }
+
+    [TestCase(0.1, 4000)]
+    [TestCase(0.5, 1440)]
+    [TestCase(2.0, 360)]
+    [TestCase(8.0, 360)]
+    public void TheUsualNoiseIsTheMedianOf12MinutesAndAtLeast360Frames(double intervalSec, int frames)
+    {
+        var alg = Predictive();
+        new Plant { SeeingPx = 0.2, WanderPx = 0.05, IntervalSec = intervalSec }.Run(alg, frames: 50);
+        alg.UsualSigmaWindow.Should().Be(frames);
+    }
+
+    [Test]
+    public void AtShortFrameIntervalsAFourMinuteCloudDoesNotBecomeTheUsualNoise()
+    {
+        // 480 cloudy frames: 4 minutes at 0.5 s, but 16 minutes at 2 s. At 0.5 s the median spans 1440 frames and the
+        // cloud stays unusual throughout; at 2 s it spans 360 frames, and after 180 cloudy ones the cloud is the new normal
+        static List<double> Factors(double intervalSec)
+        {
+            const int cloud = 1500;
+            var alg = Predictive();
+            var factors = new List<double>();
+            new Plant
+            {
+                SeeingPx = 0.1, WanderPx = 0.03, IntervalSec = intervalSec, CentroidSigmaPx = k => k >= cloud ? 0.3 : 0.03,
+                OnFrame = k =>
+                {
+                    if (k >= cloud)
+                    {
+                        factors.Add(alg.LastNoiseFactor);
+                    }
+                },
+            }.Run(alg, frames: cloud + 480);
+            return factors;
+        }
+
+        Factors(0.5).Should().OnlyContain(f => f > 2, "a cloud over a third of the window is no new normal");
+        Factors(2.0).Skip(200).Should().OnlyContain(f => f == 1, "the frame window takes the cloud as the usual noise");
+    }
+
     [TestCase(0.2, 0.6)]
     [TestCase(0.6, 0.2)]
     public void NotesAChangedSkyInTheDebugLog(double seeingBefore, double seeingAfter)

@@ -103,6 +103,33 @@ namespace NINA.Test.Sequencer.SequenceItem.FlatDevice {
             imageSaveMediator.Verify(x => x.Enqueue(imageData.Object, It.IsAny<Task<IRenderedImage>>(), It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Once);
         }
 
+        /// <summary>
+        /// A RAW converter can report a different bit depth than the exposure carried (bit scaling to 16 bits, or a
+        /// profile bit depth above the RAW data's), so the histogram target must use the bit depth of the converted pixels.
+        /// </summary>
+        [Test]
+        public async Task Execute_ConvertedImageBitDepthDiffersFromExposureBitDepth_UsesConvertedImageBitDepth() {
+            sut.MinExposure = 0;
+            sut.MaxExposure = 10;
+
+            var exposureData = new Mock<IExposureData>();
+            exposureData.SetupGet(x => x.BitDepth).Returns(14);
+            var imageData = new Mock<IImageData>();
+            var imageProps = new ImageProperties(100, 100, 16, true, 100, 0);
+            var statistics = new Mock<IImageStatistics>();
+            statistics.SetupGet(x => x.Mean).Returns(30000);
+
+            imagingMediator.Setup(x => x.CaptureImage(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>(), "")).ReturnsAsync(exposureData.Object);
+            imageData.Setup(x => x.Statistics).Returns(new Nito.AsyncEx.AsyncLazy<IImageStatistics>(async () => statistics.Object));
+            imageData.Setup(x => x.Properties).Returns(imageProps);
+            exposureData.Setup(x => x.ToImageData(It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>())).ReturnsAsync(imageData.Object);
+
+            await sut.Execute(default, default);
+
+            sut.GetExposureItem().ExposureTime.Should().Be(5);
+            imageSaveMediator.Verify(x => x.Enqueue(imageData.Object, It.IsAny<Task<IRenderedImage>>(), It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Once);
+        }
+
         [Test]
         public async Task Execute_ImageNeedsThreeUpwardsIterationsToBeWithin_TakeImagesWithExpectedExposureTime() {
             sut.MinExposure = 0;

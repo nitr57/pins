@@ -451,6 +451,8 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
         double invGain = 1.0 / Math.Max(1e-6, electronsPerAdu);
         double baseSigma = Math.Sqrt(baseE + rn2);
         bool baseGaussian = baseE >= 20;
+        // below 20 e⁻ the background is Poisson; one table per frame instead of a Knuth draw (O(mean)) per pixel
+        var basePoisson = !baseGaussian && baseE > 0 ? new PoissonTable(baseE) : null;
         int wb = frame.Width;
         double maxVal = MaxAdu;
         var pixels = frame.Pixels;
@@ -479,6 +481,7 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
                 double s = stars[row + x];
                 double e;
                 if (s == 0 && baseGaussian) e = baseE + baseSigma * g;
+                else if (s == 0 && basePoisson != null) e = basePoisson.Sample(rng.NextULong()) + rn * g;
                 else
                 {
                     double mu = baseE + s;

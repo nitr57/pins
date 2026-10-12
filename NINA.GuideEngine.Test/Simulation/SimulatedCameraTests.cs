@@ -360,6 +360,54 @@ public class SimulatedCameraTests
         (sab / Math.Sqrt(saa * sbb)).Should().BeApproximately(0.5, 0.05);
     }
 
+    [Test]
+    public void A_slow_seeing_layer_averages_down_only_beyond_its_cells_and_moves_all_stars_together()
+    {
+        SkySimConfig Config(params SeeingLayer[] layers) => new() { SeeingJitterArcsec = 0.8, SeeingLayers = layers };
+        SimStar[] stars = [new SimStar(0, 0, 8), new SimStar(100, 0, 8)];
+        var fast = new SimulatedSky(Config(), stars);
+        var slow = new SimulatedSky(Config(new SeeingLayer(8.0, 0.3)), stars);
+
+        // the layer, common to both stars, on top of the unchanged fast motion
+        var layer = new List<double>();
+        for (int i = 0; i < 4000; i++)
+        {
+            var a = slow.SeeingOffset(0, i, i + 1) - fast.SeeingOffset(0, i, i + 1);
+            var b = slow.SeeingOffset(1, i, i + 1) - fast.SeeingOffset(1, i, i + 1);
+            b.Ra.Should().BeApproximately(a.Ra, 1e-12);
+            b.Dec.Should().BeApproximately(a.Dec, 1e-12);
+            layer.Add(a.Ra);
+        }
+
+        double Sigma(double exposure)
+        {
+            var layerOnly = new SimulatedSky(new SkySimConfig { SeeingJitterArcsec = 0, SeeingLayers = [new SeeingLayer(8.0, 0.3)] }, stars);
+            double s2 = 0;
+            const int n = 16000;
+            for (int i = 0; i < n; i++)
+            {
+                var o = layerOnly.SeeingOffset(0, i * exposure, (i + 1) * exposure);
+                s2 += o.Ra * o.Ra + o.Dec * o.Dec;
+            }
+
+            return Math.Sqrt(s2 / (2 * n));
+        }
+
+        // a 1 s mean inside a cell is the cell's value; over four cells the scatter halves
+        Sigma(1.0).Should().BeApproximately(0.3, 0.015);
+        Sigma(32.0).Should().BeApproximately(0.15, 0.008);
+
+        // successive 1 s frames share a cell 7 times in 8, where the fast motion leaves them independent
+        double mean = layer.Average(), c0 = 0, c1 = 0;
+        for (int i = 0; i < layer.Count; i++)
+        {
+            c0 += (layer[i] - mean) * (layer[i] - mean);
+            if (i > 0) c1 += (layer[i] - mean) * (layer[i - 1] - mean);
+        }
+
+        (c1 / c0).Should().BeApproximately(1 - 1.0 / 8, 0.04);
+    }
+
     [TestCaseSource(typeof(SimulatorScenario), nameof(SimulatorScenario.Presets))]
     public async Task Presets_render(SimulatorScenario scenario)
     {

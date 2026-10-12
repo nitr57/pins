@@ -778,6 +778,35 @@ public class ClosedLoopTests
             $"scale {h.Guider.PixelScale:F2}″/px; {Describe("RA", h.Guider.RaAlgorithm)}; {Describe("Dec", h.Guider.DecAlgorithm)}");
     }
 
+    [Test]
+    public async Task Measures_the_guide_cycle()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        var guide = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(10));
+        (await guide).Success.Should().BeTrue();
+
+        var timing = h.Guider.Timing!;
+        TestContext.Out.WriteLine($"cycle {timing.Median.CycleMs:F1} ms ({timing.FramesPerSecond:F3} fps): camera {timing.Median.CameraMs:F1}, " +
+            $"processing {timing.Median.ProcessingMs:F1}, frame to pulse {timing.Median.FrameToPulseMs:F1}, pulses {timing.Median.PulseMs:F1}, other {timing.Median.OtherMs:F1}");
+        timing.Cycles.Should().Be(CycleTimer.Window);
+        timing.Median.ExposureMs.Should().Be(2000);
+        timing.Median.CycleMs.Should().BeGreaterThanOrEqualTo(2000);
+        timing.FramesPerSecond.Should().BeApproximately(1000 / timing.Median.CycleMs, 1e-9);
+        // the Predictive run of this suite may leave a good mount without a pulse for 20 frames
+        if (timing.Median.FrameToPulseMs is null)
+        {
+            timing.Median.PulseMs.Should().Be(0);
+        }
+        else
+        {
+            timing.Median.PulseMs.Should().BeGreaterThan(0);
+        }
+        var last = timing.Last;
+        (last.ExposureMs + last.CameraMs + last.ProcessingMs + last.PulseMs + last.OtherMs)
+            .Should().BeApproximately(last.CycleMs, 1e-6, "the parts of one cycle add up to it");
+    }
+
     /// <summary>Wires a simulator, a guider and an event recorder together.</summary>
     private sealed class Harness
     {

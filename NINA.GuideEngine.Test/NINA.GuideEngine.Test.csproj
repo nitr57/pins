@@ -15,6 +15,8 @@
   <ItemGroup>
     <None Include="Golden\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="Data\*.csv" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\umi\**\*.csv.gz" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Data\umi\README.md" CopyToOutputDirectory="Never" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\NINA.GuideEngine\NINA.GuideEngine.csproj" />

@@ -10,10 +10,14 @@ namespace NINA.GuideEngine.Simulation;
 /// Seeing image motion is modelled per star as piecewise-constant Gaussian noise on cells of
 /// <see cref="SkySimConfig.SeeingCoherenceMs"/>, split into a component common to all stars and an
 /// independent per-star component (<see cref="SkySimConfig.SeeingCommonFraction"/> of the variance is
-/// common). Cell values are hashed from (seed, stream, cell index), so evaluation order does not matter.
+/// common). The slow layers (<see cref="SkySimConfig.SeeingLayers"/>) add motion common to all stars on cells of their own.
+/// Cell values are hashed from (seed, stream, cell index), so evaluation order does not matter.
 /// </remarks>
 public sealed class SimulatedSky
 {
+    // hash streams of the slow layers (2 per layer), far from the fast ones (0, 1, 16 + 2 per star)
+    private const ulong LayerStreams = 0x5EE0_0000UL;
+
     private readonly double cellSec;
     private readonly double cellSigma;
     private readonly double commonWeight;
@@ -113,8 +117,36 @@ public sealed class SimulatedSky
     /// </summary>
     public SkyOffset SeeingOffset(int starIndex, double t0, double t1)
     {
-        if (cellSigma <= 0) return SkyOffset.Zero;
         if (t1 <= t0) t1 = t0 + 1e-9;
+        var offset = FastSeeingOffset(starIndex, t0, t1);
+        var layers = Config.SeeingLayers;
+        for (int i = 0; i < layers.Count; i++) offset += LayerOffset(i, layers[i], t0, t1);
+        return offset;
+    }
+
+    // a slow layer, common to all stars: the time-weighted mean of its cells over [t0, t1]
+    private SkyOffset LayerOffset(int layer, SeeingLayer config, double t0, double t1)
+    {
+        if (!(config.CellSec > 0) || !(config.SigmaArcsec > 0)) return SkyOffset.Zero;
+        long c0 = (long)Math.Floor(t0 / config.CellSec);
+        long c1 = (long)Math.Floor(t1 / config.CellSec);
+        double ra = 0, dec = 0;
+        ulong stream = LayerStreams + 2 * (ulong)layer;
+        for (long c = c0; c <= c1; c++)
+        {
+            double w = Math.Min(t1, (c + 1) * config.CellSec) - Math.Max(t0, c * config.CellSec);
+            if (w <= 0) continue;
+            ra += w * Hash.Gaussian(seed, stream, (ulong)c);
+            dec += w * Hash.Gaussian(seed, stream + 1, (ulong)c);
+        }
+
+        double norm = config.SigmaArcsec / (t1 - t0);
+        return new SkyOffset(ra * norm, dec * norm);
+    }
+
+    private SkyOffset FastSeeingOffset(int starIndex, double t0, double t1)
+    {
+        if (cellSigma <= 0) return SkyOffset.Zero;
         long c0 = (long)Math.Floor(t0 / cellSec);
         long c1 = (long)Math.Floor(t1 / cellSec);
         double ra = 0, dec = 0;

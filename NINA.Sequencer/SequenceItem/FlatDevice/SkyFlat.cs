@@ -311,7 +311,7 @@ namespace NINA.Sequencer.SequenceItem.FlatDevice {
                     }
                 }
 
-                var check = HistogramMath.GetExposureAduState(mean, HistogramTargetPercentage, image.BitDepth, HistogramTolerancePercentage);
+                var check = HistogramMath.GetExposureAduState(mean, HistogramTargetPercentage, imageData.Properties.BitDepth, HistogramTolerancePercentage);
 
                 lastExposureTime = exposureTime;
                 this.GetExposureItem().ExposureTime = exposureTime;
