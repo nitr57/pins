@@ -138,6 +138,10 @@ public sealed partial class NinaSequenceService {
                     + "Wait for it to finish or cancel it, then start again.");
             }
 
+            // Sequence2VM.StartSequence materializes linked templates before it runs; do it before validating, so that
+            // issues inside them are found here and not skipped with NINA's validation prompt.
+            RunOnDispatcher(() => ResolveLinkedTemplates(access.Root, materializeAll: true));
+
             if (!skipValidation) {
                 IReadOnlyList<string> issues = await Task.Run(() => CollectValidationIssues(access.Root), cancellationToken)
                     .ConfigureAwait(false);
@@ -381,6 +385,34 @@ public sealed partial class NinaSequenceService {
         }
 
         return name;
+    }
+
+    /// <summary>
+    /// Mirrors the private <c>Sequence2VM.ResolveLinkedTemplates</c>: refreshes the link state of linked templates from the
+    /// template library and, with <paramref name="materializeAll"/>, loads their content. Templates with open edits are
+    /// left alone. Runs on the dispatcher.
+    /// </summary>
+    internal static void ResolveLinkedTemplates(ISequenceContainer container, bool materializeAll, int depth = 0) {
+        if (depth > 64) {
+            Logger.Warning("MCP: linked template refresh stopped because the linked template nesting is too deep.");
+            return;
+        }
+
+        if (container is LinkedTemplateContainer linkedTemplate) {
+            if (linkedTemplate.HasOpenEdits) {
+                return;
+            }
+
+            if (materializeAll || linkedTemplate.IsMaterialized) {
+                linkedTemplate.TryResolveTemplate();
+            } else {
+                linkedTemplate.RefreshLinkState();
+            }
+        }
+
+        foreach (ISequenceContainer child in container.GetItemsSnapshot().OfType<ISequenceContainer>()) {
+            ResolveLinkedTemplates(child, materializeAll, depth + 1);
+        }
     }
 
     private static void RunOnDispatcher(Action action) {

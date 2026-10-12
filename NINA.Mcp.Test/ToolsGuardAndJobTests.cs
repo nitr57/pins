@@ -279,10 +279,11 @@ public class ToolsGuardAndJobTests {
 
     [Test]
     public async Task Job_DifferentResources_RunConcurrently() {
-        catalog.Observatory.Block("Slew");
+        // A capture during a slew is refused (capture requires the mount idle); a switch and the cooler are unrelated.
+        catalog.Observatory.Block("SetSwitch");
         catalog.Observatory.Block("CoolCamera");
 
-        await catalog.CallAsync("slew_mount", """{"ra":5,"dec":5,"wait_seconds":0}""");
+        await catalog.CallAsync("set_switch", """{"index":0,"value":1,"wait_seconds":0}""");
         await catalog.CallAsync("cool_camera", """{"target_celsius":-10,"wait_seconds":0}""");
 
         var capture = await catalog.CallAsync("capture_image", """{"exposure_seconds":1}""");
@@ -290,7 +291,7 @@ public class ToolsGuardAndJobTests {
         Assert.That(ToolsTestCatalog.Job(capture)["state"]!.GetValue<string>(), Is.EqualTo("succeeded"));
         Assert.That(catalog.Jobs.List().Count(job => job.State == JobState.Running), Is.EqualTo(2));
 
-        catalog.Observatory.Release("Slew");
+        catalog.Observatory.Release("SetSwitch");
         catalog.Observatory.Release("CoolCamera");
     }
 
@@ -388,6 +389,125 @@ public class ToolsGuardAndJobTests {
         catalog.Observatory.Release("CoolCamera");
     }
 
+    [Test]
+    public async Task StartSequence_RefusedWhileAnyDeviceConnectionRuns() {
+        catalog.Observatory.Block("Connect");
+
+        await catalog.CallAsync("connect_device", """{"device":"rotator","wait_seconds":0}""");
+
+        var refused = await catalog.CallAsync("start_sequence", "{}");
+
+        Assert.That(refused.IsError, Is.True);
+        Assert.That(refused.Text, Does.Contain("Connect rotator"));
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("StartSequence"));
+
+        catalog.Observatory.Release("Connect");
+    }
+
+    [Test]
+    public async Task StartSequence_HoldsHardwareUntilTheSequenceRuns() {
+        catalog.Observatory.Block("StartSequence");
+
+        var starting = catalog.CallAsync("start_sequence", "{}");
+
+        await catalog.Observatory.WaitForCallAsync("StartSequence");
+
+        var exception = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("slew_mount", """{"ra":5,"dec":5}"""));
+
+        Assert.That(exception!.Message, Does.Contain("start_sequence"));
+
+        catalog.Observatory.Release("StartSequence");
+
+        Assert.That((await starting).IsError, Is.False);
+        Assert.That((await catalog.CallAsync("slew_mount", """{"ra":5,"dec":5}""")).IsError, Is.False);
+    }
+
+    [Test]
+    public async Task Job_MountMotionRefusedWhileGuidingStarts() {
+        catalog.Observatory.Block("StartGuiding");
+
+        await catalog.CallAsync("start_guiding", """{"wait_seconds":0}""");
+
+        var mountTools = new[] {
+            ("slew_mount", """{"ra":5,"dec":5}"""),
+            ("park_mount", "{}"),
+            ("unpark_mount", "{}"),
+            ("home_mount", "{}")
+        };
+
+        foreach (var (tool, json) in mountTools) {
+            var exception = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync(tool, json), tool);
+
+            Assert.That(exception!.Resource, Is.EqualTo("guider"), tool);
+        }
+
+        catalog.Observatory.Release("StartGuiding");
+    }
+
+    [Test]
+    public async Task Job_SlewAndHomeRefusedDuringCapture_ParkAllowed() {
+        catalog.Observatory.Block("Capture");
+
+        await catalog.CallAsync("capture_image", """{"exposure_seconds":30,"wait_seconds":0}""");
+
+        Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("slew_mount", """{"ra":5,"dec":5}"""));
+        Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("home_mount"));
+
+        var park = await catalog.CallAsync("park_mount");
+
+        Assert.That(park.IsError, Is.False);
+
+        catalog.Observatory.Release("Capture");
+    }
+
+    [Test]
+    public async Task Job_CaptureAndAutofocusRefusedWhileMountMoves() {
+        catalog.Observatory.Block("Slew");
+
+        await catalog.CallAsync("slew_mount", """{"ra":5,"dec":5,"wait_seconds":0}""");
+
+        var capture = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("capture_image", """{"exposure_seconds":1}"""));
+        var autofocus = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("run_autofocus"));
+
+        Assert.That(capture!.Resource, Is.EqualTo("mount"));
+        Assert.That(autofocus!.Resource, Is.EqualTo("mount"));
+
+        catalog.Observatory.Release("Slew");
+    }
+
+    [Test]
+    public async Task SetTracking_RefusedWhileMountJobRuns() {
+        catalog.Observatory.Block("Park");
+
+        await catalog.CallAsync("park_mount", """{"wait_seconds":0}""");
+
+        var exception = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("set_tracking", """{"enabled":true}"""));
+
+        Assert.That(exception!.Resource, Is.EqualTo("mount"));
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("SetTracking"));
+
+        catalog.Observatory.Release("Park");
+        await WaitUntilNoRunningJobs();
+
+        Assert.That((await catalog.CallAsync("set_tracking", """{"enabled":true}""")).IsError, Is.False);
+    }
+
+    [Test]
+    public async Task SetTracking_HoldsTheMountWhileSwitching() {
+        catalog.Observatory.Block("SetTracking");
+
+        var switching = catalog.CallAsync("set_tracking", """{"enabled":false}""");
+
+        await catalog.Observatory.WaitForCallAsync("SetTracking");
+
+        Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("park_mount"));
+
+        catalog.Observatory.Release("SetTracking");
+
+        Assert.That((await switching).IsError, Is.False);
+        Assert.That((await catalog.CallAsync("park_mount")).IsError, Is.False);
+    }
+
     private async Task WaitUntilNoRunningJobs() {
         for (var attempt = 0; attempt < 200 && catalog.Jobs.List().Any(job => job.State == JobState.Running); attempt++) {
             await Task.Delay(10);
@@ -466,6 +586,56 @@ public class ToolsGuardAndJobTests {
 
         Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("cancelled"));
         Assert.That(result.Structured!["next"]!.GetValue<string>(), Does.Contain("cancelled"));
+    }
+
+    [Test]
+    public async Task CancelJob_DeviceIgnoresCancel_StaysRunningThenAbandonReleasesIt() {
+        catalog.Observatory.Block("Connect", ignoreCancellation: true);
+
+        var started = await catalog.CallAsync("connect_device", """{"device":"mount","wait_seconds":0}""");
+        var id = ToolsTestCatalog.Job(started)["id"]!.GetValue<string>();
+
+        await catalog.Observatory.WaitForCallAsync("Connect");
+
+        var cancelled = await catalog.CallAsync("cancel_job", $$"""{"job_id":"{{id}}","wait_seconds":0}""");
+        var running = ToolsTestCatalog.Job(cancelled);
+
+        Assert.That(running["state"]!.GetValue<string>(), Is.EqualTo("running"));
+        Assert.That(running["cancelRequested"]!.GetValue<bool>(), Is.True);
+        Assert.That(cancelled.Structured!["next"]!.GetValue<string>(), Does.Contain("abandon: true").And.Contain("mount"));
+        Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("park_mount"));
+
+        var abandoned = await catalog.CallAsync("cancel_job", $$"""{"job_id":"{{id}}","wait_seconds":0,"abandon":true}""");
+
+        Assert.That(ToolsTestCatalog.Job(abandoned)["state"]!.GetValue<string>(), Is.EqualTo("abandoned"));
+        Assert.That(abandoned.Structured!["next"]!.GetValue<string>(), Does.Contain("get_status"));
+        Assert.That((await catalog.CallAsync("park_mount")).IsError, Is.False);
+
+        catalog.Observatory.Release("Connect");
+    }
+
+    [Test]
+    public async Task CancelJob_AbandonOnJobThatStops_IsCancelledNotAbandoned() {
+        catalog.Observatory.Block("Slew");
+
+        var started = await catalog.CallAsync("slew_mount", """{"ra":5,"dec":5,"wait_seconds":0}""");
+        var id = ToolsTestCatalog.Job(started)["id"]!.GetValue<string>();
+
+        await catalog.Observatory.WaitForCallAsync("Slew");
+
+        var result = await catalog.CallAsync("cancel_job", $$"""{"job_id":"{{id}}","abandon":true}""");
+
+        Assert.That(ToolsTestCatalog.Job(result)["state"]!.GetValue<string>(), Is.EqualTo("cancelled"));
+    }
+
+    [Test]
+    public void JobTools_WaitDescriptionsMatchTheSchemaMaximum() {
+        foreach (var name in new[] { "get_job", "cancel_job" }) {
+            var wait = catalog.Tool(name).InputSchema["properties"]!["wait_seconds"]!;
+
+            Assert.That(wait["description"]!.GetValue<string>(), Does.Contain($"0-{JobPayload.MaxWaitSeconds:0}"), name);
+            Assert.That(wait["maximum"]!.GetValue<double>(), Is.EqualTo(JobPayload.MaxWaitSeconds), name);
+        }
     }
 
     [Test]

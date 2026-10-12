@@ -46,9 +46,13 @@ internal sealed class StopAllTool : ObservatoryTool {
         });
 
         Step(steps, "cancel_jobs", () => {
-            var count = context.Jobs.CancelAll();
+            var cancel = context.Jobs.CancelAll();
 
-            return (true, $"Cancellation requested for {count} running job(s).");
+            if (cancel.Errors.Count > 0) {
+                return (false, $"Cancellation requested for {cancel.Requested} running job(s); stopping failed for {string.Join(" | ", cancel.Errors)}.");
+            }
+
+            return (true, $"Cancellation requested for {cancel.Requested} running job(s).");
         });
 
         Step(steps, "abort_exposure", () => {

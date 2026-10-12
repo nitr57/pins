@@ -37,7 +37,8 @@ public sealed class McpSession {
 /// </summary>
 public sealed class McpSessionStore {
 
-    public const int MaxSessions = 100;
+    /// <summary>High enough that a flood of <c>initialize</c> calls on an open network does not easily evict a live session.</summary>
+    public const int MaxSessions = 1000;
 
     private readonly ConcurrentDictionary<string, McpSession> sessions = new(StringComparer.Ordinal);
     private readonly TimeProvider timeProvider;

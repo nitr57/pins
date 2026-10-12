@@ -67,7 +67,7 @@ PI.N.S. supports a wide range of astronomy equipment. Here is a list of tested d
 
 ## 🤖 AI Assistant Control (MCP)
 
-PINS includes an MCP (Model Context Protocol) server at `http://<pins-host>:4782/mcp`, so AI clients such as Claude Code can read the equipment state, control the devices and build, start and stop sequences. Without a token it is read-only; set `PINS_MCP_TOKEN` to allow hardware control. Setup and configuration: [NINA.Mcp/ARCHITECTURE.md](NINA.Mcp/ARCHITECTURE.md#configuration).
+PINS includes an MCP (Model Context Protocol) server at `http://<pins-host>:4782/mcp`, so AI clients such as Claude Code can read the equipment state, control the devices and build, start and stop sequences. Without a token it is read-only, apart from the stop tools (`stop_all`, `cancel_job`); set `PINS_MCP_TOKEN` to allow hardware control. Setup and configuration: [NINA.Mcp/ARCHITECTURE.md](NINA.Mcp/ARCHITECTURE.md#configuration).
 
 ---
 

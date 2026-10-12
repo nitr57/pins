@@ -66,7 +66,7 @@ public class JobManagerTests {
         var ex = Assert.Throws<JobConflictException>(() => jobs.Start("park", "Park", "Mount", _ => Task.FromResult(JobOutcome.Ok())));
 
         Assert.That(ex!.Resource, Is.EqualTo("Mount"));
-        Assert.That(ex.RunningJob.Id, Is.EqualTo(first.Id));
+        Assert.That(ex.RunningJob!.Id, Is.EqualTo(first.Id));
         Assert.That(ex.Message, Does.Contain(first.Id).And.Contain("cancel_job"));
 
         gate.SetResult(JobOutcome.Ok());
@@ -169,11 +169,12 @@ public class JobManagerTests {
             return JobOutcome.Ok();
         });
 
-        Assert.That(jobs.Cancel(job.Id), Is.True);
+        Assert.That(jobs.Cancel(job.Id).Requested, Is.EqualTo(1));
 
         var finished = await WaitFinishedAsync(job.Id);
 
         Assert.That(finished.State, Is.EqualTo(JobState.Cancelled));
+        Assert.That(finished.CancelRequested, Is.True);
         Assert.That(finished.Outcome!.Success, Is.False);
         Assert.That(finished.Outcome.Message, Does.Contain("cancelled"));
     }
@@ -199,20 +200,23 @@ public class JobManagerTests {
     }
 
     [Test]
-    public async Task Cancel_UnknownOrFinished_ReturnsFalse() {
-        Assert.That(jobs.Cancel("job-000000"), Is.False);
+    public async Task Cancel_UnknownOrFinished_RequestsNothing() {
+        Assert.That(jobs.Cancel("job-000000").Requested, Is.EqualTo(0));
 
         var job = jobs.Start("k", "d", null, _ => Task.FromResult(JobOutcome.Ok()));
 
         await WaitFinishedAsync(job.Id);
 
-        Assert.That(jobs.Cancel(job.Id), Is.False);
+        Assert.That(jobs.Cancel(job.Id).Requested, Is.EqualTo(0));
     }
 
     [Test]
-    public async Task CancelAll_CallbackThrows_StillCancelsEveryJob() {
+    public async Task CancelAll_CallbackThrows_StillCancelsEveryJobAndReportsTheError() {
+        var registered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         var first = jobs.Start("slew", "Slew", "mount", async token => {
             using (token.Register(() => throw new InvalidOperationException("driver halt failed"))) {
+                registered.SetResult();
                 await Task.Delay(Timeout.Infinite, token);
             }
 
@@ -225,7 +229,14 @@ public class JobManagerTests {
             return JobOutcome.Ok();
         });
 
-        Assert.That(() => jobs.CancelAll(), Throws.Nothing);
+        await registered.Task.WaitAsync(TestTimeout);
+
+        JobCancelResult? cancel = null;
+
+        Assert.That(() => cancel = jobs.CancelAll(), Throws.Nothing);
+        Assert.That(cancel!.Requested, Is.EqualTo(2));
+        Assert.That(cancel.Errors, Has.Count.EqualTo(1));
+        Assert.That(cancel.Errors[0], Does.Contain(first.Id).And.Contain("driver halt failed"));
 
         var firstDone = await jobs.WaitAsync(first.Id, TestTimeout, CancellationToken.None);
         var secondDone = await jobs.WaitAsync(second.Id, TestTimeout, CancellationToken.None);
@@ -235,16 +246,25 @@ public class JobManagerTests {
     }
 
     [Test]
-    public async Task Cancel_CallbackThrows_ReturnsTrueAndCancels() {
+    public async Task Cancel_CallbackThrows_ReportsErrorAndCancels() {
+        var registered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
         var job = jobs.Start("slew", "Slew", "mount", async token => {
             using (token.Register(() => throw new InvalidOperationException("driver halt failed"))) {
+                registered.SetResult();
                 await Task.Delay(Timeout.Infinite, token);
             }
 
             return JobOutcome.Ok();
         });
 
-        Assert.That(jobs.Cancel(job.Id), Is.True);
+        await registered.Task.WaitAsync(TestTimeout);
+
+        var cancel = jobs.Cancel(job.Id);
+
+        Assert.That(cancel.Requested, Is.EqualTo(1));
+        Assert.That(cancel.Errors, Has.Count.EqualTo(1));
+        Assert.That(cancel.Errors[0], Does.Contain("driver halt failed"));
 
         var done = await jobs.WaitAsync(job.Id, TestTimeout, CancellationToken.None);
 
@@ -264,12 +284,12 @@ public class JobManagerTests {
         var a = jobs.Start("slew", "Slew", "mount", forever);
         var b = jobs.Start("capture", "Capture", "camera", forever);
 
-        Assert.That(jobs.CancelAll(), Is.EqualTo(2));
+        Assert.That(jobs.CancelAll().Requested, Is.EqualTo(2));
 
         Assert.That((await WaitFinishedAsync(a.Id)).State, Is.EqualTo(JobState.Cancelled));
         Assert.That((await WaitFinishedAsync(b.Id)).State, Is.EqualTo(JobState.Cancelled));
         Assert.That(jobs.Get(done.Id)!.State, Is.EqualTo(JobState.Succeeded));
-        Assert.That(jobs.CancelAll(), Is.EqualTo(0));
+        Assert.That(jobs.CancelAll().Requested, Is.EqualTo(0));
     }
 
     [Test]
@@ -465,6 +485,174 @@ public class JobManagerTests {
         Assert.That(listed, Has.Count.EqualTo(JobManager.MaxFinishedJobs));
         Assert.That(listed, Is.EquivalentTo(ids.Skip(5)));
         Assert.That(jobs.Get(ids[0]), Is.Null);
+    }
+
+    // ----- requiresIdle and reservations -----
+
+    [Test]
+    public void Start_RequiredIdleResourceHeld_ThrowsConflict() {
+        var gate = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var focuser = jobs.Start("focuser_move", "Move focuser", "focuser", _ => gate.Task);
+
+        var ex = Assert.Throws<JobConflictException>(() =>
+            jobs.Start("capture", "Capture", "camera", _ => Task.FromResult(JobOutcome.Ok()), ["focuser"]));
+
+        Assert.That(ex!.Resource, Is.EqualTo("focuser"));
+        Assert.That(ex.RunningJob!.Id, Is.EqualTo(focuser.Id));
+        Assert.That(jobs.List(), Has.Count.EqualTo(1));
+
+        gate.SetResult(JobOutcome.Ok());
+    }
+
+    [Test]
+    public async Task Start_CrossDependentJobsInParallel_NeverBothStart() {
+        // capture holds the camera and needs the focuser idle; move_focuser the reverse. Checked outside the claim, both
+        // could start and the focuser would move during the exposure.
+        for (var round = 0; round < 200; round++) {
+            var gate = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var barrier = new Barrier(2);
+
+            JobInfo? TryStart(string resource, string otherResource) {
+                barrier.SignalAndWait();
+
+                try {
+                    return jobs.Start("k", resource, resource, _ => gate.Task, [otherResource]);
+                } catch (JobConflictException) {
+                    return null;
+                }
+            }
+
+            var capture = Task.Run(() => TryStart("camera", "focuser"));
+            var focuser = Task.Run(() => TryStart("focuser", "camera"));
+
+            var started = (await Task.WhenAll(capture, focuser).WaitAsync(TestTimeout)).Where(job => job is not null).ToList();
+
+            Assert.That(started, Has.Count.EqualTo(1), $"Round {round}");
+
+            gate.SetResult(JobOutcome.Ok());
+            await WaitFinishedAsync(started[0]!.Id);
+
+            // Distinct finish times: beyond MaxFinishedJobs, Prune drops the oldest, and equal times make that arbitrary.
+            time.Advance(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    [Test]
+    public void Reserve_BlocksClaimingAndRequiringJobsUntilDisposed() {
+        var reservation = jobs.Reserve(["mount", "camera"], "start_sequence");
+
+        var claim = Assert.Throws<JobConflictException>(() => jobs.Start("slew", "Slew", "Mount", _ => Task.FromResult(JobOutcome.Ok())));
+        var requires = Assert.Throws<JobConflictException>(() =>
+            jobs.Start("focuser_move", "Move", "focuser", _ => Task.FromResult(JobOutcome.Ok()), ["camera"]));
+
+        Assert.That(claim!.RunningJob, Is.Null);
+        Assert.That(claim.Message, Does.Contain("start_sequence"));
+        Assert.That(requires!.Resource, Is.EqualTo("camera"));
+        Assert.That(() => jobs.Reserve(["camera"], "other"), Throws.TypeOf<JobConflictException>());
+
+        reservation.Dispose();
+        reservation.Dispose();
+
+        Assert.That(() => jobs.Start("slew", "Slew", "mount", _ => Task.FromResult(JobOutcome.Ok())), Throws.Nothing);
+    }
+
+    [Test]
+    public void Reserve_ResourceHeldByRunningJob_Throws() {
+        var gate = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slew = jobs.Start("slew", "Slew", "mount", _ => gate.Task);
+
+        var ex = Assert.Throws<JobConflictException>(() => jobs.Reserve(["camera", "mount"], "set_tracking on"));
+
+        Assert.That(ex!.RunningJob!.Id, Is.EqualTo(slew.Id));
+        Assert.That(() => jobs.Reserve(["camera"], "other"), Throws.Nothing);
+
+        gate.SetResult(JobOutcome.Ok());
+    }
+
+    // ----- abandon -----
+
+    [Test]
+    public async Task Abandon_JobIgnoringItsToken_ReleasesResourceAndDropsLateResult() {
+        var gate = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var job = jobs.Start("connect", "Connect mount", "mount", _ => gate.Task);
+
+        Assert.That(jobs.Cancel(job.Id).Requested, Is.EqualTo(1));
+
+        var stillRunning = await jobs.WaitAsync(job.Id, TimeSpan.Zero, CancellationToken.None);
+
+        Assert.That(stillRunning!.State, Is.EqualTo(JobState.Running));
+        Assert.That(stillRunning.CancelRequested, Is.True);
+
+        var abandoned = jobs.Abandon(job.Id);
+
+        Assert.That(abandoned!.State, Is.EqualTo(JobState.Abandoned));
+        Assert.That(abandoned.FinishedAt, Is.Not.Null);
+        Assert.That(abandoned.Outcome!.Message, Does.Contain("Abandoned"));
+        Assert.That(() => jobs.Start("slew", "Slew", "mount", _ => Task.FromResult(JobOutcome.Ok())), Throws.Nothing);
+
+        gate.SetResult(JobOutcome.Ok("connected after all"));
+        await Task.Delay(50);
+
+        var final = jobs.Get(job.Id)!;
+
+        Assert.That(final.State, Is.EqualTo(JobState.Abandoned));
+        Assert.That(final.Outcome!.Message, Does.Contain("Abandoned"));
+    }
+
+    [Test]
+    public async Task Abandon_FinishedOrUnknownJob_ChangesNothing() {
+        Assert.That(jobs.Abandon("job-000000"), Is.Null);
+
+        var job = jobs.Start("k", "d", null, _ => Task.FromResult(JobOutcome.Ok("done")));
+
+        await WaitFinishedAsync(job.Id);
+
+        var result = jobs.Abandon(job.Id);
+
+        Assert.That(result!.State, Is.EqualTo(JobState.Succeeded));
+        Assert.That(result.CancelRequested, Is.False);
+    }
+
+    [Test]
+    public async Task Cancel_RacingWithCompletion_NeverThrows() {
+        for (var round = 0; round < 200; round++) {
+            var gate = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var job = jobs.Start("k", "d", "camera", _ => gate.Task);
+
+            var complete = Task.Run(() => gate.TrySetResult(JobOutcome.Ok()));
+            var cancel = Task.Run(() => jobs.Cancel(job.Id));
+
+            await Task.WhenAll(complete, cancel).WaitAsync(TestTimeout);
+
+            var finished = await WaitFinishedAsync(job.Id);
+
+            Assert.That(finished.State, Is.EqualTo(JobState.Succeeded).Or.EqualTo(JobState.Cancelled), $"Round {round}");
+
+            // Distinct finish times: beyond MaxFinishedJobs, Prune drops the oldest, and equal times make that arbitrary.
+            time.Advance(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    // ----- shutdown -----
+
+    [Test]
+    public async Task Shutdown_CancelsJobsWaitsAndRefusesNewWork() {
+        var cancellable = jobs.Start("slew", "Slew", "mount", async token => {
+            await Task.Delay(Timeout.Infinite, token);
+            return JobOutcome.Ok();
+        });
+
+        var stuck = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        jobs.Start("connect", "Connect camera", "camera", _ => stuck.Task);
+
+        var stillRunning = jobs.Shutdown(TimeSpan.FromMilliseconds(200));
+
+        Assert.That(stillRunning, Is.EqualTo(1));
+        Assert.That((await WaitFinishedAsync(cancellable.Id)).State, Is.EqualTo(JobState.Cancelled));
+        Assert.That(() => jobs.Start("k", "d", null, _ => Task.FromResult(JobOutcome.Ok())), Throws.InvalidOperationException);
+        Assert.That(() => jobs.Reserve(["mount"], "set_tracking on"), Throws.InvalidOperationException);
+
+        stuck.SetResult(JobOutcome.Ok());
     }
 
     private async Task<JobInfo> WaitFinishedAsync(string id) {

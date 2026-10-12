@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+using NINA.Mcp.Jobs;
 using NINA.Mcp.Observatory;
 
 namespace NINA.Mcp.Tools.Catalog;
@@ -25,8 +26,8 @@ internal sealed class SlewMountTool : ObservatoryTool {
         "Slews the mount to J2000 coordinates (plain goto: no plate solving or centering; add_target with slew_and_center "
         + "does that in a sequence). The mount must be connected and unparked (unpark_mount). Moves the telescope: make sure "
         + "the user expects it. If guiding is active, stop_guiding first (the guide star is lost during the slew). Runs as a "
-        + "background job holding the mount; stop it with cancel_job or stop_all. Afterwards check the position with "
-        + "get_status.";
+        + "background job holding the mount; refused while a capture, autofocus or guiding start job runs. Stop it with "
+        + "cancel_job or stop_all. Afterwards check the position with get_status.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -51,7 +52,9 @@ internal sealed class SlewMountTool : ObservatoryTool {
         return RunJobAsync(
             arguments,
             context,
-            new JobRequest("slew", description, "mount"),
+            new JobRequest("slew", description, "mount") {
+                RequiresIdle = MountMotionTool.SlewRequiresIdle
+            },
             async token => JobPayload.ToOutcome(await Observatory.SlewAsync(ra, dec, token).ConfigureAwait(false), target),
             cancellationToken);
     }
@@ -60,10 +63,17 @@ internal sealed class SlewMountTool : ObservatoryTool {
 /// <summary>park_mount, unpark_mount and home_mount: argument-less mount jobs.</summary>
 internal sealed class MountMotionTool : ObservatoryTool {
 
+    /// <summary>No mount motion while guiding calibrates; no slew or home under a running exposure or autofocus.</summary>
+    internal static readonly string[] SlewRequiresIdle = ["guider", "camera"];
+
+    /// <summary>Parking stays possible during an exposure (weather): it only waits for a guiding start.</summary>
+    internal static readonly string[] ParkRequiresIdle = ["guider"];
+
     private readonly string name;
     private readonly string title;
     private readonly string description;
     private readonly string jobDescription;
+    private readonly IReadOnlyList<string> requiresIdle;
     private readonly Func<IPinsObservatory, CancellationToken, Task<OperationResult>> action;
 
     private MountMotionTool(
@@ -72,11 +82,13 @@ internal sealed class MountMotionTool : ObservatoryTool {
         string title,
         string description,
         string jobDescription,
+        IReadOnlyList<string> requiresIdle,
         Func<IPinsObservatory, CancellationToken, Task<OperationResult>> action) : base(observatory) {
         this.name = name;
         this.title = title;
         this.description = description;
         this.jobDescription = jobDescription;
+        this.requiresIdle = requiresIdle;
         this.action = action;
     }
 
@@ -96,9 +108,10 @@ internal sealed class MountMotionTool : ObservatoryTool {
             "park_mount",
             "Park mount",
             "Moves the mount to its park position and stops tracking (end of session, bad weather). Moves the telescope; "
-            + "stop_guiding first if guiding is active. Runs as a background job holding the mount. Use unpark_mount before "
-            + "the next slew.",
+            + "guiding is stopped first. Runs as a background job holding the mount; refused while a guiding start job runs. "
+            + "Use unpark_mount before the next slew.",
             "Park mount",
+            ParkRequiresIdle,
             (target, token) => target.ParkAsync(token));
     }
 
@@ -110,6 +123,7 @@ internal sealed class MountMotionTool : ObservatoryTool {
             "Unparks the mount so that it can slew and track. Some mounts move slightly. Runs as a background job holding "
             + "the mount. Typical next steps: set_tracking, slew_mount.",
             "Unpark mount",
+            ParkRequiresIdle,
             (target, token) => target.UnparkAsync(token));
     }
 
@@ -118,9 +132,11 @@ internal sealed class MountMotionTool : ObservatoryTool {
             observatory,
             "home_mount",
             "Find mount home",
-            "Moves the mount to its home position (driver 'find home'; not every mount supports it). Moves the telescope. "
-            + "Runs as a background job holding the mount.",
+            "Moves the mount to its home position (driver 'find home'; not every mount supports it). Moves the telescope; "
+            + "guiding is stopped first. Runs as a background job holding the mount; refused while a capture, autofocus or "
+            + "guiding start job runs.",
             "Find mount home",
+            SlewRequiresIdle,
             (target, token) => target.FindHomeAsync(token));
     }
 
@@ -133,7 +149,9 @@ internal sealed class MountMotionTool : ObservatoryTool {
         return RunJobAsync(
             arguments,
             context,
-            new JobRequest(kind, jobDescription, "mount"),
+            new JobRequest(kind, jobDescription, "mount") {
+                RequiresIdle = requiresIdle
+            },
             async token => JobPayload.ToOutcome(await action(Observatory, token).ConfigureAwait(false)),
             cancellationToken);
     }
@@ -149,8 +167,9 @@ internal sealed class SetTrackingTool : ObservatoryTool {
     public override string Title => "Set mount tracking";
 
     public override string Description =>
-        "Turns sidereal tracking of the mount on or off. Returns immediately. Tracking must be on for imaging; turn it off "
-        + "to keep a parked or idle mount from drifting into the pier.";
+        "Turns sidereal tracking of the mount on or off and returns once the mount reports the new state (a few seconds at "
+        + "most). Tracking must be on for imaging; turn it off to keep a parked or idle mount from drifting into the pier. "
+        + "Refused while a slew, park, unpark or home job holds the mount.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -158,9 +177,12 @@ internal sealed class SetTrackingTool : ObservatoryTool {
         arguments.Boolean("enabled", "True to start tracking, false to stop it.", required: true);
     }
 
-    protected override Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
+    protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var enabled = arguments.GetBool("enabled", required: true)!.Value;
 
-        return Task.FromResult(FromOperation(Observatory.SetTracking(enabled)));
+        // Not a job, but it must not switch tracking under a running mount job (or let one start meanwhile).
+        using var reservation = context.Jobs.Reserve(["mount"], enabled ? "set_tracking on" : "set_tracking off");
+
+        return FromOperation(await Observatory.SetTrackingAsync(enabled, cancellationToken).ConfigureAwait(false));
     }
 }

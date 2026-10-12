@@ -8,28 +8,40 @@ namespace NINA.Mcp.Jobs;
 /// job id the model polls with <c>get_job</c>.
 /// </summary>
 /// <remarks>
-/// A job may claim a <c>resource</c> ("mount", "camera", "focuser", ...). Starting a job whose resource is held by a
-/// running job throws <see cref="JobConflictException"/>. Finished jobs are kept for inspection for a limited time.
-/// Jobs are cancelled through their own token (never the request's), by <see cref="Cancel"/> or <see cref="CancelAll"/>.
+/// A job may claim a <c>resource</c> ("mount", "camera", "focuser", ...) and require further resources to be idle.
+/// Starting a job whose resource or required-idle resources are held by a running job or a <see cref="Reserve"/>
+/// reservation throws <see cref="JobConflictException"/>; the check and the claim are one atomic step. Finished jobs are
+/// kept for inspection for a limited time. Jobs are cancelled through their own token (never the request's), by
+/// <see cref="Cancel"/> or <see cref="CancelAll"/>; a job whose work ignores the token can be <see cref="Abandon"/>ed.
 /// </remarks>
 public interface IJobManager {
 
     /// <summary>Starts <paramref name="work"/> on the thread pool and returns immediately.</summary>
-    /// <exception cref="JobConflictException">Another running job holds <paramref name="resource"/>.</exception>
-    JobInfo Start(string kind, string description, string? resource, Func<CancellationToken, Task<JobOutcome>> work);
+    /// <exception cref="JobConflictException">
+    /// <paramref name="resource"/> or one of <paramref name="requiresIdle"/> is held by a running job or a reservation.
+    /// </exception>
+    JobInfo Start(
+        string kind,
+        string description,
+        string? resource,
+        Func<CancellationToken, Task<JobOutcome>> work,
+        IReadOnlyCollection<string>? requiresIdle = null);
 
     /// <summary>
     /// Starts <paramref name="work"/> and waits up to <paramref name="wait"/> for it to finish. Cancelling
     /// <paramref name="requestCancellation"/> stops the wait, not the job. Returns the job's state at that point.
     /// </summary>
-    /// <exception cref="JobConflictException">Another running job holds <paramref name="resource"/>.</exception>
+    /// <exception cref="JobConflictException">
+    /// <paramref name="resource"/> or one of <paramref name="requiresIdle"/> is held by a running job or a reservation.
+    /// </exception>
     Task<JobInfo> StartAndWaitAsync(
         string kind,
         string description,
         string? resource,
         Func<CancellationToken, Task<JobOutcome>> work,
         TimeSpan wait,
-        CancellationToken requestCancellation);
+        CancellationToken requestCancellation,
+        IReadOnlyCollection<string>? requiresIdle = null);
 
     /// <summary>Waits up to <paramref name="wait"/> for an existing job to finish. Null when the id is unknown.</summary>
     Task<JobInfo?> WaitAsync(string id, TimeSpan wait, CancellationToken requestCancellation);
@@ -39,19 +51,48 @@ public interface IJobManager {
     /// <summary>Running jobs first, then finished ones, newest first.</summary>
     IReadOnlyList<JobInfo> List();
 
-    /// <summary>Requests cancellation. False when the id is unknown or the job already finished.</summary>
-    bool Cancel(string id);
+    /// <summary>
+    /// Requests cancellation. <see cref="JobCancelResult.Requested"/> is 0 when the id is unknown or the job already
+    /// finished; <see cref="JobCancelResult.Errors"/> lists failing stop callbacks (driver halts).
+    /// </summary>
+    JobCancelResult Cancel(string id);
 
-    /// <summary>Requests cancellation of every running job. Returns how many were running.</summary>
-    int CancelAll();
+    /// <summary>Requests cancellation of every running job.</summary>
+    JobCancelResult CancelAll();
+
+    /// <summary>
+    /// Requests cancellation and, if the job is still running, ends it as <see cref="JobState.Abandoned"/>: its resource
+    /// is released although its work has not returned. The work's eventual result is logged and dropped. Null when the
+    /// id is unknown; a job that already ended is returned unchanged.
+    /// </summary>
+    JobInfo? Abandon(string id);
+
+    /// <summary>
+    /// Claims <paramref name="resources"/> for a short operation that is not a job (starting the sequence, switching
+    /// tracking) until the returned handle is disposed. Jobs claiming or requiring one of them conflict meanwhile.
+    /// </summary>
+    /// <exception cref="JobConflictException">A running job or another reservation holds one of the resources.</exception>
+    IDisposable Reserve(IReadOnlyCollection<string> resources, string description);
+
+    /// <summary>
+    /// Refuses new jobs and reservations, cancels every running job and waits up to <paramref name="wait"/> for them to
+    /// end. Returns how many are still running.
+    /// </summary>
+    int Shutdown(TimeSpan wait);
 }
 
 public enum JobState {
     Running,
     Succeeded,
     Failed,
-    Cancelled
+    Cancelled,
+
+    /// <summary>Released after a cancel request although its work had not returned (see <see cref="IJobManager.Abandon"/>).</summary>
+    Abandoned
 }
+
+/// <summary>Result of a cancel request: how many running jobs it reached and the stop callbacks that failed.</summary>
+public sealed record JobCancelResult(int Requested, IReadOnlyList<string> Errors);
 
 /// <summary>What a job's work returns. <see cref="Data"/> is serialized with <c>McpJson.Options</c>.</summary>
 public sealed record JobOutcome(bool Success, string? Message = null, object? Data = null) {
@@ -74,7 +115,11 @@ public sealed record JobInfo(
     JobState State,
     DateTimeOffset StartedAt,
     DateTimeOffset? FinishedAt,
-    JobOutcome? Outcome);
+    JobOutcome? Outcome) {
+
+    /// <summary>True once cancellation was requested, also while the job is still running.</summary>
+    public bool CancelRequested { get; init; }
+}
 
 public sealed class JobConflictException : Exception {
 
@@ -84,7 +129,13 @@ public sealed class JobConflictException : Exception {
         RunningJob = runningJob;
     }
 
+    public JobConflictException(string resource, string operation)
+        : base($"The {resource} is in use by a short operation ({operation}). Retry in a moment.") {
+        Resource = resource;
+    }
+
     public string Resource { get; }
 
-    public JobInfo RunningJob { get; }
+    /// <summary>The job holding the resource; null when a reservation holds it.</summary>
+    public JobInfo? RunningJob { get; }
 }

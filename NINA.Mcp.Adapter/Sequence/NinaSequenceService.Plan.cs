@@ -185,9 +185,12 @@ public sealed partial class NinaSequenceService {
             ? $" Dithering every {request.DitherEvery} frame{(request.DitherEvery == 1 ? string.Empty : "s")}."
             : string.Empty;
 
+        string ra = request.RaHours.ToString("0.#####", CultureInfo.InvariantCulture);
+        string dec = request.DecDegrees.ToString("0.#####", CultureInfo.InvariantCulture);
+
         return OperationResult.Ok(
-            $"Added target '{request.Name.Trim()}' at the end of the target area (RA {request.RaHours:0.#####} h, "
-            + $"Dec {request.DecDegrees:0.#####}°): {string.Join(", then ", steps)}.{ditherNote}{rotationNote}"
+            $"Added target '{request.Name.Trim()}' at the end of the target area (RA {ra} h, Dec {dec}°): "
+            + $"{string.Join(", then ", steps)}.{ditherNote}{rotationNote}"
             + FormatIssueHint(container));
     }
 

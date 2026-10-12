@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
 using NINA.Astrometry;
-using NINA.Core.Enum;
 using NINA.Core.Model.Equipment;
 using NINA.Core.Utility;
 using NINA.Equipment.Interfaces;
@@ -12,6 +11,10 @@ using static System.FormattableString;
 namespace NINA.Mcp.Adapter;
 
 public sealed partial class NinaObservatory {
+
+    private const string CaptureBlockedMessage =
+        "The camera is in use by another pins operation (flat wizard, framing, plate solving or a snapshot loop). "
+        + "Wait for it to finish, then retry.";
 
     // ----- Mount -----
 
@@ -28,12 +31,10 @@ public sealed partial class NinaObservatory {
 
         try {
             var target = new Coordinates(Angle.ByHours(raHours), Angle.ByDegree(decDegrees), Epoch.J2000);
-            bool success;
 
-            // TelescopeVM cancels its own wait on the token; stop the motion explicitly as well.
-            using (cancellationToken.Register(StopSlew)) {
-                success = await telescopeMediator.SlewToCoordinatesAsync(target, cancellationToken);
-            }
+            var success = await RunMountMotionAsync(
+                () => telescopeMediator.SlewToCoordinatesAsync(target, cancellationToken),
+                cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -62,11 +63,11 @@ public sealed partial class NinaObservatory {
         }
 
         try {
-            bool success;
+            await StopGuidingBeforeMountMotionAsync(cancellationToken);
 
-            using (cancellationToken.Register(StopSlew)) {
-                success = await telescopeMediator.ParkTelescope(CreateProgress(), cancellationToken);
-            }
+            var success = await RunMountMotionAsync(
+                () => telescopeMediator.ParkTelescope(CreateProgress(), cancellationToken),
+                cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -120,11 +121,11 @@ public sealed partial class NinaObservatory {
         }
 
         try {
-            bool success;
+            await StopGuidingBeforeMountMotionAsync(cancellationToken);
 
-            using (cancellationToken.Register(StopSlew)) {
-                success = await telescopeMediator.FindHome(CreateProgress(), cancellationToken);
-            }
+            var success = await RunMountMotionAsync(
+                () => telescopeMediator.FindHome(CreateProgress(), cancellationToken),
+                cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -139,7 +140,7 @@ public sealed partial class NinaObservatory {
         }
     }
 
-    public OperationResult SetTracking(bool enabled) {
+    public async Task<OperationResult> SetTrackingAsync(bool enabled, CancellationToken cancellationToken) {
         var info = telescopeMediator.GetInfo();
 
         if (info?.Connected != true) {
@@ -154,14 +155,20 @@ public sealed partial class NinaObservatory {
             // TelescopeVM.SetTrackingEnabled returns the mount's tracking state after the change, not a success flag.
             var state = telescopeMediator.SetTrackingEnabled(enabled);
 
-            for (var attempt = 0; state != enabled && attempt < 10; attempt++) {
-                Thread.Sleep(200);
+            // GetInfo is refreshed once per device polling interval: wait up to two of them for the new state.
+            var pollingSeconds = profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval;
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(Math.Max(pollingSeconds, 0.5) * 2 + 1);
+
+            while (state != enabled && DateTime.UtcNow < deadline) {
+                await Task.Delay(250, cancellationToken);
                 state = telescopeMediator.GetInfo()?.TrackingEnabled == true;
             }
 
             return state == enabled
                 ? OperationResult.Ok(enabled ? "Tracking enabled." : "Tracking disabled.")
                 : OperationResult.Fail(enabled ? "The mount did not start tracking." : "The mount did not stop tracking.");
+        } catch (OperationCanceledException) {
+            throw;
         } catch (Exception ex) {
             Logger.Error("MCP: setting tracking failed", ex);
             return OperationResult.Fail($"Setting tracking failed: {ex.Message}");
@@ -169,17 +176,49 @@ public sealed partial class NinaObservatory {
     }
 
     /// <summary>
-    /// Aborts a running slew. Sends nothing to an idle mount: on several drivers the abort command also stops tracking.
+    /// Aborts a running slew, park or home. Sends nothing to an idle mount: on several drivers the abort command also
+    /// stops tracking. A motion started over MCP counts as running even before the cached <c>Slewing</c> flag, which is
+    /// refreshed only once per device polling interval, reports it.
     /// </summary>
     public void StopSlew() {
         try {
             var info = telescopeMediator.GetInfo();
 
-            if (info?.Connected == true && info.Slewing) {
+            if (info?.Connected == true && (Volatile.Read(ref mountMotionsInFlight) > 0 || info.Slewing)) {
                 telescopeMediator.StopSlew();
             }
         } catch (Exception ex) {
             Logger.Error("MCP: stop slew failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Like the ParkScope and FindHome instructions: no guide corrections to a mount on its way to park or home. A guider
+    /// error must not keep the mount from parking, so it is only logged.
+    /// </summary>
+    private async Task StopGuidingBeforeMountMotionAsync(CancellationToken cancellationToken) {
+        try {
+            await guiderMediator.StopGuiding(cancellationToken);
+        } catch (OperationCanceledException) {
+            throw;
+        } catch (Exception ex) {
+            Logger.Error("MCP: stopping guiding before a mount motion failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// Runs a slew, park or home with the mount marked as moving, and stops it when <paramref name="cancellationToken"/>
+    /// is cancelled (TelescopeVM only cancels its own wait on the token, and the INDI driver sends no abort for it).
+    /// </summary>
+    private async Task<bool> RunMountMotionAsync(Func<Task<bool>> motion, CancellationToken cancellationToken) {
+        Interlocked.Increment(ref mountMotionsInFlight);
+
+        try {
+            using (cancellationToken.Register(StopSlew)) {
+                return await motion();
+            }
+        } finally {
+            Interlocked.Decrement(ref mountMotionsInFlight);
         }
     }
 
@@ -208,6 +247,10 @@ public sealed partial class NinaObservatory {
             if (filter == null) {
                 return new CaptureResult(false, $"Unknown filter '{request.Filter}'. Available: {AvailableFilterNames()}.", null);
             }
+        }
+
+        if (!TryTakeCaptureBlock(out var holdsCaptureBlock)) {
+            return new CaptureResult(false, CaptureBlockedMessage, null);
         }
 
         try {
@@ -240,8 +283,9 @@ public sealed partial class NinaObservatory {
                 imageHistory.Add(imageId, imageType);
             }
 
-            var rendered = await imagingMediator.PrepareImage(exposure, new PrepareImageParameters(autoStretch: false, detectStars: false), cancellationToken);
-            var analysed = await rendered.DetectStars(false, StarSensitivityEnum.Normal, NoiseReductionEnum.None, cancellationToken, progress);
+            // Like TakeExposure for lights: ImageControlVM stretches and detects stars with the profile's image settings
+            // (sensitivity, noise reduction, debayered HFR); detection on the linear render finds too few stars.
+            var analysed = await imagingMediator.PrepareImage(exposure, new PrepareImageParameters(autoStretch: true, detectStars: true), cancellationToken);
             var imageData = analysed.RawImageData;
             var statistics = await imageData.Statistics.Task;
             var stars = imageData.StarDetectionAnalysis;
@@ -255,9 +299,10 @@ public sealed partial class NinaObservatory {
             }
 
             // The filter actually in place (a failed change leaves the old one).
-            var usedFilter = filterWheelMediator.GetInfo()?.Connected == true
-                ? filterWheelMediator.GetInfo()?.SelectedFilter?.Name
+            var usedFilterInfo = filterWheelMediator.GetInfo()?.Connected == true
+                ? filterWheelMediator.GetInfo()?.SelectedFilter
                 : null;
+            var usedFilter = usedFilterInfo?.Name;
 
             var record = new ImageRecord(
                 Math.Max(imageId, 0),
@@ -275,7 +320,8 @@ public sealed partial class NinaObservatory {
                 null,
                 null);
 
-            if (filter != null && !string.Equals(usedFilter, filter.Name, StringComparison.Ordinal)) {
+            // By position, like ChangeFilterAsync: names need not be unique.
+            if (filter != null && usedFilterInfo?.Position != filter.Position) {
                 return new CaptureResult(
                     false,
                     $"The frame was taken, but the filter wheel did not reach {filter.Name} (current filter: {usedFilter ?? "unknown"}).",
@@ -292,6 +338,34 @@ public sealed partial class NinaObservatory {
         } catch (Exception ex) {
             Logger.Error("MCP: capture failed", ex);
             return new CaptureResult(false, $"Capture failed: {ex.Message}", null);
+        } finally {
+            if (holdsCaptureBlock) {
+                cameraMediator.ReleaseCaptureBlock(this);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Takes the camera capture block, as NINA's flat wizard, framing and snapshot tools do, so that none of them starts
+    /// in the middle of an MCP capture or autofocus. While the advanced sequence runs it holds the block itself; a forced
+    /// MCP call then goes ahead without it (ImagingVM serializes the single exposures).
+    /// </summary>
+    /// <returns>False when another pins operation holds the block.</returns>
+    private bool TryTakeCaptureBlock(out bool taken) {
+        taken = false;
+
+        if (sequence.IsRunning()) {
+            return true;
+        }
+
+        try {
+            // Throws when another consumer holds the block; ICameraMediator has no non-throwing variant.
+            cameraMediator.RegisterCaptureBlock(this);
+            taken = true;
+
+            return true;
+        } catch (Exception) {
+            return false;
         }
     }
 
@@ -442,6 +516,10 @@ public sealed partial class NinaObservatory {
         // so that clients can follow the run, report appended to the image history.
         var windowService = windowServiceFactory.Create();
 
+        if (!TryTakeCaptureBlock(out var holdsCaptureBlock)) {
+            return new AutofocusResult(false, CaptureBlockedMessage, null, null, null, null);
+        }
+
         try {
             FilterInfo? filter = null;
             var selected = filterWheelMediator.GetInfo()?.SelectedFilter;
@@ -479,6 +557,10 @@ public sealed partial class NinaObservatory {
             Logger.Error("MCP: autofocus failed", ex);
             return new AutofocusResult(false, $"Autofocus failed: {ex.Message}", null, null, null, null);
         } finally {
+            if (holdsCaptureBlock) {
+                cameraMediator.ReleaseCaptureBlock(this);
+            }
+
             windowService.DelayedClose(TimeSpan.FromSeconds(10));
         }
     }

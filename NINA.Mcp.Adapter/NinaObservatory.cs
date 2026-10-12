@@ -53,6 +53,8 @@ public sealed partial class NinaObservatory : IPinsObservatory {
     private readonly object focuserMoveLock = new();
     private CancellationTokenSource? focuserMoveCts;
 
+    private int mountMotionsInFlight;
+
     public NinaObservatory(
             ICameraMediator cameraMediator,
             ITelescopeMediator telescopeMediator,

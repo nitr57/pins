@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Security.Cryptography;
 
 namespace NINA.Mcp.Jobs;
 
 /// <summary>
 /// In-memory <see cref="IJobManager"/>. Jobs run on the thread pool with their own cancellation token. Finished jobs are
-/// kept for <see cref="FinishedRetention"/>, at most <see cref="MaxFinishedJobs"/> of them.
+/// kept for <see cref="FinishedRetention"/>, at most <see cref="MaxFinishedJobs"/> of them. Disposing it cancels every
+/// running job and refuses new ones.
 /// </summary>
-public sealed class JobManager : IJobManager {
+public sealed class JobManager : IJobManager, IDisposable {
 
     public static readonly TimeSpan FinishedRetention = TimeSpan.FromHours(1);
 
@@ -17,20 +20,29 @@ public sealed class JobManager : IJobManager {
     private static readonly TimeSpan MaxWait = TimeSpan.FromDays(1);
 
     private readonly TimeProvider timeProvider;
+    private readonly ILogger logger;
     private readonly object gate = new();
     private readonly Dictionary<string, JobEntry> jobs = new(StringComparer.Ordinal);
+    private readonly List<Reservation> reservations = [];
+    private bool shutDown;
 
-    public JobManager(TimeProvider timeProvider) {
+    public JobManager(TimeProvider timeProvider, ILogger<JobManager>? logger = null) {
         this.timeProvider = timeProvider;
+        this.logger = logger ?? NullLogger<JobManager>.Instance;
     }
 
     public JobManager() : this(TimeProvider.System) {
     }
 
-    public JobInfo Start(string kind, string description, string? resource, Func<CancellationToken, Task<JobOutcome>> work) {
+    public JobInfo Start(
+        string kind,
+        string description,
+        string? resource,
+        Func<CancellationToken, Task<JobOutcome>> work,
+        IReadOnlyCollection<string>? requiresIdle = null) {
         ArgumentNullException.ThrowIfNull(work);
 
-        var entry = Register(kind, description, resource);
+        var entry = Register(kind, description, resource, requiresIdle);
 
         _ = Task.Run(() => RunAsync(entry, work));
 
@@ -43,10 +55,11 @@ public sealed class JobManager : IJobManager {
         string? resource,
         Func<CancellationToken, Task<JobOutcome>> work,
         TimeSpan wait,
-        CancellationToken requestCancellation) {
+        CancellationToken requestCancellation,
+        IReadOnlyCollection<string>? requiresIdle = null) {
         ArgumentNullException.ThrowIfNull(work);
 
-        var entry = Register(kind, description, resource);
+        var entry = Register(kind, description, resource, requiresIdle);
 
         _ = Task.Run(() => RunAsync(entry, work));
 
@@ -95,47 +108,141 @@ public sealed class JobManager : IJobManager {
         return running.Concat(finished).ToList();
     }
 
-    public bool Cancel(string id) {
+    public JobCancelResult Cancel(string id) {
         JobEntry? entry;
 
         lock (gate) {
             if (!jobs.TryGetValue(id, out entry) || entry.State != JobState.Running) {
-                return false;
+                return new JobCancelResult(0, []);
             }
         }
 
         // Outside the lock: cancellation callbacks run synchronously and may call back into the manager.
-        entry.RequestCancel();
+        var error = RequestCancel(entry);
 
-        return true;
+        return new JobCancelResult(1, error is null ? Array.Empty<string>() : [error]);
     }
 
-    public int CancelAll() {
+    public JobCancelResult CancelAll() {
         List<JobEntry> running;
 
         lock (gate) {
             running = jobs.Values.Where(entry => entry.State == JobState.Running).ToList();
         }
 
+        var errors = new List<string>();
+
         foreach (var entry in running) {
-            entry.RequestCancel();
+            var error = RequestCancel(entry);
+
+            if (error is not null) {
+                errors.Add(error);
+            }
         }
 
-        return running.Count;
+        return new JobCancelResult(running.Count, errors);
     }
 
-    private JobEntry Register(string kind, string description, string? resource) {
+    public JobInfo? Abandon(string id) {
+        JobEntry? entry;
+
         lock (gate) {
+            if (!jobs.TryGetValue(id, out entry)) {
+                return null;
+            }
+        }
+
+        if (entry.State == JobState.Running) {
+            RequestCancel(entry);
+
+            var outcome = JobOutcome.Fail(
+                "Abandoned: the operation did not stop after the cancel request. Its resource was released, but the device "
+                + "may still be busy; check get_status before using it.");
+
+            if (entry.Finish(JobState.Abandoned, outcome, timeProvider.GetUtcNow())) {
+                logger.LogWarning("MCP job {Id} ({Description}) abandoned; its work is still running", entry.Id, entry.Description);
+            }
+        }
+
+        return entry.Snapshot();
+    }
+
+    public IDisposable Reserve(IReadOnlyCollection<string> resources, string description) {
+        ArgumentNullException.ThrowIfNull(resources);
+
+        lock (gate) {
+            ThrowIfShutDown();
+            Prune();
+
+            foreach (var resource in resources) {
+                ThrowIfHeld(resource);
+            }
+
+            var reservation = new Reservation(this, resources.ToList(), description);
+            reservations.Add(reservation);
+
+            return reservation;
+        }
+    }
+
+    public int Shutdown(TimeSpan wait) {
+        lock (gate) {
+            shutDown = true;
+        }
+
+        CancelAll();
+
+        List<Task> running;
+
+        lock (gate) {
+            running = jobs.Values.Where(entry => entry.State == JobState.Running).Select(entry => entry.Completion).ToList();
+        }
+
+        if (running.Count > 0 && wait > TimeSpan.Zero) {
+            try {
+                Task.WhenAll(running).Wait(wait);
+            } catch (AggregateException) {
+                // Completions never fault; nothing to report.
+            }
+        }
+
+        lock (gate) {
+            return jobs.Values.Count(entry => entry.State == JobState.Running);
+        }
+    }
+
+    public void Dispose() {
+        Shutdown(TimeSpan.Zero);
+    }
+
+    private string? RequestCancel(JobEntry entry) {
+        var error = entry.RequestCancel();
+
+        if (error is null) {
+            return null;
+        }
+
+        logger.LogError(error, "Stopping MCP job {Id} ({Description}) failed", entry.Id, entry.Description);
+
+        var messages = error is AggregateException aggregate
+            ? aggregate.InnerExceptions.Select(inner => inner.Message)
+            : [error.Message];
+
+        return $"{entry.Id} ({entry.Description}): {string.Join("; ", messages)}";
+    }
+
+    private JobEntry Register(string kind, string description, string? resource, IReadOnlyCollection<string>? requiresIdle) {
+        lock (gate) {
+            ThrowIfShutDown();
             Prune();
 
             if (!string.IsNullOrEmpty(resource)) {
-                var holder = jobs.Values.FirstOrDefault(entry =>
-                    entry.State == JobState.Running
-                    && string.Equals(entry.Resource, resource, StringComparison.OrdinalIgnoreCase));
+                ThrowIfHeld(resource);
+            }
 
-                if (holder is not null) {
-                    throw new JobConflictException(resource, holder.Snapshot());
-                }
+            // Under the same lock as the claim: two jobs that each require the other's resource idle cannot both start.
+            foreach (var idle in requiresIdle ?? []) {
+                ThrowIfHeld(idle);
             }
 
             var id = NewId();
@@ -148,6 +255,35 @@ public sealed class JobManager : IJobManager {
             jobs.Add(id, entry);
 
             return entry;
+        }
+    }
+
+    /// <summary>Throws when a running job or a reservation holds <paramref name="resource"/>. Caller holds the lock.</summary>
+    private void ThrowIfHeld(string resource) {
+        var holder = jobs.Values.FirstOrDefault(entry =>
+            entry.State == JobState.Running
+            && string.Equals(entry.Resource, resource, StringComparison.OrdinalIgnoreCase));
+
+        if (holder is not null) {
+            throw new JobConflictException(resource, holder.Snapshot());
+        }
+
+        var reservation = reservations.FirstOrDefault(candidate => candidate.Resources.Contains(resource, StringComparer.OrdinalIgnoreCase));
+
+        if (reservation is not null) {
+            throw new JobConflictException(resource, reservation.Description);
+        }
+    }
+
+    private void ThrowIfShutDown() {
+        if (shutDown) {
+            throw new InvalidOperationException("pins is shutting down; no new MCP jobs are started.");
+        }
+    }
+
+    private void Release(Reservation reservation) {
+        lock (gate) {
+            reservations.Remove(reservation);
         }
     }
 
@@ -177,7 +313,16 @@ public sealed class JobManager : IJobManager {
             outcome = JobOutcome.Fail(ex.Message);
         }
 
-        entry.Finish(state, outcome, timeProvider.GetUtcNow());
+        if (!entry.Finish(state, outcome, timeProvider.GetUtcNow())) {
+            logger.LogInformation(
+                "Abandoned MCP job {Id} ({Description}) ended late: {State}, {Message}",
+                entry.Id,
+                entry.Description,
+                state,
+                outcome.Message);
+        }
+
+        entry.DisposeCancellation();
     }
 
     private async Task<JobInfo> WaitForEntryAsync(JobEntry entry, TimeSpan wait, CancellationToken requestCancellation) {
@@ -221,6 +366,28 @@ public sealed class JobManager : IJobManager {
 
     private static string NewId() {
         return "job-" + Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(3));
+    }
+
+    private sealed class Reservation : IDisposable {
+
+        private readonly JobManager owner;
+        private int disposed;
+
+        public Reservation(JobManager owner, IReadOnlyList<string> resources, string description) {
+            this.owner = owner;
+            Resources = resources;
+            Description = description;
+        }
+
+        public IReadOnlyList<string> Resources { get; }
+
+        public string Description { get; }
+
+        public void Dispose() {
+            if (Interlocked.Exchange(ref disposed, 1) == 0) {
+                owner.Release(this);
+            }
+        }
     }
 
     private sealed class JobEntry {
@@ -277,19 +444,33 @@ public sealed class JobManager : IJobManager {
             }
         }
 
-        public void Finish(JobState state, JobOutcome outcome, DateTimeOffset finishedAt) {
+        /// <summary>Ends the job once. False when it already ended (an abandoned job's late result is dropped).</summary>
+        public bool Finish(JobState state, JobOutcome outcome, DateTimeOffset finishedAt) {
             lock (gate) {
+                if (State != JobState.Running) {
+                    return false;
+                }
+
                 State = state;
                 Outcome = outcome;
                 FinishedAt = finishedAt;
             }
 
             completion.TrySetResult();
+
+            return true;
+        }
+
+        /// <summary>Called once the work has returned, so that no callback can be registered on the token any more.</summary>
+        public void DisposeCancellation() {
+            cancellation.Dispose();
         }
 
         public JobInfo Snapshot() {
             lock (gate) {
-                return new JobInfo(Id, Kind, Description, Resource, State, StartedAt, FinishedAt, Outcome);
+                return new JobInfo(Id, Kind, Description, Resource, State, StartedAt, FinishedAt, Outcome) {
+                    CancelRequested = cancellation.IsCancellationRequested
+                };
             }
         }
     }

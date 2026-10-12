@@ -59,9 +59,9 @@ public class ToolsCatalogTests {
 
     private static readonly string[] StopTools = ["stop_all", "cancel_job", "stop_sequence", "stop_guiding"];
 
-    private static readonly string[] ChangeTools = ["add_target", "save_sequence"];
+    private static readonly string[] ChangeTools = ["add_target"];
 
-    private static readonly string[] DestructiveChangeTools = ["load_sequence", "clear_targets", "reset_sequence"];
+    private static readonly string[] DestructiveChangeTools = ["load_sequence", "clear_targets", "reset_sequence", "save_sequence"];
 
     private static readonly string[] JobTools = [
         "connect_device",
@@ -153,16 +153,17 @@ public class ToolsCatalogTests {
     public void Tool_AnnotationsMatchItsKind(string name) {
         var annotations = catalog.Tool(name).Annotations;
 
+        // By reference: ChangeDestructive and Hardware are equal records, only the instance tells the kind apart.
         if (QueryTools.Contains(name)) {
-            Assert.That(annotations, Is.EqualTo(ToolAnnotations.Query));
+            Assert.That(annotations, Is.SameAs(ToolAnnotations.Query));
         } else if (StopTools.Contains(name)) {
-            Assert.That(annotations, Is.EqualTo(ToolAnnotations.Stop));
+            Assert.That(annotations, Is.SameAs(ToolAnnotations.Stop));
         } else if (ChangeTools.Contains(name)) {
-            Assert.That(annotations, Is.EqualTo(ToolAnnotations.Change));
+            Assert.That(annotations, Is.SameAs(ToolAnnotations.Change));
         } else if (DestructiveChangeTools.Contains(name)) {
-            Assert.That(annotations, Is.EqualTo(ToolAnnotations.ChangeDestructive));
+            Assert.That(annotations, Is.SameAs(ToolAnnotations.ChangeDestructive));
         } else {
-            Assert.That(annotations, Is.EqualTo(ToolAnnotations.Hardware));
+            Assert.That(annotations, Is.SameAs(ToolAnnotations.Hardware));
         }
     }
 

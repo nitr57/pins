@@ -29,6 +29,7 @@ public static class JobPayload {
             description = job.Description,
             resource = job.Resource,
             state = job.State,
+            cancelRequested = job.CancelRequested,
             startedAt = job.StartedAt,
             finishedAt = job.FinishedAt,
             outcome = job.Outcome is null
@@ -46,6 +47,20 @@ public static class JobPayload {
         return ToolCallResult.Json(new {
             job = Describe(job),
             next = NextStep(job)
+        });
+    }
+
+    /// <summary><see cref="Result(JobInfo)"/> of a cancelled job, plus the stop commands that failed (if any).</summary>
+    public static ToolCallResult Result(JobInfo job, IReadOnlyList<string> stopErrors) {
+        if (stopErrors.Count == 0) {
+            return Result(job);
+        }
+
+        return ToolCallResult.Json(new {
+            job = Describe(job),
+            stopErrors,
+            next = "Stopping the device reported an error (see stopErrors): it may still be moving. Check get_status; "
+                + "use stop_all or the device's own controls if it is."
         });
     }
 
@@ -70,9 +85,13 @@ public static class JobPayload {
 
     private static string NextStep(JobInfo job) {
         return job.State switch {
+            JobState.Running when job.CancelRequested =>
+                $"Cancellation was requested but the operation has not stopped yet. Poll get_job with id '{job.Id}'; if it "
+                + $"does not end, call cancel_job with abandon: true to release the {job.Resource ?? "job"} (the device may still be busy).",
             JobState.Running => $"Still running. Poll get_job with id '{job.Id}' (use wait_seconds to long-poll) or stop it with cancel_job.",
             JobState.Succeeded => "Finished successfully.",
             JobState.Cancelled => "The job was cancelled.",
+            JobState.Abandoned => "The job was abandoned and its resource released, but the device may still be busy. Check get_status before using it.",
             _ => "The job failed; see outcome.message. Check get_status before retrying."
         };
     }

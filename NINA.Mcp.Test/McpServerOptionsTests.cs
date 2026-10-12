@@ -16,7 +16,7 @@ public class McpServerOptionsTests {
         Assert.That(options.BearerToken, Is.Null);
         Assert.That(options.AllowedOrigins, Is.Empty);
         Assert.That(options.ReadOnly, Is.False);
-        Assert.That(options.SessionIdleTimeout, Is.EqualTo(TimeSpan.FromHours(1)));
+        Assert.That(options.SessionIdleTimeout, Is.EqualTo(TimeSpan.FromHours(24)));
         Assert.That(options.MaxRequestBodyBytes, Is.EqualTo(1024 * 1024));
     }
 

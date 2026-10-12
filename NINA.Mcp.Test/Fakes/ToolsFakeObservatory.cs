@@ -15,6 +15,7 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
     private readonly Dictionary<string, OperationResult> results = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Exception> exceptions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TaskCompletionSource> blocks = new(StringComparer.Ordinal);
+    private readonly HashSet<string> blocksIgnoringCancellation = new(StringComparer.Ordinal);
     private readonly Dictionary<string, TaskCompletionSource> started = new(StringComparer.Ordinal);
 
     public bool SequenceRunning { get; set; }
@@ -95,10 +96,19 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         }
     }
 
-    /// <summary>Makes the async member wait until <see cref="Release"/> (or until its token is cancelled).</summary>
-    public void Block(string member) {
+    /// <summary>
+    /// Makes the async member wait until <see cref="Release"/>, or until its token is cancelled unless
+    /// <paramref name="ignoreCancellation"/> is set (a device that does not react to a stop request).
+    /// </summary>
+    public void Block(string member, bool ignoreCancellation = false) {
         lock (gate) {
             blocks[member] = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            if (ignoreCancellation) {
+                blocksIgnoringCancellation.Add(member);
+            } else {
+                blocksIgnoringCancellation.Remove(member);
+            }
         }
     }
 
@@ -164,10 +174,10 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         return OperateAsync("FindHome", cancellationToken);
     }
 
-    public OperationResult SetTracking(bool enabled) {
+    public Task<OperationResult> SetTrackingAsync(bool enabled, CancellationToken cancellationToken) {
         LastTracking = enabled;
 
-        return Operate("SetTracking");
+        return OperateAsync("SetTracking", cancellationToken);
     }
 
     public void StopSlew() {
@@ -348,15 +358,17 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         LastToken = cancellationToken;
 
         TaskCompletionSource? block;
+        bool ignoreCancellation;
 
         lock (gate) {
             blocks.TryGetValue(member, out block);
+            ignoreCancellation = blocksIgnoringCancellation.Contains(member);
         }
 
         Record(member);
 
         if (block is not null) {
-            await block.Task.WaitAsync(cancellationToken);
+            await (ignoreCancellation ? block.Task : block.Task.WaitAsync(cancellationToken));
         }
 
         lock (gate) {

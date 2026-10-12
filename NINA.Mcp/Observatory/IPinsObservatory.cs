@@ -46,9 +46,10 @@ public interface IPinsObservatory {
 
     Task<OperationResult> FindHomeAsync(CancellationToken cancellationToken);
 
-    OperationResult SetTracking(bool enabled);
+    /// <summary>Switches tracking and returns once the mount reports the new state (or the wait for it elapsed).</summary>
+    Task<OperationResult> SetTrackingAsync(bool enabled, CancellationToken cancellationToken);
 
-    /// <summary>Stops a running slew. No-op when nothing moves or no mount is connected.</summary>
+    /// <summary>Stops a running slew, park or home. No-op when nothing moves or no mount is connected.</summary>
     void StopSlew();
 
     // ----- Camera -----

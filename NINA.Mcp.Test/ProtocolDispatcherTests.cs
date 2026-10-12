@@ -156,6 +156,7 @@ public class ProtocolDispatcherTests {
     [TestCase("""{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}""")]
     [TestCase("""{"jsonrpc":"2.0","id":[1],"method":"ping"}""")]
     [TestCase("""{"jsonrpc":"2.0","id":true,"method":"ping"}""")]
+    [TestCase("""{"jsonrpc":"2.0","id":null,"method":"ping"}""")]
     public async Task InvalidMessages_InvalidRequest(string json) {
         var dispatcher = CreateDispatcher();
 
@@ -206,7 +207,8 @@ public class ProtocolDispatcherTests {
         var result = await DispatchAsync(dispatcher, """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""");
 
         AssertError(result, JsonRpcErrorCodes.InternalError);
-        Assert.That(result.Response!["error"]!["message"]!.GetValue<string>(), Does.Contain("boom"));
+        // The exception text stays in the log: the response also reaches unauthenticated clients.
+        Assert.That(result.Response!["error"]!["message"]!.GetValue<string>(), Does.Not.Contain("boom").And.Contain("pins log"));
         Assert.That(logger.Entries.Any(entry => entry.Level == LogLevel.Error && entry.Exception is InvalidOperationException), Is.True);
     }
 

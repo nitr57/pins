@@ -8,6 +8,7 @@ using NINA.Sequencer.Container;
 using NINA.Sequencer.Logic;
 using NINA.Sequencer.SequenceItem;
 using NINA.Sequencer.Serialization;
+using System.Globalization;
 
 namespace NINA.Mcp.Adapter.Sequence;
 
@@ -217,17 +218,27 @@ public sealed partial class NinaSequenceService {
 
         ISequenceRootContainer root;
         string kind;
+        string rootTitle;
         if (container is ISequenceRootContainer loadedRoot) {
             root = loadedRoot;
-            root.SequenceTitle = title;
+            rootTitle = title;
             kind = "sequence";
         } else {
             // Like Sequence2VM.LoadSequenceFromFile: a saved target or template goes into a new sequence's target area.
             root = WrapInNewRoot(access.Factory, container);
+            rootTitle = root.SequenceTitle;
             kind = $"single {container.GetType().Name} (wrapped into a new sequence)";
         }
 
         sequenceMediator.SetAdvancedSequence(root);
+
+        // Sequence2VM keeps the previous file's save path until the attached root's SequenceTitle changes
+        // (Sequence2VM.Sequencer_PropertyChanged); NINA's Save would then overwrite that other file. Set the title only
+        // now, and in two steps so that the change is raised even when the file already carries this title.
+        root.SequenceTitle = rootTitle + " ";
+        root.SequenceTitle = rootTitle;
+
+        ResolveLinkedTemplates(root, materializeAll: false);
         root.Validate();
         access.ViewModel.ClearHasChanged();
 
@@ -289,9 +300,13 @@ public sealed partial class NinaSequenceService {
         container.Validate();
 
         Logger.Info($"MCP: added target '{request.Name}' from template '{template.Name}'");
+
+        string ra = request.RaHours.ToString("0.#####", CultureInfo.InvariantCulture);
+        string dec = request.DecDegrees.ToString("0.#####", CultureInfo.InvariantCulture);
+
         return OperationResult.Ok(
             $"Added target '{request.Name}' from the template '{template.Name}' at the end of the target area "
-            + $"(RA {request.RaHours:0.#####} h, Dec {request.DecDegrees:0.#####}°). The template's own instructions "
+            + $"(RA {ra} h, Dec {dec}°). The template's own instructions "
             + "are used; slew/guiding/autofocus/dither options of the request do not apply to templates."
             + FormatIssueHint(container));
     }

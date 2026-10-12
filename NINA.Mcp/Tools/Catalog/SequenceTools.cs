@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+using NINA.Mcp.Jobs;
 using NINA.Mcp.Observatory;
 
 namespace NINA.Mcp.Tools.Catalog;
@@ -309,9 +310,11 @@ internal sealed class SaveSequenceTool : ObservatoryTool {
         "Saves the current advanced sequence to the profile's sequence folder under 'name' (without extension; it appears "
         + "in list_saved_sequences and can be loaded later with load_sequence). Names may contain letters, digits, spaces, "
         + "'-', '_' and '.', no path separators. An existing file with that name is only replaced with overwrite: true. "
-        + "Allowed while the sequence runs (it only writes a file).";
+        + "Allowed while the sequence runs (it only writes a file); like NINA's Save As, the sequence then takes the new "
+        + "name, which also changes $$SEQUENCETITLE$$ in the file names of the frames still to come.";
 
-    public override ToolAnnotations Annotations => ToolAnnotations.Change;
+    /// <summary>Destructive: with overwrite it replaces an existing file.</summary>
+    public override ToolAnnotations Annotations => ToolAnnotations.ChangeDestructive;
 
     public override SequenceGuard Guard => SequenceGuard.None;
 
@@ -378,11 +381,13 @@ internal sealed class StartSequenceTool : ObservatoryTool {
         + "(not recommended). While it runs, other hardware and change tools are refused unless force is passed. Monitor "
         + "with get_status, get_sequence and get_recent_images; stop with stop_sequence (or stop_all). Finished items are "
         + "skipped on a new start: reset_sequence first to run everything again. Refused while a job started over MCP "
-        + "(slew, capture, autofocus, focuser move, filter change, guiding start, switch) still runs: wait for it with "
-        + "get_job or stop it with cancel_job. A running camera cooling job does not block the start.";
+        + "(slew, capture, autofocus, focuser move, filter change, guiding start, switch, device connection) still runs: "
+        + "wait for it with get_job or stop it with cancel_job. A running camera cooling job does not block the start.";
 
-    /// <summary>Job resources the sequence would fight over. Cooling (camera_cooler) is deliberately not listed.</summary>
-    internal static readonly string[] HardwareResources = ["mount", "camera", "focuser", "filter_wheel", "guider", "switch"];
+    /// <summary>
+    /// Job resources the sequence would fight over: every device slot. Cooling (camera_cooler) is deliberately not listed.
+    /// </summary>
+    internal static readonly string[] HardwareResources = [.. DeviceKinds.All];
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -394,16 +399,27 @@ internal sealed class StartSequenceTool : ObservatoryTool {
 
     protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var skipValidation = arguments.GetBool("skip_validation") ?? false;
-        var busy = RunningJobsHolding(context.Jobs, HardwareResources);
+        IDisposable reservation;
 
-        if (busy.Count > 0) {
+        // Held until the sequence runs (the sequence guard takes over from there), so no job can start in between.
+        try {
+            reservation = context.Jobs.Reserve(HardwareResources, "start_sequence");
+        } catch (JobConflictException ex) {
+            var busy = RunningJobsHolding(context.Jobs, HardwareResources);
+
+            if (busy.Count == 0) {
+                return ToolCallResult.Error($"Refused: {ex.Message}");
+            }
+
             var jobs = string.Join(", ", busy.Select(job => $"{job.Id} ({job.Description})"));
 
             return ToolCallResult.Error(
                 $"Refused: MCP jobs still use the hardware the sequence needs: {jobs}. Wait for them with get_job or stop them with cancel_job, then retry.");
         }
 
-        return FromOperation(await Observatory.StartSequenceAsync(skipValidation, cancellationToken).ConfigureAwait(false));
+        using (reservation) {
+            return FromOperation(await Observatory.StartSequenceAsync(skipValidation, cancellationToken).ConfigureAwait(false));
+        }
     }
 }
 

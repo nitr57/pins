@@ -27,8 +27,8 @@ internal enum SequenceGuard {
 internal sealed record JobRequest(string Kind, string Description, string? Resource) {
 
     /// <summary>
-    /// Further resources that must not be held by a running job when this one starts (checked before starting, not
-    /// atomically). Used where one operation physically depends on several devices, e.g. no focuser move during an exposure.
+    /// Further resources that must not be held by a running job when this one starts (checked atomically with the claim).
+    /// Used where one operation physically depends on several devices, e.g. no focuser move during an exposure.
     /// </summary>
     public IReadOnlyList<string> RequiresIdle { get; init; } = [];
 }
@@ -101,15 +101,14 @@ internal abstract class ObservatoryTool : McpTool {
         CancellationToken cancellationToken) {
         var wait = JobPayload.ReadWait(arguments, DefaultWaitSeconds);
 
-        EnsureIdle(context.Jobs, request.RequiresIdle);
-
         var job = await context.Jobs.StartAndWaitAsync(
             request.Kind,
             request.Description,
             request.Resource,
             work,
             wait,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken,
+            request.RequiresIdle).ConfigureAwait(false);
 
         return JobPayload.Result(job);
     }
@@ -133,24 +132,6 @@ internal abstract class ObservatoryTool : McpTool {
                 && job.Resource is not null
                 && resources.Contains(job.Resource, StringComparer.OrdinalIgnoreCase))
             .ToList();
-    }
-
-    private static void EnsureIdle(IJobManager jobs, IReadOnlyList<string> resources) {
-        if (resources.Count == 0) {
-            return;
-        }
-
-        foreach (var job in jobs.List()) {
-            if (job.State != JobState.Running || job.Resource is null) {
-                continue;
-            }
-
-            var busy = resources.FirstOrDefault(resource => string.Equals(resource, job.Resource, StringComparison.OrdinalIgnoreCase));
-
-            if (busy is not null) {
-                throw new JobConflictException(busy, job);
-            }
-        }
     }
 
     private ToolCallResult? CheckSequenceGuard(ToolArguments arguments) {

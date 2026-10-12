@@ -155,6 +155,16 @@ System.Windows.Application.ApplicationLifetime = lifetime;
 lifetime.ApplicationStopping.Register(() => {
     Logger.Info("Application shutting down...");
 
+    // Halt MCP jobs (slews, focuser moves, exposures) through their tokens before the equipment goes away under them
+    try {
+        var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5));
+        if (stillRunning > 0) {
+            Logger.Warning($"{stillRunning} MCP job(s) did not stop before shutdown");
+        }
+    } catch (Exception ex) {
+        Logger.Error("Failed to stop MCP jobs", ex);
+    }
+
     // The guide camera isn't part of the equipment ApplicationVM.Closing disconnects. Stop the guider before
     // taking its camera away, and close the camera before Closing shuts down the camera SDKs (Atik).
     try {

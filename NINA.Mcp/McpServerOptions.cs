@@ -34,8 +34,11 @@ public sealed class McpServerOptions {
     /// <summary>Version reported in <c>serverInfo</c>. Set by the host (pins version).</summary>
     public string ServerVersion { get; init; } = "0.0.0";
 
-    /// <summary>Idle time after which an MCP session is forgotten. Default 1 hour.</summary>
-    public TimeSpan SessionIdleTimeout { get; init; } = TimeSpan.FromHours(1);
+    /// <summary>
+    /// Idle time after which an MCP session is forgotten. Default 24 hours: a client typically starts a sequence and comes
+    /// back hours later, and several clients do not re-initialize after a 404. A session only holds the protocol version.
+    /// </summary>
+    public TimeSpan SessionIdleTimeout { get; init; } = TimeSpan.FromHours(24);
 
     /// <summary>Maximum request body size in bytes. Default 1 MiB.</summary>
     public long MaxRequestBodyBytes { get; init; } = 1024 * 1024;

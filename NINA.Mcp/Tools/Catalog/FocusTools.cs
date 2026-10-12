@@ -58,7 +58,7 @@ internal sealed class RunAutofocusTool : ObservatoryTool {
         + "the best position. Needs a connected camera and focuser and stars in the field (the mount should track a star field). "
         + "Takes one to several minutes, so it usually returns a running job: poll get_job. outcome.data holds the final "
         + "position, HFR, filter and temperature. The job holds the 'camera' resource (autofocus uses camera and focuser) and "
-        + "is refused while a focuser job runs.";
+        + "is refused while a focuser or mount job runs.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -69,7 +69,7 @@ internal sealed class RunAutofocusTool : ObservatoryTool {
 
     protected override Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var job = new JobRequest("autofocus", "Autofocus", "camera") {
-            RequiresIdle = ["focuser"]
+            RequiresIdle = ["focuser", "mount"]
         };
 
         return RunJobAsync(

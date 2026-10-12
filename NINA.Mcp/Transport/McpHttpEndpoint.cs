@@ -151,7 +151,7 @@ public sealed class McpHttpEndpoint {
             return;
         }
 
-        if (!await CheckSessionAsync(context).ConfigureAwait(false)) {
+        if (await CheckSessionAsync(context).ConfigureAwait(false) is null) {
             return;
         }
 
@@ -192,14 +192,14 @@ public sealed class McpHttpEndpoint {
             return;
         }
 
-        if (!await CheckSessionAsync(context).ConfigureAwait(false)) {
+        var session = await CheckSessionAsync(context).ConfigureAwait(false);
+
+        if (session is null) {
             return;
         }
 
         // JSON-RPC batching exists only in protocol 2025-03-26; later versions removed it.
-        var session = sessions.Get(GetSessionId(context.Request)!);
-
-        if (session is not null && session.ProtocolVersion != BatchProtocolVersion) {
+        if (session.ProtocolVersion != BatchProtocolVersion) {
             var error = JsonRpc.Error(null, JsonRpcErrorCodes.InvalidRequest, $"Batches are only supported with protocol version {BatchProtocolVersion}.");
 
             await WriteJsonAsync(context, StatusCodes.Status400BadRequest, error).ConfigureAwait(false);
@@ -213,20 +213,16 @@ public sealed class McpHttpEndpoint {
             return;
         }
 
+        // Processed concurrently, as JSON-RPC allows: each tools/call may wait up to wait_seconds, so a sequential batch of
+        // 16 could keep the request open for a quarter of an hour. Responses keep the order of the requests.
+        var results = await Task.WhenAll(root.EnumerateArray().Select(message => DispatchBatchMessageAsync(message, cancellationToken)))
+            .ConfigureAwait(false);
+
         var responses = new JsonArray();
 
-        foreach (var message in root.EnumerateArray()) {
-            if (IsInitializeRequest(message)) {
-                var id = JsonRpc.CopyId(message.GetProperty("id"));
-
-                responses.Add(JsonRpc.Error(id, JsonRpcErrorCodes.InvalidRequest, "initialize must not be part of a batch."));
-                continue;
-            }
-
-            var result = await dispatcher.DispatchAsync(message, cancellationToken).ConfigureAwait(false);
-
-            if (result.Response is not null) {
-                responses.Add(result.Response);
+        foreach (var response in results) {
+            if (response is not null) {
+                responses.Add(response);
             }
         }
 
@@ -236,6 +232,18 @@ public sealed class McpHttpEndpoint {
         }
 
         await WriteJsonAsync(context, StatusCodes.Status200OK, responses).ConfigureAwait(false);
+    }
+
+    private async Task<JsonNode?> DispatchBatchMessageAsync(JsonElement message, CancellationToken cancellationToken) {
+        if (IsInitializeRequest(message)) {
+            var id = JsonRpc.CopyId(message.GetProperty("id"));
+
+            return JsonRpc.Error(id, JsonRpcErrorCodes.InvalidRequest, "initialize must not be part of a batch.");
+        }
+
+        var result = await dispatcher.DispatchAsync(message, cancellationToken).ConfigureAwait(false);
+
+        return result.Response;
     }
 
     /// <summary>Origin (403), then bearer token (401). False when a response has been written.</summary>
@@ -285,7 +293,7 @@ public sealed class McpHttpEndpoint {
     }
 
     /// <summary>Missing session id → 400, unknown or expired → 404. False when a response has been written.</summary>
-    private async Task<bool> CheckSessionAsync(HttpContext context) {
+    private async Task<McpSession?> CheckSessionAsync(HttpContext context) {
         var sessionId = GetSessionId(context.Request);
 
         if (sessionId is null) {
@@ -294,15 +302,16 @@ public sealed class McpHttpEndpoint {
                 StatusCodes.Status400BadRequest,
                 $"Missing {SessionIdHeader} header. Send initialize first.").ConfigureAwait(false);
 
-            return false;
+            return null;
         }
 
-        if (sessions.Get(sessionId) is null) {
+        var session = sessions.Get(sessionId);
+
+        if (session is null) {
             await WriteSessionNotFoundAsync(context).ConfigureAwait(false);
-            return false;
         }
 
-        return true;
+        return session;
     }
 
     private static string? GetSessionId(HttpRequest request) {

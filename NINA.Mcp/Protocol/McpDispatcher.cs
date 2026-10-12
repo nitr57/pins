@@ -133,7 +133,8 @@ public sealed class McpDispatcher {
         } catch (Exception ex) {
             logger.LogError(ex, "MCP method {Method} failed", method);
 
-            return Error(id, JsonRpcErrorCodes.InternalError, $"Internal error: {ex.Message}");
+            // Details (driver messages, paths) go to the log only: this response also reaches unauthenticated clients.
+            return Error(id, JsonRpcErrorCodes.InternalError, "Internal error; the pins log has details.");
         }
     }
 
