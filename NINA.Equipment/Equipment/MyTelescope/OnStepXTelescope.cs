@@ -168,7 +168,16 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private PierSide? targetSideOfPier;
 
         public OnStepXTelescope(IProfileService profileService)
-            : this(profileService, port => OnStepXDevice.Connect(new OnStepXTransport(new OnStepXSerialPort(port)))) {
+            : this(profileService, port => OnStepXDevice.Connect(SerialTransport(port, profileService.ActiveProfile.TelescopeSettings.SerialBaudRate))) {
+        }
+
+        /// <summary>
+        /// The port at the profile's baud rate (OnStepX's default 9600 when unset). The transport's character time follows
+        /// it, since the pulse timing estimates when a command is on the line from it.
+        /// </summary>
+        private static OnStepXTransport SerialTransport(string port, int baudRate, TimeSpan? firstByteTimeout = null) {
+            int baud = baudRate > 0 ? baudRate : OnStepXSerialPort.DefaultBaudRate;
+            return new OnStepXTransport(new OnStepXSerialPort(port, baud), firstByteTimeout, characterTime: OnStepXTransport.CharacterTime(baud));
         }
 
         internal OnStepXTelescope(IProfileService profileService, Func<string, OnStepXDevice> connectDevice) {
@@ -183,7 +192,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         /// </summary>
         public static Task<OnStepXTelescope> Discover(IProfileService profileService) =>
             Discover(profileService,
-                port => OnStepXDevice.Connect(new OnStepXTransport(new OnStepXSerialPort(port), ScanReplyTimeout), ScanProxiskyProbeBudget, TimeSpan.FromMilliseconds(100)),
+                port => OnStepXDevice.Connect(SerialTransport(port, profileService.ActiveProfile.TelescopeSettings.SerialBaudRate, ScanReplyTimeout), ScanProxiskyProbeBudget, TimeSpan.FromMilliseconds(100)),
                 OnStepXSerialPort.IsOpenInProcess);
 
         internal static async Task<OnStepXTelescope> Discover(IProfileService profileService, Func<string, OnStepXDevice> identify, Func<string, bool> isOpenInProcess) {
@@ -247,7 +256,13 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         public string DriverVersion => device?.Identification.Version ?? string.Empty;
 
-        public bool HasSetupDialog => false;
+        /// <summary>
+        /// Always: the Touch-N-Stars app enables its settings button (serial port and baud rate) only for a device that
+        /// reports a setup dialog, and it reads this from a device list it does not reload on disconnect, so a value that
+        /// follows <see cref="Connected"/> would keep the button disabled after a disconnect. The app disables the button
+        /// itself while the mount is connected. <see cref="SetupDialog"/> does nothing in pins.
+        /// </summary>
+        public bool HasSetupDialog => true;
 
         public void SetupDialog() {
         }
@@ -289,7 +304,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     connectionLost = 0;
                     KnownModels[port.Trim()] = device.Model;
                     Connected = true;
-                    Logger.Info($"OnStepX: connected to {device.Model} on {port}, {device.Identification}");
+                    Logger.Info($"OnStepX: connected to {device.Model} on {port} at {profileService.ActiveProfile.TelescopeSettings.SerialBaudRate} baud, {device.Identification}");
                     CheckMountTime();
                     WatchSettings();
                     ApplyPreferredPierSide();
@@ -1018,6 +1033,67 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         }
 
         #endregion Mount settings
+
+        #region Proxisky settings
+
+        /// <summary>A Proxisky UMi is connected, so the Proxisky settings apply.</summary>
+        public bool IsProxisky => Connected && device is ProxiskyUmiDevice;
+
+        /// <summary>The UMi's vendor settings (<see cref="ProxiskySettings"/>), read from the mount on every call.</summary>
+        public ProxiskySettings GetProxiskySettings() {
+            ProxiskySettings? settings = null;
+            RunOnUmi("read the Proxisky settings", umi => settings = umi.ReadSettings());
+            return settings!;
+        }
+
+        /// <summary>Switches a vendor setting; the status LED and auto tracking take effect at the next power cycle.</summary>
+        public void SetProxiskySwitch(ProxiskySwitch setting, bool enabled) =>
+            RunOnUmi($"switch {setting} {(enabled ? "on" : "off")}", umi => umi.SetSwitch(setting, enabled));
+
+        /// <summary>The RA travel limits in degrees on the vendor's "left" and "right" side (1 to 180).</summary>
+        public void SetProxiskyRaLimits(int left, int right) =>
+            RunOnUmi($"set the RA limits to {left}° and {right}°", umi => umi.SetRaLimits(left, right));
+
+        /// <summary>The Dec travel limits in degrees counter-clockwise and clockwise (90 to 200); UMi17X only.</summary>
+        public void SetProxiskyDecLimits(int ccw, int cw) =>
+            RunOnUmi($"set the Dec limits to {ccw}° and {cw}°", umi => umi.SetDecLimits(ccw, cw));
+
+        /// <summary>The collision thresholds, RA 10 and Dec 100 to 59999.</summary>
+        public void SetProxiskyAcsThresholds(int ra, int dec) =>
+            RunOnUmi($"set the collision thresholds to {ra} and {dec}", umi => umi.SetAcsThresholds(ra, dec));
+
+        public void ClearProxiskyCollisionCounters() =>
+            RunOnUmi("clear the collision counters", umi => umi.ClearCollisionCounters());
+
+        /// <summary>The supervised goto tolerance in degrees (5 to 30).</summary>
+        public void SetProxiskySupervisedGotoTolerance(int degrees) =>
+            RunOnUmi($"set the supervised goto tolerance to {degrees}°", umi => umi.SetSupervisedGotoTolerance(degrees));
+
+        /// <summary>
+        /// The servo gains of one axis; UMi20S and UMi17X only. The commit restarts the axis, so the mount has to stand
+        /// still and not track (INDI checks the same); the new gains take effect at the next power cycle.
+        /// </summary>
+        public void SetProxiskyPidGains(ProxiskyAxis axis, ProxiskyPidGains gains) {
+            if (!IsProxisky) {
+                throw Failure("cannot set the PID gains: no Proxisky UMi connected");
+            }
+            if (GetState(true) is not { } s) {
+                throw Failure("cannot set the PID gains: the mount's state is unreadable");
+            }
+            if (Moving(s) || s.Status.Tracking) {
+                throw Failure("cannot set the PID gains while the mount moves or tracks: the commit restarts the axis, stop it first");
+            }
+            RunOnUmi($"set the {axis} PID gains", umi => umi.SetPidGains(axis, gains));
+        }
+
+        private void RunOnUmi(string action, Action<ProxiskyUmiDevice> command) {
+            if (Connected && device is not ProxiskyUmiDevice) {
+                throw Failure($"cannot {action}: the mount is no Proxisky UMi");
+            }
+            RunOrThrow(action, d => command(d as ProxiskyUmiDevice ?? throw new OnStepXException("the mount is no Proxisky UMi")));
+        }
+
+        #endregion Proxisky settings
 
         #region Park and home
 

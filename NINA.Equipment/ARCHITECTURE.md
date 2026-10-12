@@ -139,12 +139,21 @@ a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`
   `PIER_SIDE_PREFERRED_MEMORY`) and treats a flip that ends on the wrong side as failed, so NINA's retries go on.
 - Guide pulses: `:Mg` has no reply, so `OnStepXTransport.SendBlindNow` writes it past a read in progress (only the
   writing of commands is serialized, and not between a refused command and its `:GE#`) and returns when the command is
-  on the line, estimated from the characters queued at 9600 baud. A pulse counts as running until then plus its
+  on the line, estimated from the characters queued at the port's baud rate (`TelescopeSettings.SerialBaudRate`,
+  OnStepX's default 9600). A pulse counts as running until then plus its
   duration plus 15 ms, and after that until `:GU#` no longer shows `G`, so no guide exposure starts while the mount
   moves: on a UMi17S most pulses ended 0-15 ms after the estimate, but USB serial now and then delays a command by up
   to ~80 ms. Pulses the controller would refuse (`Guide::validate`) throw, judged on the last known status, never on a
   fresh read that would delay the pulse; so does a pulse after a goto, park or home was sent and before a status read
   after it, since a pulse aborts a goto.
+- Proxisky vendor settings (`ProxiskyUmiDevice.Settings.cs`, `OnStepXTelescope.GetProxiskySettings` and the
+  `SetProxisky…` methods): commands, ranges and replies from INDI's `lx200_proxisky.cpp` and its protocol notes. They
+  are read only when asked for, never polled, so they stay off the line while guiding. A feature counts as present
+  when the mount answers for it; changing the Dec limits and the Dec second home is allowed on a UMi17X only, the PID
+  gains on a UMi20S and UMi17X, as in the vendor's tool. The status LED, auto tracking and the PID gains take effect
+  at the next power cycle and read back the running value until then, so the device keeps the written value per
+  connection and reports it as pending. The PID commit restarts the axis (all gains read 0 for about 70 ms), so it
+  is refused while the mount moves or tracks.
 - Tests: `NINA.Test/Equipment/OnStepX`, with a scripted fake port; `OnStepXHardwareTest` is explicit and runs against
   a real mount on `ONSTEPX_PORT`: it reads, and its pulse test moves the mount a few arcseconds. Gotos, parks and moves
   are checked by hand on the mount.

@@ -1043,6 +1043,46 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task HasSetupDialog_AlsoWhileConnected() {
+            // the Touch-N-Stars app enables its settings button (port, baud rate) by it, from a device list it does not
+            // reload on disconnect; it disables the button itself while connected
+            var (telescope, _) = Create(FakeOnStepXPort.Umi17S());
+            Assert.That(telescope.HasSetupDialog, Is.True);
+
+            await telescope.Connect(CancellationToken.None);
+
+            Assert.That(telescope.HasSetupDialog, Is.True);
+        }
+
+        [Test]
+        public void SerialBaudRate_DefaultsToOnStepXs9600AndIgnoresZero() {
+            var settings = new NINA.Profile.Profile().TelescopeSettings;
+
+            Assert.That(settings.SerialBaudRate, Is.EqualTo(9600));
+            settings.SerialBaudRate = 0;
+            Assert.That(settings.SerialBaudRate, Is.EqualTo(9600));
+            settings.SerialBaudRate = 115200;
+            Assert.That(settings.SerialBaudRate, Is.EqualTo(115200));
+        }
+
+        [Test]
+        public async Task SetProxiskyPidGains_WhileTracking_IsRefusedWithoutACommand() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":Pbvg#", "UMi20S|1.0.6#").On(":GU#", Tracking));
+
+            Assert.That(() => telescope.SetProxiskyPidGains(ProxiskyAxis.Ra, new ProxiskyPidGains(300, 200, 200, 50)),
+                Throws.InvalidOperationException.With.Message.Contains("tracks"));
+            Assert.That(port.Written.Where(c => c.StartsWith(":Pnas")), Is.Empty);
+        }
+
+        [Test]
+        public async Task GetProxiskySettings_OtherOnStepX_IsRefused() {
+            var (telescope, _) = await Connected(FakeOnStepXPort.Umi17S().On(":Pbvg#", "0"));
+
+            Assert.That(telescope.IsProxisky, Is.False);
+            Assert.That(() => telescope.GetProxiskySettings(), Throws.InvalidOperationException.With.Message.Contains("no Proxisky UMi"));
+        }
+
+        [Test]
         public async Task PortFailure_EndsTheConnection() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
             port.FailWrites = new IOException("device unplugged");

@@ -49,6 +49,7 @@ namespace NINA.Profile {
             indiDriver = "None";
             indiMaxSlewRateDps = 4.0;
             serialPort = string.Empty;
+            serialBaudRate = 9600;
             preferredPierSide = string.Empty;
         }
 
@@ -326,6 +327,24 @@ namespace NINA.Profile {
             set {
                 if (serialPort != value) {
                     serialPort = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private int serialBaudRate;
+
+        /// <summary>
+        /// The baud rate of <see cref="SerialPort"/>: OnStepX's default is 9600 (SERIAL_A_BAUD_DEFAULT in its Config.h); a
+        /// firmware built with another rate needs that one. Values of 0 and below are ignored.
+        /// </summary>
+        [DataMember]
+        public int SerialBaudRate {
+            get => serialBaudRate;
+            set {
+                if (value <= 0) return;
+                if (serialBaudRate != value) {
+                    serialBaudRate = value;
                     RaisePropertyChanged();
                 }
             }

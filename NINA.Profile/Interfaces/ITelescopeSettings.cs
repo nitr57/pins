@@ -42,6 +42,7 @@ namespace NINA.Profile.Interfaces {
         double IndiMaxSlewRateDps { get; set; }
 
         string SerialPort { get; set; }
+        int SerialBaudRate { get; set; }
         string PreferredPierSide { get; set; }
     }
 }

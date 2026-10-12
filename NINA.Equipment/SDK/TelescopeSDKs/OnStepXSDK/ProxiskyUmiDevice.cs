@@ -25,7 +25,7 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
     /// A Proxisky UMi mount (UMi17R, UMi17S, UMi20S): OnStepX with the vendor's :P… commands, as INDI's
     /// LX200_Proxisky uses them.
     /// </summary>
-    public class ProxiskyUmiDevice : OnStepXDevice {
+    public partial class ProxiskyUmiDevice : OnStepXDevice {
 
         /// <summary>
         /// How long :Pbvg# is retried while connecting (INDI LX200_Proxisky PROXISKY_MODEL_PROBE_SECONDS): the mount
