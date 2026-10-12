@@ -195,7 +195,36 @@ guide camera's seeing under 20 s. An on-sky A/B on star FWHM and eccentricity is
    pulses adds to it. A late share learned alongside the effect (as in [CORRECTION-PACE.md](CORRECTION-PACE.md)) would
    let the pulse model help the Dec of the 17S/20S #2 too.
 
-## 9. Reproducing
+## 9. Simulator presets
+
+`SimulatorScenario.UMi20S` (FSQ106 load), `UMi20SHeavy` (Ocal H-2) and `UMi17R` (SQA85) carry the lines of §3 (RA-axis
+arcsec, on the axis angle), guide rate 1×, the Dec drift of §4, occasional wind, and one sky for all three: a white part
+(0.18″ at 1 s) and two layers common to all stars on 3 s and 8 s cells (0.3″, 0.4″), fitted to the seeing under 20 s of
+the 0.87 s nights; the IMX662 / IMX462 at the logged scales, brightness set to the logged SNR. `UmiPresetTests` checks them
+against the nights:
+
+| | σ Dec under 20 s | RA lag 1/2/3 | main lines | guide-star SNR |
+|---|---|---|---|---|
+| UMi20S | 0.47″ (0.46) | 0.54/0.34/0.13 (0.50/0.28/0.14) | 3.75″ at 430.8 s (4.5 ± 1 beating), 1.9″ at 287.2 s | 101 (100–140) |
+| UMi20SHeavy | 0.47″ (0.45) | 0.54/0.35/0.14 (0.50/0.30/0.18) | 3.0″ at 430.8 s (4.1 ± 1.5), 4.0″ at 287.2 s | 64 (60–85) |
+| UMi17R | 0.43″ (0.44) | 0.54/0.16/−0.04 (0.48/0.27/0.11) | 10.9″ at 856.5 s, 6.0″ at 428.3 s, 2.5″ at 287.2 s | 115 (110–190) |
+
+The 17R guides 1 s frames 1.35 s apart; the cells of the shared sky make its correlation fall off too fast at lags 2–3.
+
+Closed loop in the simulator (`Guiding_the_presets`, 40 min, true RMS from minute 5):
+
+| | PHD2 settings of the nights (Hysteresis 0.9, Resist Switch 90 %) | Predictive, pace 0.5 |
+|---|---|---|
+| UMi20S | 0.76″ (RA 0.53, Dec 0.56) | 0.66″ (RA 0.49, Dec 0.44) |
+| UMi20SHeavy | 0.77″ (RA 0.53, Dec 0.57) | 0.67″ (RA 0.50, Dec 0.44) |
+| UMi17R | 0.75″ (RA 0.55, Dec 0.52) | 0.63″ (RA 0.50, Dec 0.39) |
+
+The same direction as the replay (§6) on the 20S; on the 17R the simulator is more favourable than the replay (±2 %):
+it has none of the 17R's Dec troubles (pulses acting 0.71 and partly a frame late) and its 856.5 s stage on the axis angle,
+where the real one is not locked to it. Not modelled in any preset: Dec pulse effect below the calibration (a simulated
+calibration would measure the same rate) and late arrival.
+
+## 10. Reproducing
 
 - Data: `NINA.GuideEngine.Test/Data/umi`, rebuilt from the PHD2 logs by `NINA.GuideEngine/tools/phd2-log-replay`.
 - `dotnet test NINA.GuideEngine.Test --filter "FullyQualifiedName~UmiReplayTests"` checks the data; the explicit

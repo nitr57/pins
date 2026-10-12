@@ -9,7 +9,7 @@ frames, 760 dithers. Used by `Algorithms/UmiReplayTests.cs` (loader `UmiNight`);
 | `UMi20S-1` | UMi20S #1 | Takahashi FSQ106 (light, short lever) | GPM662M, 128 mm, 4.67″/px | 0.5 s | 2026-09-05, 09-11 |
 | `UMi20S-2` | UMi20S #2 | Ocal H-2 (much heavier, longer lever) | GPM662M, 250 mm, 2.39″/px | 0.5 s | 2026-09-05, 09-11, 09-14 |
 | `UMi17S` | UMi17S | Takahashi SQA85 | GPM462M, 208 / 250 mm, 2.88 / 2.39″/px | 0.5 s | 2026-09-05, 09-11 |
-| `UMi17R` | UMi17R (servo in RA only, other gearbox) | — | GPM462M, 190 / 250 mm, 3.15 / 2.39″/px | 1 s | 2026-08-11, 08-12, 08-22, 09-05, 09-11, 10-05 |
+| `UMi17R` | UMi17R (servo in RA only, other gearbox) | Takahashi SQA85 (a second one) | GPM462M, 190 / 250 mm, 3.15 / 2.39″/px | 1 s | 2026-08-11, 08-12, 08-22, 09-05, 09-11, 10-05 |
 
 All were guided by PHD2 2.6.15 (pins build) through INDI LX200 OnStep at 1× sidereal guide rate, RA with Predictive PEC
 (gain 0.6–0.9), Dec with Resist Switch (aggression 60–90 %), min move 0.1 px, NINA dithering every few minutes. Site
