@@ -612,6 +612,39 @@ public class InternalGuiderLifecycleTests
     }
 
     [Test]
+    public async Task Stop_guiding_reports_whether_anything_was_running()
+    {
+        // slews and centering restart guiding after the move only when StopGuiding returned true (PHD2: false when stopped)
+        using var t = new GuiderFixture();
+        t.Guider.TrySetSetting("GuideSource", InternalGuiderOptions.SimulatorSource, out _).Should().BeTrue();
+        t.Guider.TrySetSetting("SaveGuideLog", "false", out _).Should().BeTrue();
+        t.Guider.TrySetSetting("ReuseCalibration", "false", out _).Should().BeTrue();
+        t.Guider.TrySetSetting("ExposureSeconds", "0.2", out _).Should().BeTrue();
+        (await t.Guider.Connect(CancellationToken.None)).Should().BeTrue();
+        try
+        {
+            (await t.Guider.StopGuiding(CancellationToken.None)).Should().BeFalse("nothing was running");
+            (await t.Guider.StopLooping(CancellationToken.None)).Should().BeTrue("a stop request on an idle guider still succeeds");
+
+            (await t.Guider.StartLooping(CancellationToken.None)).Should().BeTrue();
+            for (int i = 0; i < 100 && t.Guider.GetStatus().State == AdvancedGuiderStates.Stopped; i++)
+            {
+                await Task.Delay(100);
+            }
+
+            t.Guider.GetStatus().State.Should().Be(AdvancedGuiderStates.Looping);
+
+            (await t.Guider.StopGuiding(CancellationToken.None)).Should().BeTrue("the guider was looping");
+            t.Guider.GetStatus().State.Should().Be(AdvancedGuiderStates.Stopped);
+            (await t.Guider.StopGuiding(CancellationToken.None)).Should().BeFalse("the guider was already stopped");
+        }
+        finally
+        {
+            await Task.Run(t.Guider.Disconnect);
+        }
+    }
+
+    [Test]
     public async Task Selects_a_guide_star_by_position()
     {
         using var t = new GuiderFixture();

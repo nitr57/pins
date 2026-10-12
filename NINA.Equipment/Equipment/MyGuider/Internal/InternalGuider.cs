@@ -653,8 +653,11 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             return false;
         }
 
+        // PHD2 parity: false when nothing was running, so slews and centering don't start guiding afterwards
+        bool wasCapturing = g.State.IsCapturing();
+
         await g.StopCaptureAsync().ConfigureAwait(false);
-        return true;
+        return wasCapturing;
     }
 
     public async Task<bool> Dither(IProgress<ApplicationStatus> progress, CancellationToken ct)
@@ -888,7 +891,17 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         return Task.FromResult(true);
     }
 
-    public async Task<bool> StopLooping(CancellationToken ct) => await StopGuiding(ct).ConfigureAwait(false);
+    public async Task<bool> StopLooping(CancellationToken ct)
+    {
+        if (guider is null)
+        {
+            return false;
+        }
+
+        // unlike StopGuiding, stopping an idle guider succeeds: the guider ends up stopped either way
+        await StopGuiding(ct).ConfigureAwait(false);
+        return true;
+    }
 
     public Task<bool> SetPaused(bool paused, CancellationToken ct)
     {
