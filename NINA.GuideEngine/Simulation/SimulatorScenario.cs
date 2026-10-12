@@ -118,7 +118,7 @@ public sealed record SimulatorScenario
         decBacklashArcsec: 4.0, wind: new WindGustConfig(1.0, 2.0, 3.0));
 
     /// <summary>
-    /// ProxiSky UMi20S with a light load (Takahashi FSQ106), from its guide logs (docs/notes/UMI-STRAIN-WAVE.md): ±4.5″ at
+    /// ProxiSky UMi20S with a light load (FSQ106), from its guide logs (docs/notes/UMI-STRAIN-WAVE.md): ±4.5″ at
     /// 430.8 s and ±1″ at 426.6 s (the strain-wave pair, 200 and 202 per axis turn, which beat over a night), ±1.5″ at
     /// 861.6 s, the stage turning 300 times per axis turn (287.2 s) with its sharp harmonics, non-integer lines at 106.4 s
     /// and 62.5 s (RA-axis arcsec); guide rate 1×, no Dec backlash; seeing correlated over 2–3 s; an IMX662 on a 128 mm
@@ -153,7 +153,7 @@ public sealed record SimulatorScenario
         focalLengthMm: 250, fwhmArcsec: 8);
 
     /// <summary>
-    /// ProxiSky UMi17R (servo in RA only, another gearbox than the 17S) with a Takahashi SQA85, from its guide logs
+    /// ProxiSky UMi17R (servo in RA only, another gearbox than the 17S) with an SQA85, from its guide logs
     /// (docs/notes/UMI-STRAIN-WAVE.md): ±10.7″ at 856.5 s with its harmonics (±6″ at 428.3 s, ±1″ at 214.1 s), a stage
     /// that turns 100.6 times per axis turn, no whole number, so not geared rigidly to the axis (a belt?); the 300-per-turn
     /// stage at 287.2 s; guide rate 1×, Dec drift 0.7″/min (polar alignment ~2–3′), no Dec backlash; an IMX462 on a 190 mm
