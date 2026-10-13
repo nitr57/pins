@@ -711,8 +711,19 @@ namespace NINA.INDI {
                                 Driver = exec
                             });
                         } else {
-                            // Duplicate/re-broadcast DRIVER_INFO for an already-known device.
-                            exec = _discoveredDevices[t.DeviceName].Driver;
+                            // Duplicate/re-broadcast DRIVER_INFO for an already-known device. Drivers
+                            // widen DRIVER_INTERFACE once they have probed the hardware (syncDriverInfo,
+                            // e.g. a focuser that found a light box or OnStep's rotator), so the latest
+                            // value wins — otherwise a rescan never sees the added device types.
+                            var known = _discoveredDevices[t.DeviceName];
+                            exec = known.Driver;
+
+                            var interfaceText = t.Texts.FirstOrDefault(text => text.Name == "DRIVER_INTERFACE");
+                            if (int.TryParse(interfaceText?.Value, out var interfaceNumber)
+                                && (DeviceInterface)interfaceNumber != known.Interface) {
+                                Logger.Info($"INDI device '{t.DeviceName}' changed its interface from {known.Interface} to {(DeviceInterface)interfaceNumber}");
+                                known.Interface = (DeviceInterface)interfaceNumber;
+                            }
                         }
 
                         // Release tcs (moved outside to handle duplicate DRIVER_INFO messages) —
@@ -1256,6 +1267,8 @@ namespace NINA.INDI {
                     case "setTextVector": {
                             if (GetStoredProperty(deviceName, propertyName) is INDITextProperty tp) {
                                 INDIProtocolParser.UpdateTextProperty(tp, element);
+                                // syncDriverInfo() re-publishes DRIVER_INFO as a set, not a def.
+                                CheckForNewDevice(tp);
                                 if (_registeredDevices.TryGetValue(deviceName, out var setTxtDevices)) {
                                     foreach (var deviceInstance in setTxtDevices)
                                         deviceInstance.OnTextPropertyUpdated(tp);

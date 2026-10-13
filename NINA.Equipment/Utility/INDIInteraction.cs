@@ -115,8 +115,10 @@ namespace NINA.Equipment.Utility {
             // Fetch the INDI driver that is supposed to be used from profile
             string driver = profileService.ActiveProfile.FlatDeviceSettings.IndiDriver;
 
-            // Query devices for this driver
-            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.LIGHTBOX_INTERFACE, driver, "FlatDevice")) {
+            // Query devices for this driver. A flat device can be a light box, a dust cap or both,
+            // and drivers that advertise only the cover are still a flat device to NINA.
+            var flatInterfaces = DeviceInterface.LIGHTBOX_INTERFACE | DeviceInterface.DUSTCAP_INTERFACE;
+            foreach (var device in await INDIClient.Instance.GetDevices(flatInterfaces, driver, "FlatDevice")) {
                 IndiFlatDevice flatDevice = new(device, profileService);
                 l.Add(flatDevice);
             }
