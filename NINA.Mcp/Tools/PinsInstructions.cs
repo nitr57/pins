@@ -28,16 +28,16 @@ internal static class PinsInstructions {
         Long operations (connect, slew, park, capture, cool, focus, filter change, guiding, switches, plate solving, centering, rotator, flat panel, dome) run as background jobs. The tool waits up to wait_seconds (default 30, max 55) and returns { job: { id, state, outcome } }. If state is "running", poll get_job (with wait_seconds to long-poll) or check get_status. A device busy with another job refuses new jobs; cancel_job stops one job.
 
         Safety guard
-        While the advanced sequence runs, hardware and editing tools are refused so they cannot disturb it. Pass force: true only when the user explicitly wants that; load_sequence, clear_targets, reset_sequence and start_sequence need the sequence stopped (stop_sequence). stop_all is the emergency stop: it stops the sequence, cancels all jobs, aborts the exposure, stops slewing and the focuser. It is never refused, not even in read-only mode (cancel_job neither). Use it when the user says stop or something looks wrong.
+        While the advanced sequence runs, hardware and editing tools are refused so they cannot disturb it. Pass force: true only when the user explicitly wants that; load_sequence, clear_targets, reset_sequence and start_sequence need the sequence stopped (stop_sequence). stop_all is the emergency stop: it stops the sequence, cancels all jobs, aborts the exposure, stops slewing and the focuser. It is never refused, not even in read-only mode (cancel_job neither). Use it when the user says stop or something looks wrong; for rain or the end of the night use secure_observatory.
 
         Typical imaging session
-        1. get_status (what is connected, sequence state, running jobs).
+        1. get_status (what is connected, sequence state, running jobs) and get_system_health with the client's current UTC time (a wrong clock on the Pi spoils solving and planning).
         2. connect_device for camera, mount, focuser, filter_wheel, guider as needed.
         3. cool_camera (e.g. -10 °C, poll until reached); unpark_mount.
-        4. Choose targets with plan_targets (transit, hours above the altitude limit in the dark, moon). Either center_target (or slew_mount) + capture_image to frame manually, or build the plan: clear_targets, add_target (name, ra, dec, exposures or a template from list_target_templates); or load_sequence from list_saved_sequences.
+        4. Get coordinates from find_targets (offline catalog) and choose with plan_targets (transit, hours above the altitude limit in the dark, moon). Either center_target (or slew_mount) + capture_image to frame manually, or build the plan: clear_targets, add_target (name, ra, dec, exposures or a template from list_target_templates); or load_sequence from list_saved_sequences.
         5. run_autofocus and start_guiding (a target from add_target does centering, guiding and optional autofocus itself).
         6. start_sequence, then monitor with get_status, get_sequence and get_recent_images (HFR rising → focus; star count dropping → clouds).
-        7. End: stop_sequence, park_mount, warm_camera, disconnect_device.
+        7. End or bad weather: secure_observatory (stops everything, parks, closes dome and cover); get_session_summary for the report.
 
         Diagnosing problems
         - Guiding: get_guider_report (RMS, drift, polar alignment error, loop timing, alerts with fixes); list_guide_incidents and get_guide_incident (flight recorder: what happened frame by frame and the likely cause); get_guiding_coach_report.

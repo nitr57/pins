@@ -1,6 +1,6 @@
 # NINA.Mcp Architecture
 
-`NINA.Mcp` and `NINA.Mcp.Adapter` add an MCP (Model Context Protocol) server to pins, so that AI clients such as Claude Code can read the equipment state and drive the observatory: connect devices, slew, plate solve and center, capture, focus, guide, move the rotator, flat panel and dome, and build, load, start and stop advanced sequences. For planning and diagnosis they also expose target planning for a night, the internal guider's statistics, Guiding Coach reports and flight recorder incidents, and the pins log. Both projects are pins-specific and not part of upstream N.I.N.A.
+`NINA.Mcp` and `NINA.Mcp.Adapter` add an MCP (Model Context Protocol) server to pins, so that AI clients such as Claude Code can read the equipment state and drive the observatory: connect devices, slew, plate solve and center, capture, focus, guide, move the rotator, flat panel and dome, and build, load, start and stop advanced sequences. For planning and diagnosis they also expose an offline catalog search and target planning for a night, the internal guider's statistics, Guiding Coach reports and flight recorder incidents, the pins log, a summary of the session's frames and the health of the pins box (clock, disk, temperature, under-voltage); `secure_observatory` shuts everything down for the end of the night or bad weather. Both projects are pins-specific and not part of upstream N.I.N.A.
 
 ## Projects
 
@@ -58,8 +58,27 @@ The endpoint is plain HTTP, so the token can be read by anyone who can sniff the
 - **Diagnostics data.** Guider data comes from the internal guider's `IAdvancedGuider`, `IGuidingCoach` and `IGuideIncidentRecorder` contracts and reaches the tools as property bags (`PropertyBags`), so `NINA.Mcp` needs no reference to the DTOs; raw coach samples and per-frame star lists are left out unless asked for, incident images never leave pins. Coach reports and incidents stay readable while the guider is disconnected: the guider mediator only knows a connected device, so the adapter falls back to the internal guider singleton (`IAdvancedGuider` in `IoCBindings`). Other guiders only report state and RMS.
 - **Log.** `read_log` reads the current run's log file (the `.log` in `~/.local/share/NINA/Logs` this process holds open, found through `/proc/self/fd`, with the process id in the file name as fallback; systemd often reuses process ids across boots) or the previous run's (the newest other file), backwards from the end with a byte budget (32 MB), so it is cheap on a long night log. Levels, text and age filters apply while scanning; the result says how much was scanned.
 - **Planning.** `plan_targets` samples one observing night (local noon to noon, 5-minute steps, UTC stepping across DST) at the profile's site: target altitude and azimuth with NINA's SOFA transform (no refraction), sun and moon with NOVAS, the custom horizon at each azimuth. `NightPlanner` derives twilight, dark hours, transit, limit crossings (linear interpolation between samples), usable dark hours and the longest window; resolution is the sampling step.
+- **Catalog.** `find_targets` queries the sky atlas database (`DatabaseInteraction.GetDeepSkyObjects`) on the pins box, so coordinates are available without internet.
+- **Session and health.** `get_session_summary` aggregates the in-memory image history of this run (it starts empty after a restart). `get_system_health` reads `/proc`, `/sys`, `vcgencmd get_throttled` and `timedatectl` with a two-second timeout per command; every reading is optional, and the clock error is measured against a time the client passes.
+- **Shutdown.** `secure_observatory` stops the sequence, cancels all jobs and aborts the exposure before it starts its own job (so it cannot cancel itself), then stops guiding, parks, closes the dome only after the mount reported parked, closes the dust cover and optionally warms the camera. It claims no resource and has no sequence guard, but unlike `stop_all` it moves hardware and is therefore not available in read-only mode.
 - **Upstream merges.** The only edits to existing upstream files are one `ProjectReference` in `NINA/NINA.csproj` and the solution entries; the wiring lives in the pins-only `NINA/Program.cs`.
 
 ## Verification
 
 `NINA.Mcp.Test` covers `NINA.Mcp` completely through the fake observatory, including HTTP tests against a real Kestrel host. `NINA.Mcp.Adapter` is compiled with `NINA/NINA.csproj`; its behavior depends on real devices and is verified on hardware or with the device simulators.
+
+## Not Exposed Yet
+
+Candidates for later tools, with the NINA code that already does the work:
+
+- **Sequence safety for MCP-built targets.** `add_target` adds no meridian flip trigger, no unsafe trigger and no stop condition (dawn, altitude); `SequencerFactory.GetTrigger/GetCondition` with `MeridianFlipTrigger`, `TriggerOnUnsafe`, `SunAltitudeCondition`, `TimeCondition`, `AltitudeCondition`.
+- **Event feed.** No push from the server (JSON-only responses, GET returns 405) and finished jobs expire after an hour; mediator events (`SequenceFinished`, `IsSafeChanged`, `Disconnected`, `AfterMeridianFlip`, `ImageSaved`/`ImageSaveFailed`, `DownloadTimeout`, `GuidingStopped`, `IAdvancedGuider.AdvancedGuiderEvent`) could feed a long-polling `get_events`.
+- **Images.** Tool results are text only; an MCP image content of a stretched thumbnail (`IRenderedImage.GetThumbnail`) would let a multimodal client judge clouds, gradients and star shapes.
+- **Sequence editing** beyond `add_target`/`clear_targets`: remove, move, enable/disable, skip and change counts by path (the snapshot already addresses items by path), triggers such as `AutofocusAfterHFRIncreaseTrigger` and `CenterAfterDriftTrigger`.
+- **Guider control.** `IAdvancedGuider` settings, looping, star selection and dark library; `IGuidingCoach.StartCoach`/`ApplyCoachActions`; `IGuideIncidentRecorder.MarkIncident`.
+- **Meridian flip and dither** outside a sequence (`IMeridianFlipVMFactory`, `IGuiderMediator.Dither`).
+- **Flats** through the sequence items `AutoExposureFlat`, `AutoBrightnessFlat`, `TrainedFlatExposure`, `SkyFlat`.
+- **Profile settings** read/write with an allowlist (`IProfile` sections, filter focus offsets, meridian flip settings).
+- **Camera and focuser configuration** (readout mode, USB limit, dew heater, image type for darks and bias, relative focuser moves, temperature compensation).
+- **INDI diagnostics** (`INDIClient.GetMessages`, device snapshots) and device selection.
+- **Protocol**: `outputSchema`, prompts (start night, morning report), `notifications/cancelled`, resources, progress notifications over SSE.

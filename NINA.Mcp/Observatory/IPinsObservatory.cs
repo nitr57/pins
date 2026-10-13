@@ -178,6 +178,14 @@ public interface IPinsObservatory {
 
     /// <summary>Dome shutter, park, home, azimuth and slaving. <paramref name="azimuthDegrees"/> only for <see cref="DomeAction.SlewToAzimuth"/>.</summary>
     Task<OperationResult> ControlDomeAsync(DomeAction action, double? azimuthDegrees, CancellationToken cancellationToken);
+
+    // ----- Catalog and system -----
+
+    /// <summary>Searches NINA's offline deep sky catalog (the same database as the sky atlas).</summary>
+    Task<CatalogSearchResult> FindTargetsAsync(CatalogSearch search, CancellationToken cancellationToken);
+
+    /// <summary>Clock, disk, temperature, power and memory of the pins box. Fast: no hardware waits, external commands time out quickly.</summary>
+    SystemHealth GetSystemHealth();
 }
 
 public enum DeviceKind {
@@ -232,7 +240,10 @@ public sealed record ImageRecord(
     double? CameraTemperature,
     double? GuidingRmsArcsec,
     string? TargetName,
-    string? FilePath);
+    string? FilePath,
+    double? FwhmArcsec = null,
+    double? Eccentricity = null,
+    int? FocuserPosition = null);
 
 /// <summary>
 /// One exposure. Null gain/offset use the profile defaults, null binning keeps the camera's current binning, null filter
@@ -410,4 +421,100 @@ public enum DomeAction {
     SyncToMount,
     StartFollowing,
     StopFollowing
+}
+
+/// <summary>
+/// Catalog query. <see cref="Name"/> matches designations and common names (substring, case-insensitive: "M 42", "NGC 7000",
+/// "Orion"). <see cref="Types"/> are NINA's type codes (GALXY, BRTNB, PLNNB, OPNCL, GLOCL, DRKNB, SNREM, ...).
+/// <see cref="Order"/>: "name", "magnitude" (brightest first, objects without magnitude left out) or "size" (largest first).
+/// </summary>
+public sealed record CatalogSearch(
+    string? Name,
+    IReadOnlyList<string> Types,
+    string? Constellation,
+    double? MaxMagnitude,
+    double? MinSizeArcmin,
+    double? MaxSizeArcmin,
+    string Order,
+    int Limit);
+
+public sealed record CatalogSearchResult(bool Success, string Message, IReadOnlyList<CatalogObject> Objects);
+
+/// <summary>A catalog object. Coordinates J2000; sizes are the major and minor axis in arcmin; PA in degrees.</summary>
+public sealed record CatalogObject(
+    string Name,
+    IReadOnlyList<string> Aliases,
+    string? Type,
+    string? Constellation,
+    double RaHours,
+    double DecDegrees,
+    double? Magnitude,
+    double? SurfaceBrightness,
+    double? SizeArcmin,
+    double? SizeMinArcmin,
+    double? PositionAngleDegrees);
+
+/// <summary>
+/// Health of the pins box. Null members could not be read (not a Raspberry Pi, command missing). <see cref="Throttling"/>
+/// is the decoded <c>vcgencmd get_throttled</c> state (under-voltage, frequency capping, thermal throttling now and since boot).
+/// </summary>
+public sealed record SystemHealth(
+    DateTimeOffset LocalTime,
+    double? UptimeHours,
+    bool? ClockSynchronized,
+    DateTimeOffset? MountUtc,
+    DiskSpace? ImageDisk,
+    DiskSpace? AppDisk,
+    double? CpuTemperatureCelsius,
+    ThrottleState? Throttling,
+    double? MemoryAvailableMb,
+    double? MemoryTotalMb,
+    double? LoadAverage1m);
+
+/// <summary>Free space of the file system that holds <see cref="Path"/>.</summary>
+public sealed record DiskSpace(string Path, double FreeGb, double TotalGb);
+
+public sealed record ThrottleState(
+    string Raw,
+    bool UnderVoltageNow,
+    bool FrequencyCappedNow,
+    bool ThrottledNow,
+    bool SoftTemperatureLimitNow,
+    bool UnderVoltageSinceBoot,
+    bool FrequencyCappedSinceBoot,
+    bool ThrottledSinceBoot,
+    bool SoftTemperatureLimitSinceBoot) {
+
+    /// <summary>Decodes the hex value of <c>vcgencmd get_throttled</c> ("throttled=0x50005"); null when it is not one.</summary>
+    public static ThrottleState? Parse(string? output) {
+        if (string.IsNullOrWhiteSpace(output)) {
+            return null;
+        }
+
+        var text = output.Trim();
+        var equals = text.IndexOf('=');
+
+        if (equals >= 0) {
+            text = text[(equals + 1)..].Trim();
+        }
+
+        if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) {
+            text = text[2..];
+        }
+
+        if (!int.TryParse(text, System.Globalization.NumberStyles.HexNumber, System.Globalization.CultureInfo.InvariantCulture, out var bits)) {
+            return null;
+        }
+
+        return new ThrottleState(
+            output.Trim(),
+            (bits & 0x1) != 0,
+            (bits & 0x2) != 0,
+            (bits & 0x4) != 0,
+            (bits & 0x8) != 0,
+            (bits & 0x10000) != 0,
+            (bits & 0x20000) != 0,
+            (bits & 0x40000) != 0,
+            (bits & 0x80000) != 0);
+    }
 }

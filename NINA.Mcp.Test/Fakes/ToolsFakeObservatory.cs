@@ -56,6 +56,24 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
 
     public LogSource LogSource { get; set; } = new(null, "No log file in the fake.");
 
+    public CatalogSearchResult CatalogResult { get; set; } = new(
+        true,
+        "1 object",
+        [new CatalogObject("M 42", ["M 42", "NGC 1976", "Orion Nebula"], "BRTNB", "ORI", 5.5881, -5.3911, 4.0, null, 85, 60, null)]);
+
+    public SystemHealth Health { get; set; } = new(
+        new DateTimeOffset(2026, 10, 13, 21, 0, 0, TimeSpan.Zero),
+        5.5,
+        true,
+        null,
+        new DiskSpace("/home/pi/Pictures", 120, 230),
+        new DiskSpace("/home/pi/.local/share/NINA", 120, 230),
+        52.3,
+        ThrottleState.Parse("throttled=0x0"),
+        2048,
+        8064,
+        0.8);
+
     /// <summary>The night returned by GetNightSky; defaults to <see cref="ToolsNightSky.Create"/>.</summary>
     public Func<NightSkyRequest, NightSky> NightSkyFactory { get; set; } = request => ToolsNightSky.Create(request.Targets);
 
@@ -114,6 +132,8 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
     public (FlatDeviceAction Action, int? Brightness)? LastFlatDevice { get; private set; }
 
     public (DomeAction Action, double? Azimuth)? LastDome { get; private set; }
+
+    public CatalogSearch? LastCatalogSearch { get; private set; }
 
     /// <summary>Tokens handed to async members, for asserting that jobs run on their own token.</summary>
     public CancellationToken LastToken { get; private set; }
@@ -439,6 +459,19 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         LastDome = (action, azimuthDegrees);
 
         return OperateAsync("Dome", cancellationToken);
+    }
+
+    public Task<CatalogSearchResult> FindTargetsAsync(CatalogSearch search, CancellationToken cancellationToken) {
+        Record("FindTargets");
+        LastCatalogSearch = search;
+
+        return Task.FromResult(CatalogResult);
+    }
+
+    public SystemHealth GetSystemHealth() {
+        Record("GetSystemHealth");
+
+        return Health;
     }
 
     // ----- Helpers -----

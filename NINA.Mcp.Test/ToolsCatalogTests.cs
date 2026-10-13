@@ -26,10 +26,14 @@ public class ToolsCatalogTests {
         "get_guide_incident",
         "read_log",
         "plan_targets",
+        "find_targets",
+        "get_session_summary",
+        "get_system_health",
         "stop_all",
         "cancel_job",
         "stop_sequence",
         "stop_guiding",
+        "secure_observatory",
         "connect_device",
         "disconnect_device",
         "slew_mount",
@@ -71,7 +75,10 @@ public class ToolsCatalogTests {
         "list_guide_incidents",
         "get_guide_incident",
         "read_log",
-        "plan_targets"
+        "plan_targets",
+        "find_targets",
+        "get_session_summary",
+        "get_system_health"
     ];
 
     private static readonly string[] StopTools = ["stop_all", "cancel_job", "stop_sequence", "stop_guiding"];
@@ -100,7 +107,8 @@ public class ToolsCatalogTests {
         "center_target",
         "move_rotator",
         "control_flat_device",
-        "control_dome"
+        "control_dome",
+        "secure_observatory"
     ];
 
     private ToolsTestCatalog catalog = null!;
@@ -221,7 +229,7 @@ public class ToolsCatalogTests {
     [Test]
     public void Guards_MatchTheSpec() {
         string[] strict = ["load_sequence", "clear_targets", "start_sequence", "reset_sequence"];
-        string[] none = [.. QueryTools, "stop_all", "cancel_job", "stop_sequence", "save_sequence"];
+        string[] none = [.. QueryTools, "stop_all", "cancel_job", "stop_sequence", "save_sequence", "secure_observatory"];
 
         foreach (var tool in catalog.Tools.Cast<ObservatoryTool>()) {
             var expected = strict.Contains(tool.Name)

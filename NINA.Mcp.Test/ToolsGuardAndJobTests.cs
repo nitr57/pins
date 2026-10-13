@@ -59,6 +59,10 @@ public class ToolsGuardAndJobTests {
         new object[] { "list_guide_incidents", "{}" },
         new object[] { "get_guide_incident", """{"id":"20261013-213012-StarLost"}""" },
         new object[] { "plan_targets", """{"targets":[{"name":"M 31","ra":0.712,"dec":41.27}]}""" },
+        new object[] { "find_targets", """{"name":"M 42"}""" },
+        new object[] { "get_session_summary", "{}" },
+        new object[] { "get_system_health", "{}" },
+        new object[] { "secure_observatory", "{}" },
         new object[] { "stop_all", "{}" },
         new object[] { "stop_sequence", "{}" }
     ];

@@ -71,7 +71,8 @@ internal sealed class GetRecentImagesTool : ObservatoryTool {
     public override string Description =>
         "The newest entries of the image history (captures by the sequence and by capture_image), newest first: time, "
         + "image type, filter, exposure in seconds, HFR (half flux radius in pixels, lower is sharper), detected star count, "
-        + "mean/median/standard deviation in ADU, camera temperature in °C, guiding RMS in arcsec, target name and file path. "
+        + "mean/median/standard deviation in ADU, camera temperature in °C, guiding RMS in arcsec, target name and file path, "
+        + "and for saved frames FWHM in arcsec, eccentricity and the focuser position. get_session_summary aggregates them. "
         + "Use it to judge focus (rising HFR → run_autofocus), clouds (star count drops), and sequence progress.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Query;

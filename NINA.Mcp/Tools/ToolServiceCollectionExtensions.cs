@@ -30,12 +30,16 @@ public static class ToolServiceCollectionExtensions {
         Add(services, observatory => new GetGuideIncidentTool(observatory));
         Add(services, observatory => new ReadLogTool(observatory));
         Add(services, observatory => new PlanTargetsTool(observatory));
+        Add(services, observatory => new FindTargetsTool(observatory));
+        Add(services, observatory => new GetSessionSummaryTool(observatory));
+        Add(services, observatory => new GetSystemHealthTool(observatory));
 
         // Stop tools.
         Add(services, observatory => new StopAllTool(observatory));
         Add(services, observatory => new CancelJobTool(observatory));
         Add(services, observatory => new StopSequenceTool(observatory));
         Add(services, observatory => new StopGuidingTool(observatory));
+        Add(services, observatory => new SecureObservatoryTool(observatory));
 
         // Hardware.
         Add(services, observatory => new ConnectDeviceTool(observatory));
