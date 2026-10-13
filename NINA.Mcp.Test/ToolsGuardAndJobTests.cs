@@ -32,6 +32,11 @@ public class ToolsGuardAndJobTests {
         new object[] { "start_guiding", "{}" },
         new object[] { "stop_guiding", "{}" },
         new object[] { "set_switch", """{"index":0,"value":1}""" },
+        new object[] { "plate_solve", "{}" },
+        new object[] { "center_target", """{"ra":5,"dec":5}""" },
+        new object[] { "move_rotator", """{"position":90}""" },
+        new object[] { "control_flat_device", """{"action":"light_on"}""" },
+        new object[] { "control_dome", """{"action":"close_shutter"}""" },
         new object[] { "add_target", """{"name":"M 42","ra":5.5,"dec":-5.4,"exposures":[{"exposure_seconds":60,"count":10}]}""" }
     ];
 
@@ -49,6 +54,11 @@ public class ToolsGuardAndJobTests {
         new object[] { "list_saved_sequences", "{}" },
         new object[] { "list_target_templates", "{}" },
         new object[] { "list_jobs", "{}" },
+        new object[] { "get_guider_report", "{}" },
+        new object[] { "get_guiding_coach_report", "{}" },
+        new object[] { "list_guide_incidents", "{}" },
+        new object[] { "get_guide_incident", """{"id":"20261013-213012-StarLost"}""" },
+        new object[] { "plan_targets", """{"targets":[{"name":"M 31","ra":0.712,"dec":41.27}]}""" },
         new object[] { "stop_all", "{}" },
         new object[] { "stop_sequence", "{}" }
     ];

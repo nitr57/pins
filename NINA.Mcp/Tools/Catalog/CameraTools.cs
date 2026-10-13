@@ -22,7 +22,7 @@ internal sealed class CaptureImageTool : ObservatoryTool {
         + "analysed but not saved; save: true writes it like a normal LIGHT frame (the file path appears in get_recent_images "
         + "once it is written). Omitted gain/offset use the profile defaults; omitted binning keeps the camera's current "
         + "binning. Runs as a background job holding the camera and refused while a focuser move, filter change or mount "
-        + "job (slew, park, home) runs; the default wait covers short exposures, poll get_job for long ones. For many "
+        + "job (slew, park, home, centering), rotator move or flat device job runs; the default wait covers short exposures, poll get_job for long ones. For many "
         + "frames build a sequence with add_target instead.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
@@ -54,7 +54,7 @@ internal sealed class CaptureImageTool : ObservatoryTool {
             : string.Create(CultureInfo.InvariantCulture, $"Capture {request.ExposureSeconds:0.####} s ({filter})");
 
         var job = new JobRequest("capture", description, "camera") {
-            RequiresIdle = ["filter_wheel", "focuser", "mount"]
+            RequiresIdle = ["filter_wheel", "focuser", "mount", "rotator", "flat_device"]
         };
 
         return RunJobAsync(

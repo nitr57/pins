@@ -37,6 +37,28 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
 
     public AutofocusResult AutofocusResult { get; set; } = new(true, "Autofocus done", 12345, 2.1, "L", 8.5);
 
+    public PlateSolution Solution { get; set; } = new(5.5883, -5.391, 92.5, 1.21, false, 0.42, -12.3, 21.0, null, null);
+
+    public GuiderReport GuiderReport { get; set; } = new(
+        true,
+        "Internal Guider",
+        true,
+        "pins internal guider.",
+        new Dictionary<string, object?> { ["state"] = "Guiding", ["windowStats"] = new Dictionary<string, object?> { ["rmsTotalArcsec"] = 0.62 } },
+        [new Dictionary<string, object?> { ["codeName"] = "StarLost", ["severity"] = "Warning" }],
+        []);
+
+    public GuiderData CoachData { get; set; } = new(true, "Coach", new Dictionary<string, object?> { ["session"] = new Dictionary<string, object?> { ["phase"] = "Idle" } });
+
+    public GuiderData IncidentsData { get; set; } = new(true, "Incidents", new Dictionary<string, object?> { ["total"] = 0 });
+
+    public GuiderData IncidentData { get; set; } = new(true, "Incident", new Dictionary<string, object?> { ["id"] = "20261013-213012-StarLost" });
+
+    public LogSource LogSource { get; set; } = new(null, "No log file in the fake.");
+
+    /// <summary>The night returned by GetNightSky; defaults to <see cref="ToolsNightSky.Create"/>.</summary>
+    public Func<NightSkyRequest, NightSky> NightSkyFactory { get; set; } = request => ToolsNightSky.Create(request.Targets);
+
     // ----- Last arguments -----
 
     public (double Ra, double Dec)? LastSlew { get; private set; }
@@ -70,6 +92,28 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
     public (string Name, bool Overwrite)? LastSave { get; private set; }
 
     public bool? LastSkipValidation { get; private set; }
+
+    public bool? LastPlateSolveSync { get; private set; }
+
+    public (double Ra, double Dec)? LastCenter { get; private set; }
+
+    public (int Steps, int Alerts)? LastGuiderReport { get; private set; }
+
+    public (int History, bool Samples)? LastCoach { get; private set; }
+
+    public int? LastIncidentCount { get; private set; }
+
+    public (string Id, int Frames)? LastIncident { get; private set; }
+
+    public bool? LastLogPreviousRun { get; private set; }
+
+    public NightSkyRequest? LastNightSkyRequest { get; private set; }
+
+    public (double Degrees, bool Mechanical)? LastRotator { get; private set; }
+
+    public (FlatDeviceAction Action, int? Brightness)? LastFlatDevice { get; private set; }
+
+    public (DomeAction Action, double? Azimuth)? LastDome { get; private set; }
 
     /// <summary>Tokens handed to async members, for asserting that jobs run on their own token.</summary>
     public CancellationToken LastToken { get; private set; }
@@ -319,6 +363,82 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
 
     public OperationResult ResetSequence() {
         return Operate("ResetSequence");
+    }
+
+    public async Task<PlateSolveOutcome> PlateSolveAsync(bool sync, CancellationToken cancellationToken) {
+        LastPlateSolveSync = sync;
+
+        var result = await OperateAsync("PlateSolve", cancellationToken);
+
+        return new PlateSolveOutcome(result.Success, result.Message, Solution);
+    }
+
+    public async Task<PlateSolveOutcome> CenterAsync(double raHours, double decDegrees, CancellationToken cancellationToken) {
+        LastCenter = (raHours, decDegrees);
+
+        var result = await OperateAsync("Center", cancellationToken);
+
+        return new PlateSolveOutcome(result.Success, result.Message, Solution);
+    }
+
+    public GuiderReport GetGuiderReport(int maxSteps, int maxAlerts) {
+        Record("GetGuiderReport");
+        LastGuiderReport = (maxSteps, maxAlerts);
+
+        return GuiderReport;
+    }
+
+    public GuiderData GetCoachReport(int maxHistory, bool includeSamples) {
+        Record("GetCoachReport");
+        LastCoach = (maxHistory, includeSamples);
+
+        return CoachData;
+    }
+
+    public GuiderData GetGuideIncidents(int maxCount) {
+        Record("GetGuideIncidents");
+        LastIncidentCount = maxCount;
+
+        return IncidentsData;
+    }
+
+    public GuiderData GetGuideIncident(string id, int maxFrames) {
+        Record("GetGuideIncident");
+        LastIncident = (id, maxFrames);
+
+        return IncidentData;
+    }
+
+    public LogSource GetLogSource(bool previousRun) {
+        Record("GetLogSource");
+        LastLogPreviousRun = previousRun;
+
+        return LogSource;
+    }
+
+    public NightSky GetNightSky(NightSkyRequest request) {
+        Record("GetNightSky");
+        LastNightSkyRequest = request;
+
+        return NightSkyFactory(request);
+    }
+
+    public Task<OperationResult> MoveRotatorAsync(double degrees, bool mechanical, CancellationToken cancellationToken) {
+        LastRotator = (degrees, mechanical);
+
+        return OperateAsync("MoveRotator", cancellationToken);
+    }
+
+    public Task<OperationResult> ControlFlatDeviceAsync(FlatDeviceAction action, int? brightness, CancellationToken cancellationToken) {
+        LastFlatDevice = (action, brightness);
+
+        return OperateAsync("FlatDevice", cancellationToken);
+    }
+
+    public Task<OperationResult> ControlDomeAsync(DomeAction action, double? azimuthDegrees, CancellationToken cancellationToken) {
+        LastDome = (action, azimuthDegrees);
+
+        return OperateAsync("Dome", cancellationToken);
     }
 
     // ----- Helpers -----

@@ -24,6 +24,12 @@ public static class ToolServiceCollectionExtensions {
         Add(services, observatory => new ListTargetTemplatesTool(observatory));
         Add(services, observatory => new GetJobTool(observatory));
         Add(services, observatory => new ListJobsTool(observatory));
+        Add(services, observatory => new GetGuiderReportTool(observatory));
+        Add(services, observatory => new GetCoachReportTool(observatory));
+        Add(services, observatory => new ListGuideIncidentsTool(observatory));
+        Add(services, observatory => new GetGuideIncidentTool(observatory));
+        Add(services, observatory => new ReadLogTool(observatory));
+        Add(services, observatory => new PlanTargetsTool(observatory));
 
         // Stop tools.
         Add(services, observatory => new StopAllTool(observatory));
@@ -47,6 +53,11 @@ public static class ToolServiceCollectionExtensions {
         Add(services, observatory => new ChangeFilterTool(observatory));
         Add(services, observatory => new StartGuidingTool(observatory));
         Add(services, observatory => new SetSwitchTool(observatory));
+        Add(services, observatory => new PlateSolveTool(observatory));
+        Add(services, observatory => new CenterTargetTool(observatory));
+        Add(services, observatory => new MoveRotatorTool(observatory));
+        Add(services, observatory => new ControlFlatDeviceTool(observatory));
+        Add(services, observatory => new ControlDomeTool(observatory));
 
         // Advanced sequence.
         Add(services, observatory => new LoadSequenceTool(observatory));

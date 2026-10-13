@@ -4,9 +4,11 @@ using NINA.Core.Model;
 using NINA.Core.Model.Equipment;
 using NINA.Core.Utility;
 using NINA.Core.Utility.WindowService;
+using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Mcp.Adapter.Sequence;
 using NINA.Mcp.Observatory;
+using NINA.PlateSolving.Interfaces;
 using NINA.Profile.Interfaces;
 using NINA.WPF.Base.Interfaces;
 using NINA.WPF.Base.Interfaces.Mediator;
@@ -47,6 +49,8 @@ public sealed partial class NinaObservatory : IPinsObservatory {
     private readonly IWindowServiceFactory windowServiceFactory;
     private readonly IApplicationStatusMediator applicationStatusMediator;
     private readonly IProfileService profileService;
+    private readonly IPlateSolverFactory plateSolverFactory;
+    private readonly IDomeFollower domeFollower;
 
     private readonly NinaSequenceService sequence;
 
@@ -74,6 +78,8 @@ public sealed partial class NinaObservatory : IPinsObservatory {
             IWindowServiceFactory windowServiceFactory,
             IApplicationStatusMediator applicationStatusMediator,
             IProfileService profileService,
+            IPlateSolverFactory plateSolverFactory,
+            IDomeFollower domeFollower,
             NinaSequenceService sequence) {
         this.cameraMediator = cameraMediator ?? throw new ArgumentNullException(nameof(cameraMediator));
         this.telescopeMediator = telescopeMediator ?? throw new ArgumentNullException(nameof(telescopeMediator));
@@ -93,6 +99,8 @@ public sealed partial class NinaObservatory : IPinsObservatory {
         this.windowServiceFactory = windowServiceFactory ?? throw new ArgumentNullException(nameof(windowServiceFactory));
         this.applicationStatusMediator = applicationStatusMediator ?? throw new ArgumentNullException(nameof(applicationStatusMediator));
         this.profileService = profileService ?? throw new ArgumentNullException(nameof(profileService));
+        this.plateSolverFactory = plateSolverFactory ?? throw new ArgumentNullException(nameof(plateSolverFactory));
+        this.domeFollower = domeFollower ?? throw new ArgumentNullException(nameof(domeFollower));
         this.sequence = sequence ?? throw new ArgumentNullException(nameof(sequence));
     }
 
