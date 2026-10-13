@@ -77,6 +77,7 @@ public class ToolsDiagnosticsTests {
     [Test]
     public async Task CenterTarget_RefusedWhileCaptureRuns_AndCaptureRefusedWhileCentering() {
         catalog.Observatory.Block("Capture");
+
         await catalog.CallAsync("capture_image", """{"exposure_seconds":30,"wait_seconds":0}""");
 
         var refused = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("center_target", """{"ra":1,"dec":1}"""));
@@ -87,15 +88,29 @@ public class ToolsDiagnosticsTests {
         await WaitIdleAsync();
 
         catalog.Observatory.Block("Center");
-        await catalog.CallAsync("center_target", """{"ra":1,"dec":1,"wait_seconds":0}""");
 
+        await catalog.CallAsync("center_target", """{"ra":1,"dec":1,"wait_seconds":0}""");
+        await catalog.Observatory.WaitForCallAsync("Center");
+
+        // The job holds the mount and reserves camera, guider and filter wheel until it ends.
         var capture = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("capture_image", """{"exposure_seconds":1}"""));
         var solve = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("plate_solve"));
+        var focuser = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("move_focuser", """{"position":100}"""));
+        var filter = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("change_filter", """{"name":"L"}"""));
+        var guiding = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("start_guiding"));
+        var slew = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("slew_mount", """{"ra":2,"dec":2}"""));
 
-        Assert.That(capture!.Resource, Is.EqualTo("mount"));
-        Assert.That(solve!.Resource, Is.EqualTo("mount"));
+        Assert.That(capture!.Resource, Is.EqualTo("camera"));
+        Assert.That(solve!.Resource, Is.EqualTo("camera"));
+        Assert.That(focuser!.Resource, Is.EqualTo("camera"));
+        Assert.That(filter!.Resource, Is.EqualTo("filter_wheel"));
+        Assert.That(guiding!.Resource, Is.EqualTo("guider"));
+        Assert.That(slew!.Resource, Is.EqualTo("mount"));
 
         catalog.Observatory.Release("Center");
+        await WaitIdleAsync();
+
+        Assert.That((await catalog.CallAsync("move_focuser", """{"position":100}""")).IsError, Is.False, "the reservation ends with the job");
     }
 
     // ----- Guider diagnostics -----
@@ -208,6 +223,12 @@ public class ToolsDiagnosticsTests {
         Assert.That(plain.Source, Is.Null);
         Assert.That(plain.Message, Is.EqualTo("plain message"));
 
+        // Logger.Error(Exception) writes no message field; the exception follows on the next lines.
+        Assert.That(PinsLogReader.TryParseLine("2026-10-13T22:59:01.1234|ERROR|Center.cs|DoCenter|142", out var bare), Is.True);
+        Assert.That(bare.Source, Is.EqualTo("Center.cs"));
+        Assert.That(bare.Line, Is.EqualTo(142));
+        Assert.That(bare.Message, Is.Empty);
+
         Assert.That(PinsLogReader.TryParseLine("DATE|LEVEL|SOURCE|MEMBER|LINE|MESSAGE", out _), Is.False);
         Assert.That(PinsLogReader.TryParseLine("   at NINA.Foo.Bar()", out _), Is.False);
         Assert.That(PinsLogReader.TryParseLine("2026-10-13T22:59:01.1234|NOISE|x|y|1|z", out _), Is.False);
@@ -235,6 +256,21 @@ public class ToolsDiagnosticsTests {
         Assert.That(all.Entries.Select(entry => entry.Message), Is.EqualTo(new[] { "Sequence started", "Platesolve failed", "Item skipped" }));
         Assert.That(all.ReachedStart, Is.True);
         Assert.That(all.Entries[0].Detail, Is.Null);
+    }
+
+    [Test]
+    public void LogReader_LongStackTraceKeepsItsTop() {
+        var log = new StringBuilder("2026-10-13T21:05:00.0000|ERROR|Center.cs|DoCenter|2\n")
+            .Append("System.InvalidOperationException: the solver crashed\n");
+
+        for (var i = 0; i < 200; i++) {
+            log.Append(CultureInfo.InvariantCulture, $"   at Frame{i}()\n");
+        }
+
+        var entry = Read(log.ToString(), new PinsLogQuery(10, PinsLogLevel.Error)).Entries.Single();
+
+        Assert.That(entry.Detail, Does.StartWith("System.InvalidOperationException: the solver crashed\n   at Frame0()"));
+        Assert.That(entry.Detail, Does.Not.Contain("Frame199"));
     }
 
     [Test]
@@ -371,7 +407,7 @@ public class ToolsDiagnosticsTests {
         Assert.That(target["usableDarkHours"]!.GetValue<double>(), Is.EqualTo(10.46).Within(0.1));
         AssertTime(target["bestWindow"]!["from"], 18, 46);
         Assert.That(target["bestWindow"]!["minMoonSeparation"]!.GetValue<double>(), Is.EqualTo(90));
-        Assert.That(target["now"]!["aboveLimit"]!.GetValue<bool>(), Is.True);
+        Assert.That(target["now"]!["aboveMinAltitude"]!.GetValue<bool>(), Is.True);
         Assert.That(plan["hourly"], Is.Null);
     }
 
@@ -455,6 +491,7 @@ public class ToolsDiagnosticsTests {
     [Test]
     public async Task RotatorAndCaptureExcludeEachOther() {
         catalog.Observatory.Block("MoveRotator");
+
         await catalog.CallAsync("move_rotator", """{"position":10,"wait_seconds":0}""");
 
         var capture = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("capture_image", """{"exposure_seconds":1}"""));
@@ -465,6 +502,7 @@ public class ToolsDiagnosticsTests {
         await WaitIdleAsync();
 
         catalog.Observatory.Block("Capture");
+
         await catalog.CallAsync("capture_image", """{"exposure_seconds":30,"wait_seconds":0}""");
 
         var rotator = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("move_rotator", """{"position":10}"""));

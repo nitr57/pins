@@ -112,7 +112,7 @@ internal static class NightPlanner {
 
         // The limit at each sample: the altitude limit or the custom horizon, whichever is higher.
         var limit = Enumerable.Range(0, count)
-            .Select(i => Math.Max(minAltitude, target.HorizonAltitude.Count > i ? target.HorizonAltitude[i] ?? double.NegativeInfinity : double.NegativeInfinity))
+            .Select(i => Math.Max(minAltitude, HorizonAt(target, i)))
             .ToArray();
 
         var above = Enumerable.Range(0, count).Select(i => target.Altitude[i] > limit[i]).ToArray();
@@ -125,14 +125,16 @@ internal static class NightPlanner {
         var rises = Crossings(sky, i => target.Altitude[i] - limit[i]).FirstOrDefault(crossing => crossing.Rising);
         var sets = Crossings(sky, i => target.Altitude[i] - limit[i]).FirstOrDefault(crossing => !crossing.Rising);
 
-        double? minSeparation = best is null
+        var minSeparation = best is null
             ? null
             : Round(Enumerable.Range(best.Value.Start, best.Value.End - best.Value.Start + 1).Min(i => target.MoonSeparation[i]), 1);
 
         var notes = new List<string>();
 
-        if (count > 0 && target.Altitude.Max() <= minAltitude) {
-            notes.Add(string.Create(CultureInfo.InvariantCulture, $"Never above {minAltitude:0.#}° this night (highest {target.Altitude.Max():0.#}°)."));
+        if (count > 0 && !above.Any(value => value)) {
+            notes.Add(target.Altitude.Max() <= minAltitude
+                ? string.Create(CultureInfo.InvariantCulture, $"Never above {minAltitude:0.#}° this night (highest {target.Altitude.Max():0.#}°).")
+                : string.Create(CultureInfo.InvariantCulture, $"Never above the custom horizon this night (highest {target.Altitude.Max():0.#}°)."));
         } else if (count > 0 && above.All(value => value)) {
             notes.Add("Above the limit all night (circumpolar at this limit).");
         }
@@ -148,7 +150,7 @@ internal static class NightPlanner {
             now = new {
                 altitude = Round(target.AltitudeNow, 1),
                 azimuth = Round(target.AzimuthNow, 1),
-                aboveLimit = target.AltitudeNow > minAltitude
+                aboveMinAltitude = target.AltitudeNow > minAltitude
             },
             transit = count == 0
                 ? null
@@ -288,7 +290,17 @@ internal static class NightPlanner {
         return Format(crossing.Time);
     }
 
-    private static double Round(double value, int digits) {
-        return double.IsFinite(value) ? Math.Round(value, digits, MidpointRounding.AwayFromZero) : 0;
+    /// <summary>Rounded for the model; null for NaN and infinities (e.g. a moon position that could not be computed).</summary>
+    private static double? Round(double value, int digits) {
+        return double.IsFinite(value) ? Math.Round(value, digits, MidpointRounding.AwayFromZero) : null;
+    }
+
+    /// <summary>The custom horizon at sample <paramref name="index"/>; minus infinity without a custom horizon.</summary>
+    private static double HorizonAt(TargetSky target, int index) {
+        if (target.HorizonAltitude.Count <= index) {
+            return double.NegativeInfinity;
+        }
+
+        return target.HorizonAltitude[index] ?? double.NegativeInfinity;
     }
 }

@@ -72,6 +72,12 @@ public static class PinsLogReader {
 
     private const int MaxDetailLines = 60;
 
+    /// <summary>
+    /// Longest line kept while reading backwards; the start of a longer line is kept (its header and the first part of the
+    /// message), so a huge line costs bounded copying instead of being re-copied with every chunk.
+    /// </summary>
+    private const int MaxLineBytes = 64 * 1024;
+
     private static readonly string[] TimeFormats = [
         "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF",
         "yyyy-MM-dd'T'HH:mm:ss"
@@ -103,7 +109,8 @@ public static class PinsLogReader {
         while (position > 0 && !collector.Done && length - position < budget) {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var count = (int)Math.Min(ChunkSize, position);
+            var remaining = budget - (length - position);
+            var count = (int)Math.Min(ChunkSize, Math.Min(position, remaining));
             position -= count;
 
             stream.Seek(position, SeekOrigin.Begin);
@@ -124,7 +131,8 @@ public static class PinsLogReader {
                 end = i;
             }
 
-            pending = data[..end];
+            // The bytes before the first newline belong to a line that starts in an earlier chunk.
+            pending = data[..Math.Min(end, MaxLineBytes)];
         }
 
         // The first line of the file has no newline before it.
@@ -170,11 +178,12 @@ public static class PinsLogReader {
         int? lineNumber = null;
         string message;
 
-        if (parts.Length == 6 && int.TryParse(parts[4], NumberStyles.None, CultureInfo.InvariantCulture, out var number)) {
+        // Logger.Error(Exception) writes "time|ERROR|source|member|line" without a message; the exception follows.
+        if (parts.Length >= 5 && int.TryParse(parts[4], NumberStyles.None, CultureInfo.InvariantCulture, out var number)) {
             source = parts[2];
             member = parts[3];
             lineNumber = number;
-            message = parts[5];
+            message = parts.Length == 6 ? parts[5] : string.Empty;
         } else {
             message = string.Join('|', parts.Skip(2));
         }
@@ -256,7 +265,12 @@ public static class PinsLogReader {
             }
 
             if (!TryParseLine(line, out var entry)) {
-                if (line.Length > 0 && continuation.Count < MaxDetailLines) {
+                if (line.Length > 0) {
+                    // Collected newest first: drop the bottom of a long stack trace, keep its top (the exception message).
+                    if (continuation.Count == MaxDetailLines) {
+                        continuation.RemoveAt(0);
+                    }
+
                     continuation.Add(line);
                 }
 

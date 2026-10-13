@@ -86,8 +86,8 @@ public sealed partial class NinaObservatory {
                     azimuth.Add(az);
                     horizonAltitude.Add(horizon?.GetAltitude(az));
 
-                    // Moon in apparent (JNOW) coordinates; the operator transforms the target to that epoch.
-                    separation.Add((moonCoordinates[index] - coordinates).Distance.Degree);
+                    // The moon is in apparent coordinates of the sample time: compare with the target precessed to that time.
+                    separation.Add((moonCoordinates[index] - coordinates.Transform(Epoch.JNOW, time)).Distance.Degree);
                     index++;
                 }
 

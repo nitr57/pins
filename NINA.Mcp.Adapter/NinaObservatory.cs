@@ -51,6 +51,7 @@ public sealed partial class NinaObservatory : IPinsObservatory {
     private readonly IProfileService profileService;
     private readonly IPlateSolverFactory plateSolverFactory;
     private readonly IDomeFollower domeFollower;
+    private readonly IAdvancedGuider internalGuider;
 
     private readonly NinaSequenceService sequence;
 
@@ -80,6 +81,7 @@ public sealed partial class NinaObservatory : IPinsObservatory {
             IProfileService profileService,
             IPlateSolverFactory plateSolverFactory,
             IDomeFollower domeFollower,
+            IAdvancedGuider internalGuider,
             NinaSequenceService sequence) {
         this.cameraMediator = cameraMediator ?? throw new ArgumentNullException(nameof(cameraMediator));
         this.telescopeMediator = telescopeMediator ?? throw new ArgumentNullException(nameof(telescopeMediator));
@@ -101,6 +103,7 @@ public sealed partial class NinaObservatory : IPinsObservatory {
         this.profileService = profileService ?? throw new ArgumentNullException(nameof(profileService));
         this.plateSolverFactory = plateSolverFactory ?? throw new ArgumentNullException(nameof(plateSolverFactory));
         this.domeFollower = domeFollower ?? throw new ArgumentNullException(nameof(domeFollower));
+        this.internalGuider = internalGuider ?? throw new ArgumentNullException(nameof(internalGuider));
         this.sequence = sequence ?? throw new ArgumentNullException(nameof(sequence));
     }
 

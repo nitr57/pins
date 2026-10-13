@@ -18,8 +18,10 @@ namespace NINA.Mcp.Observatory;
 /// Rules: public readable instance properties become camelCase keys; dictionary keys are kept as they are. NaN and
 /// infinities become null, enums and <see cref="Guid"/>s strings, <see cref="DateTime"/>s ISO 8601 strings (an
 /// unspecified kind is taken as UTC, as the guider DTOs document), <see cref="TimeSpan"/>s seconds. Properties named in
-/// <c>exclude</c> (case-insensitive, at every level) are left out, lists are cut to <c>maxItems</c> entries and objects
-/// deeper than <c>maxDepth</c> become null.
+/// <c>exclude</c> (case-insensitive, at every level) are left out; dictionary keys are data and never excluded. Lists and
+/// dictionaries are cut to <c>maxItems</c> entries, objects deeper than <c>maxDepth</c> become null, and an object that
+/// contains itself (a cycle) is null where it repeats. Properties whose getter throws, and span-like properties, are
+/// skipped.
 /// </remarks>
 public static class PropertyBags {
 
@@ -116,24 +118,41 @@ public static class PropertyBags {
             return null;
         }
 
-        if (value is IDictionary dictionary) {
-            return ConvertDictionary(dictionary, options, depth);
+        // Only reference types can form cycles; a boxed struct is a fresh copy every time.
+        var tracked = !value.GetType().IsValueType;
+
+        if (tracked && !options.Enter(value)) {
+            return null;
         }
 
-        if (value is IEnumerable sequence) {
-            return ConvertSequence(sequence, options, depth);
-        }
+        try {
+            if (value is IDictionary dictionary) {
+                return ConvertDictionary(dictionary, options, depth);
+            }
 
-        return ConvertObject(value, options, depth);
+            if (value is IEnumerable sequence) {
+                return ConvertSequence(sequence, options, depth);
+            }
+
+            return ConvertObject(value, options, depth);
+        } finally {
+            if (tracked) {
+                options.Leave(value);
+            }
+        }
     }
 
     private static Dictionary<string, object?> ConvertDictionary(IDictionary dictionary, Options options, int depth) {
         var bag = new Dictionary<string, object?>(StringComparer.Ordinal);
 
         foreach (DictionaryEntry entry in dictionary) {
+            if (bag.Count >= options.MaxItems) {
+                break;
+            }
+
             var key = System.Convert.ToString(entry.Key, CultureInfo.InvariantCulture);
 
-            if (string.IsNullOrEmpty(key) || options.IsExcluded(key)) {
+            if (string.IsNullOrEmpty(key)) {
                 continue;
             }
 
@@ -169,7 +188,7 @@ public static class PropertyBags {
 
             try {
                 propertyValue = property.GetValue(value);
-            } catch (TargetInvocationException) {
+            } catch (Exception ex) when (ex is TargetInvocationException or NotSupportedException or InvalidOperationException) {
                 continue;
             }
 
@@ -184,7 +203,9 @@ public static class PropertyBags {
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             .Where(property => property.CanRead
                 && property.GetIndexParameters().Length == 0
-                && property.GetMethod is { IsPublic: true })
+                && property.GetMethod is { IsPublic: true }
+                && !property.PropertyType.IsByRefLike
+                && !property.PropertyType.IsPointer)
             .ToArray();
     }
 
@@ -201,6 +222,7 @@ public static class PropertyBags {
     private sealed class Options {
 
         private readonly HashSet<string> excluded;
+        private readonly HashSet<object> path = new(ReferenceEqualityComparer.Instance);
 
         public Options(IReadOnlyCollection<string>? exclude, int maxDepth, int maxItems) {
             excluded = exclude is null
@@ -216,6 +238,15 @@ public static class PropertyBags {
 
         public bool IsExcluded(string name) {
             return excluded.Contains(name);
+        }
+
+        /// <summary>Marks <paramref name="value"/> as being converted; false when it already is (a cycle).</summary>
+        public bool Enter(object value) {
+            return path.Add(value);
+        }
+
+        public void Leave(object value) {
+            path.Remove(value);
         }
     }
 }

@@ -17,7 +17,8 @@ internal sealed class StartGuidingTool : ObservatoryTool {
     public override string Description =>
         "Starts autoguiding with the connected guider (selects a guide star, calibrates if needed, then guides). The mount "
         + "must track. Calibration can take a few minutes, so this may return a running job: poll get_job. Afterwards watch "
-        + "guider state and RMS (arcsec) in get_status. A sequence built with add_target starts guiding by itself.";
+        + "guider state and RMS (arcsec) in get_status; get_guider_report has the details. Refused while a mount job (slew, "
+        + "park, home, centering) runs. A sequence built with add_target starts guiding by itself.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -40,7 +41,9 @@ internal sealed class StartGuidingTool : ObservatoryTool {
         return RunJobAsync(
             arguments,
             context,
-            new JobRequest("guide_start", description, "guider"),
+            new JobRequest("guide_start", description, "guider") {
+                RequiresIdle = ["mount"]
+            },
             async token => JobPayload.ToOutcome(await Observatory.StartGuidingAsync(forceCalibration, token).ConfigureAwait(false)),
             cancellationToken);
     }

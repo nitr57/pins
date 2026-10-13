@@ -10,6 +10,9 @@ internal sealed class ReadLogTool : ObservatoryTool {
 
     private static readonly IReadOnlyList<string> Levels = ["trace", "debug", "info", "warning", "error"];
 
+    /// <summary>Characters of message and detail text in one result: keeps a 500-entry answer within a model's reach.</summary>
+    internal const int MaxResultCharacters = 120_000;
+
     public ReadLogTool(IPinsObservatory observatory) : base(observatory) {
     }
 
@@ -66,7 +69,27 @@ internal sealed class ReadLogTool : ObservatoryTool {
             return ToolCallResult.Error($"The log file {Path.GetFileName(source.FilePath)} could not be read: {ex.Message}");
         }
 
-        var entries = result.Entries
+        // Newest entries win when the text budget runs out.
+        var kept = new List<PinsLogEntry>();
+        var characters = 0;
+
+        for (var i = result.Entries.Count - 1; i >= 0; i--) {
+            var entry = result.Entries[i];
+
+            characters += entry.Message.Length + (entry.Detail?.Length ?? 0);
+
+            if (characters > MaxResultCharacters && kept.Count > 0) {
+                break;
+            }
+
+            kept.Add(entry);
+        }
+
+        kept.Reverse();
+
+        var droppedForSize = result.Entries.Count - kept.Count;
+
+        var entries = kept
             .Select(entry => new {
                 time = entry.Time,
                 level = entry.Level,
@@ -89,7 +112,10 @@ internal sealed class ReadLogTool : ObservatoryTool {
                 scannedBytes = result.ScannedBytes,
                 fileBytes = result.FileBytes
             },
-            next = Next(result, entries.Count, lines)
+            droppedForSize = droppedForSize > 0 ? droppedForSize : (int?)null,
+            next = droppedForSize > 0
+                ? $"{droppedForSize} older matching entries were left out to keep the answer small: narrow with contains or since_minutes."
+                : Next(result, entries.Count, lines)
         };
 
         return ToolCallResult.Json(payload);

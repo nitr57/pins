@@ -170,23 +170,26 @@ public sealed partial class NinaObservatory {
     }
 
     /// <summary>
-    /// The guider device as <typeparamref name="T"/>. Stored coach reports and incidents stay readable while the guider is
-    /// disconnected (the morning after), so only the selected device's type is checked, not the connection.
+    /// The connected guider as <typeparamref name="T"/>, otherwise the internal guider singleton
+    /// (<c>IoCBindings</c> registers one <c>InternalGuider</c> as <see cref="IAdvancedGuider"/>). The mediator only knows a
+    /// device while it is connected, but stored coach reports and incidents must stay readable the morning after, when the
+    /// guider is disconnected; the internal guider reads them from its stores without a connection.
     /// </summary>
     private bool TryGetGuiderFeature<T>(string feature, out T guider, out GuiderData unavailable) where T : class {
         guider = null!;
         unavailable = null!;
 
-        var device = guiderMediator.GetDevice();
-
-        if (device is T typed) {
-            guider = typed;
+        if (guiderMediator.GetDevice() is T connected) {
+            guider = connected;
             return true;
         }
 
-        unavailable = GuiderData.Unavailable(device == null
-            ? $"{feature} {NeedsInternalGuider} No guider is selected."
-            : $"{feature} {NeedsInternalGuider}");
+        if (internalGuider is T stored) {
+            guider = stored;
+            return true;
+        }
+
+        unavailable = GuiderData.Unavailable($"{feature} {NeedsInternalGuider}");
 
         return false;
     }

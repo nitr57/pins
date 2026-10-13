@@ -22,8 +22,8 @@ internal sealed class MoveRotatorTool : ObservatoryTool {
         + "uses it after a plate solve synced the rotator (plate_solve with sync, center_target); before any sync it equals "
         + "the mechanical position. mechanical: true moves to the mechanical position of the device instead. NINA may adjust "
         + "the target to the rotator's allowed range (the result reports where it ended). Runs as a background job holding "
-        + "the rotator; refused while a capture or autofocus job runs, because rotating smears an exposure. get_status shows "
-        + "the current position.";
+        + "the rotator; refused while a capture, plate solve, centering or autofocus job runs, because rotating smears an "
+        + "exposure. A sky position angle needs a synced rotator. get_status shows the current position.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -78,7 +78,7 @@ internal sealed class ControlFlatDeviceTool : ObservatoryTool {
         + "brightness (in the device's own units; get_status lists brightness, minBrightness and maxBrightness, and coverState "
         + "and lightOn where the device supports them). Typical flats: close the cover, set the brightness, switch the light "
         + "on, then take test exposures with capture_image; open the cover again before imaging the sky. Runs as a background "
-        + "job holding the flat device; refused while a capture or autofocus job runs.";
+        + "job holding the flat device; refused while a capture, plate solve, centering or autofocus job runs.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -157,9 +157,11 @@ internal sealed class ControlDomeTool : ObservatoryTool {
         + "degrees from north through east), sync_to_mount (turn the slit to where the telescope points once), "
         + "start_following / stop_following (keep the slit on the telescope as it moves). Opening exposes the telescope to the "
         + "weather and closing can hit a telescope pointing low: check get_status (dome shutter, mount position, weather and "
-        + "safety_monitor) and confirm with the user. Closing is not blocked by other jobs, so it stays possible in bad weather. "
-        + "Runs as a background job holding the dome; shutters can take minutes, poll get_job. Not every dome supports every "
-        + "action.";
+        + "safety_monitor) and confirm with the user. Other jobs do not block it, so closing stays possible in bad weather; "
+        + "while the advanced sequence runs it needs force like every hardware tool. If the profile parks the mount before "
+        + "shutter moves, NINA parks it as part of open_shutter and close_shutter. Runs as a background job holding the dome; "
+        + "shutters can take minutes, poll get_job; cancel_job stops the dome. Not every dome supports every action; roll-off "
+        + "roofs that open by unparking are not covered.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 

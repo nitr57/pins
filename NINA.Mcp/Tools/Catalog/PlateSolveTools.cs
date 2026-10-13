@@ -24,7 +24,7 @@ internal sealed class PlateSolveTool : ObservatoryTool {
         + "reports (errorArcmin, raErrorArcsec, decErrorArcsec). Without a connected mount the solver searches blind. With "
         + "sync: true the mount (and a connected rotator) is synced to the solution, which corrects its pointing. Does not "
         + "move the mount; use center_target to slew onto coordinates. Runs as a background job holding the camera; refused "
-        + "while a mount, focuser or filter wheel job runs. Solving can take a minute: poll get_job.";
+        + "while a mount, focuser, filter wheel, rotator or flat device job runs. Solving can take a minute: poll get_job.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -64,6 +64,12 @@ internal sealed class CenterTargetTool : ObservatoryTool {
     /// <summary>Centering exposes, changes the filter and stops guiding; it needs all of them free.</summary>
     internal static readonly string[] CenterRequiresIdle = ["camera", "guider", "filter_wheel", "focuser", "rotator", "flat_device"];
 
+    /// <summary>
+    /// Held besides the mount for the whole job (a job claims one resource): no capture, filter change, focuser,
+    /// rotator or flat device move and no guiding start can sneak in between the centering exposures.
+    /// </summary>
+    internal static readonly string[] CenterReserves = ["camera", "guider", "filter_wheel"];
+
     public CenterTargetTool(IPinsObservatory observatory) : base(observatory) {
     }
 
@@ -77,9 +83,9 @@ internal sealed class CenterTargetTool : ObservatoryTool {
         + "is within the profile's centering threshold (at most 10 rounds). Uses the profile's plate solve settings. Guiding "
         + "is stopped first and restarted afterwards when it was running. The mount must be connected and unparked; the "
         + "camera connected. Moves the telescope: make sure the user expects it. outcome.data holds the last solution and its "
-        + "remaining error from the target. Runs as a background job holding the mount; refused while a capture, autofocus, "
-        + "filter change or guiding start job runs. Takes one to several minutes: poll get_job. Stop it with cancel_job or "
-        + "stop_all.";
+        + "remaining error from the target. Runs as a background job holding the mount, and also the camera, guider and filter "
+        + "wheel until it ends; refused while a capture, plate solve, autofocus, filter change, focuser, rotator, flat device or "
+        + "guiding start job runs. Takes one to several minutes: poll get_job. Stop it with cancel_job or stop_all.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -104,7 +110,12 @@ internal sealed class CenterTargetTool : ObservatoryTool {
             arguments,
             context,
             request,
-            async token => PlateSolveTool.ToOutcome(await Observatory.CenterAsync(ra, dec, token).ConfigureAwait(false)),
+            async token => {
+                // Checked idle atomically with the claim above; a job that grabbed one of them in between fails this one.
+                using var reservation = context.Jobs.Reserve(CenterReserves, description);
+
+                return PlateSolveTool.ToOutcome(await Observatory.CenterAsync(ra, dec, token).ConfigureAwait(false));
+            },
             cancellationToken);
     }
 }

@@ -95,8 +95,14 @@ public sealed partial class NinaObservatory {
 
     /// <summary>
     /// Like the Center instruction: slew, then NINA's centering solver (solve, sync or measured offset, re-slew until
-    /// within the profile threshold). Guiding is stopped first and restarted when it was running.
+    /// within the profile threshold). Guiding is stopped first and restarted once the slew succeeded, when it was running
+    /// (as in NINA, an internal guider that was only looping also counts as running).
     /// </summary>
+    /// <remarks>
+    /// Cancellation aborts the running exposure (ImagingVM) and the solver process; the mount gets <see cref="StopSlew"/>,
+    /// which only sends an abort while the mount reports slewing (the solver's correction slews are not counted as MCP
+    /// motions, so an idle mount between two exposures never gets an abort that could stop tracking).
+    /// </remarks>
     public async Task<PlateSolveOutcome> CenterAsync(double raHours, double decDegrees, CancellationToken cancellationToken) {
         var mount = telescopeMediator.GetInfo();
 
@@ -123,6 +129,7 @@ public sealed partial class NinaObservatory {
         }
 
         var stoppedGuiding = false;
+        var restartGuiding = false;
 
         try {
             var target = new Coordinates(Angle.ByHours(raHours), Angle.ByDegree(decDegrees), Epoch.J2000);
@@ -139,6 +146,8 @@ public sealed partial class NinaObservatory {
                 return new PlateSolveOutcome(false, "The mount did not complete the slew to the target (rejected by the driver, below the horizon limit or parked); the pins log has details.", null);
             }
 
+            restartGuiding = stoppedGuiding;
+
             await SyncDomeIfNotFollowingAsync();
 
             var settings = profileService.ActiveProfile.PlateSolveSettings;
@@ -154,15 +163,8 @@ public sealed partial class NinaObservatory {
 
             PlateSolveResult? result;
 
-            // The correction slews are mount motions too: stop_all and cancellation must be able to stop them.
-            Interlocked.Increment(ref mountMotionsInFlight);
-
-            try {
-                using (cancellationToken.Register(StopSlew)) {
-                    result = await solver.Center(CreatePlateSolveSequence(), parameter, null, CreateProgress(), cancellationToken);
-                }
-            } finally {
-                Interlocked.Decrement(ref mountMotionsInFlight);
+            using (cancellationToken.Register(StopSlew)) {
+                result = await solver.Center(CreatePlateSolveSequence(), parameter, null, CreateProgress(), cancellationToken);
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -197,8 +199,8 @@ public sealed partial class NinaObservatory {
                 cameraMediator.ReleaseCaptureBlock(this);
             }
 
-            if (stoppedGuiding && !cancellationToken.IsCancellationRequested) {
-                await RestartGuidingAfterCenterAsync();
+            if (restartGuiding && !cancellationToken.IsCancellationRequested) {
+                await RestartGuidingAfterCenterAsync(cancellationToken);
             }
         }
     }
@@ -250,14 +252,20 @@ public sealed partial class NinaObservatory {
         }
     }
 
-    /// <summary>Restarts guiding that centering stopped. Its own token: the job's may already be done.</summary>
-    private async Task RestartGuidingAfterCenterAsync() {
+    /// <summary>
+    /// Restarts guiding that centering stopped, still inside the job: cancel_job and stop_all stop it too, and a guider
+    /// that does not come up within five minutes is given up on (the result of the centering stands either way).
+    /// </summary>
+    private async Task RestartGuidingAfterCenterAsync(CancellationToken cancellationToken) {
         try {
-            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(5));
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMinutes(5));
 
             if (!await guiderMediator.StartGuiding(false, CreateProgress(), timeout.Token)) {
                 Logger.Warning("MCP: guiding could not be restarted after centering");
             }
+        } catch (OperationCanceledException) {
+            Logger.Warning("MCP: restarting guiding after centering was cancelled or timed out");
         } catch (Exception ex) {
             Logger.Error("MCP: restarting guiding after centering failed", ex);
         }

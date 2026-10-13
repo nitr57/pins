@@ -13,8 +13,16 @@ public sealed partial class NinaObservatory {
 
     /// <summary>RotatorVM halts the rotator when the token is cancelled and returns NaN when the move did not finish.</summary>
     public async Task<OperationResult> MoveRotatorAsync(double degrees, bool mechanical, CancellationToken cancellationToken) {
-        if (rotatorMediator.GetInfo()?.Connected != true) {
+        var info = rotatorMediator.GetInfo();
+
+        if (info?.Connected != true) {
             return OperationResult.Fail("Rotator is not connected.");
+        }
+
+        // RotatorVM.GetTargetPosition throws for sky angles until a plate solve synced the rotator.
+        if (!mechanical && !info.Synced) {
+            return OperationResult.Fail(
+                "The rotator is not synced yet, so it has no sky position angle: run plate_solve with sync first, or pass mechanical: true.");
         }
 
         try {
@@ -55,8 +63,9 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail("This flat device has no cover that can be opened or closed.");
         }
 
-        if ((action is FlatDeviceAction.LightOn or FlatDeviceAction.LightOff) && !info.SupportsOnOff) {
-            return OperationResult.Fail("This flat device's light cannot be switched on or off.");
+        // SupportsOnOff means a calibrator (light) is present; without one the drivers ignore brightness changes.
+        if ((action is FlatDeviceAction.LightOn or FlatDeviceAction.LightOff or FlatDeviceAction.SetBrightness) && !info.SupportsOnOff) {
+            return OperationResult.Fail("This flat device has no light (calibrator) that can be switched or dimmed.");
         }
 
         if (action == FlatDeviceAction.SetBrightness
@@ -157,31 +166,54 @@ public sealed partial class NinaObservatory {
         }
 
         try {
+            // DomeVM passes the token on, but the INDI dome only stops waiting: stop the motion itself on cancel.
+            using var stopOnCancel = cancellationToken.Register(StopDome);
+
             switch (action) {
                 case DomeAction.OpenShutter:
-                    return ShutterResult(await domeMediator.OpenShutter(cancellationToken), "open", ShutterState.ShutterOpen);
+                    return await ShutterResultAsync(await domeMediator.OpenShutter(cancellationToken), "open", ShutterState.ShutterOpen, cancellationToken);
 
                 case DomeAction.CloseShutter:
-                    return ShutterResult(await domeMediator.CloseShutter(cancellationToken), "close", ShutterState.ShutterClosed);
+                    return await ShutterResultAsync(await domeMediator.CloseShutter(cancellationToken), "close", ShutterState.ShutterClosed, cancellationToken);
 
                 case DomeAction.Park:
-                    return await domeMediator.Park(cancellationToken)
+                    if (!await domeMediator.Park(cancellationToken)) {
+                        return OperationResult.Fail("The dome could not be parked; the pins log has details.");
+                    }
+
+                    // DomeVM reports success whenever the dome is connected: check the device.
+                    return await WaitForStateAsync(() => domeMediator.GetInfo().AtPark, cancellationToken)
                         ? OperationResult.Ok("Dome parked.")
-                        : OperationResult.Fail("The dome could not be parked; the pins log has details.");
+                        : OperationResult.Fail("The park command completed, but the dome does not report parked; the pins log has details.");
 
                 case DomeAction.FindHome:
-                    return await domeMediator.FindHome(cancellationToken)
+                    if (!await domeMediator.FindHome(cancellationToken)) {
+                        return OperationResult.Fail("The dome could not find home; the pins log has details.");
+                    }
+
+                    return await WaitForStateAsync(() => domeMediator.GetInfo().AtHome, cancellationToken)
                         ? OperationResult.Ok("Dome is at home.")
-                        : OperationResult.Fail("The dome could not find home; the pins log has details.");
+                        : OperationResult.Fail("The find home command completed, but the dome does not report being at home; the pins log has details.");
 
                 case DomeAction.SlewToAzimuth:
                     if (domeMediator.IsFollowingScope) {
                         return OperationResult.Fail("The dome follows the telescope; stop_following first, or it would turn back.");
                     }
 
-                    return await domeMediator.SlewToAzimuth(azimuthDegrees!.Value, cancellationToken)
-                        ? OperationResult.Ok(Invariant($"Dome turned to azimuth {azimuthDegrees.Value:0.#}°."))
-                        : OperationResult.Fail("The dome could not turn to the azimuth; the pins log has details.");
+                    var target = azimuthDegrees!.Value;
+
+                    if (!await domeMediator.SlewToAzimuth(target, cancellationToken)) {
+                        return OperationResult.Fail("The dome could not turn to the azimuth; the pins log has details.");
+                    }
+
+                    var tolerance = Math.Max(profileService.ActiveProfile.DomeSettings.AzimuthTolerance_degrees, 1);
+
+                    if (!await WaitForStateAsync(() => AzimuthDistance(domeMediator.GetInfo().Azimuth, target) <= tolerance, cancellationToken)) {
+                        return OperationResult.Fail(Invariant(
+                            $"The slew completed, but the dome reports azimuth {domeMediator.GetInfo().Azimuth:0.#}° instead of {target:0.#}°."));
+                    }
+
+                    return OperationResult.Ok(Invariant($"Dome turned to azimuth {domeMediator.GetInfo().Azimuth:0.#}°."));
 
                 case DomeAction.SyncToMount:
                     if (telescopeMediator.GetInfo()?.Connected != true) {
@@ -213,15 +245,67 @@ public sealed partial class NinaObservatory {
         }
     }
 
-    private OperationResult ShutterResult(bool success, string verb, ShutterState expected) {
-        var state = domeMediator.GetInfo()?.ShutterStatus;
-
+    /// <summary>
+    /// DomeVM has already waited for the motion and one device update. An error or the opposite end state is a failure;
+    /// a shutter still reported moving (or without state) is reported as it is.
+    /// </summary>
+    private async Task<OperationResult> ShutterResultAsync(bool success, string verb, ShutterState expected, CancellationToken cancellationToken) {
         if (!success) {
-            return OperationResult.Fail($"The shutter did not {verb} (state {state?.ToString() ?? "unknown"}); the pins log has details.");
+            return OperationResult.Fail($"The shutter did not {verb} (state {domeMediator.GetInfo()?.ShutterStatus.ToString() ?? "unknown"}); the pins log has details.");
         }
 
-        return state == expected
-            ? OperationResult.Ok($"Shutter {(expected == ShutterState.ShutterOpen ? "open" : "closed")}.")
-            : OperationResult.Ok($"The shutter command completed; the dome reports {state?.ToString() ?? "unknown"} (it updates once per polling interval).");
+        await WaitForStateAsync(() => domeMediator.GetInfo().ShutterStatus == expected, cancellationToken);
+
+        var state = domeMediator.GetInfo().ShutterStatus;
+        var opposite = expected == ShutterState.ShutterOpen ? ShutterState.ShutterClosed : ShutterState.ShutterOpen;
+
+        if (state == expected) {
+            return OperationResult.Ok($"Shutter {(expected == ShutterState.ShutterOpen ? "open" : "closed")}.");
+        }
+
+        if (state == ShutterState.ShutterError || state == opposite) {
+            return OperationResult.Fail($"The shutter command completed, but the dome reports {state}; check the dome before relying on it.");
+        }
+
+        return OperationResult.Ok($"The shutter command completed; the dome reports {state}. Check get_status again shortly.");
+    }
+
+    /// <summary>Polls <paramref name="reached"/> for up to two device polling intervals (GetInfo is refreshed once per interval).</summary>
+    private async Task<bool> WaitForStateAsync(Func<bool> reached, CancellationToken cancellationToken) {
+        var pollingSeconds = profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval;
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(Math.Max(pollingSeconds, 0.5) * 2 + 1);
+
+        while (!reached()) {
+            if (DateTime.UtcNow >= deadline) {
+                return false;
+            }
+
+            await Task.Delay(250, cancellationToken);
+        }
+
+        return true;
+    }
+
+    private static double AzimuthDistance(double a, double b) {
+        if (!double.IsFinite(a) || !double.IsFinite(b)) {
+            return double.PositiveInfinity;
+        }
+
+        var difference = Math.Abs(a - b) % 360;
+
+        return difference > 180 ? 360 - difference : difference;
+    }
+
+    /// <summary>Stops shutter and rotation (cancel_job, stop_all). Never throws: it runs from a token callback.</summary>
+    private void StopDome() {
+        try {
+            if (domeMediator.GetDevice() is IDome dome) {
+                dome.StopAll().ContinueWith(
+                    task => Logger.Error("MCP: stopping the dome failed", task.Exception!),
+                    TaskContinuationOptions.OnlyOnFaulted);
+            }
+        } catch (Exception ex) {
+            Logger.Error("MCP: stopping the dome failed", ex);
+        }
     }
 }

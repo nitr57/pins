@@ -138,7 +138,7 @@ internal sealed class GetGuideIncidentTool : ObservatoryTool {
     public override ToolAnnotations Annotations => ToolAnnotations.Query;
 
     protected override void DefineArguments(ToolSchema arguments) {
-        arguments.String("id", "Incident id as listed by list_guide_incidents.", required: true, maxLength: 100, pattern: "^[A-Za-z0-9._:-]+$");
+        arguments.String("id", "Incident id as listed by list_guide_incidents.", required: true, maxLength: 100, pattern: "^[A-Za-z0-9-]+$");
         arguments.Integer("frames", "Number of telemetry frames to include, the last ones of the incident (0-600). Default 60.", minimum: 0, maximum: 600, defaultValue: 60);
     }
 
