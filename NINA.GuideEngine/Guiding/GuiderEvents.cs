@@ -285,6 +285,15 @@ public sealed record PeriodicErrorModelDiscardedEvent(DateTimeOffset Timestamp, 
 }
 
 /// <summary>
+/// The adaptive Dec backlash compensation changed its pulse (PHD2 <c>BacklashComp</c>). The host stores <see cref="State"/>
+/// for the next session (<see cref="Guider.RestoreBacklash"/>). Not part of PHD2's event set.
+/// </summary>
+public sealed record BacklashPulseLearnedEvent(DateTimeOffset Timestamp, BacklashState State) : GuiderEvent(Timestamp)
+{
+    public override string Phd2Name => "BacklashPulseLearned";
+}
+
+/// <summary>
 /// The pulse model learned from a dither (docs/notes/DEC-PULSE-MODEL.md); it learns with <see cref="GuiderSettings.PulseModel"/>
 /// off too. The host stores <see cref="State"/> for the next session (<see cref="Guider.RestorePulseModel"/>). Not part of
 /// PHD2's event set.

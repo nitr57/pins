@@ -11,6 +11,13 @@ namespace NINA.GuideEngine.Algorithms;
 public sealed record BacklashEvent(IReadOnlyList<(long TimeSeconds, double Miss)> Corrections, bool InitialOvershoot, bool InitialUndershoot, bool StictionSeen);
 
 /// <summary>
+/// A Dec backlash pulse the adaptive compensation arrived at (<see cref="PulseMs"/>), and the configured pulse it started
+/// from (<see cref="SetPulseMs"/>). PHD2 writes the adjusted pulse over its setting; here the setting stays, and the
+/// learned pulse is used only while the setting is still the one it was learned from.
+/// </summary>
+public sealed record BacklashState(int SetPulseMs, int PulseMs);
+
+/// <summary>
 /// Dec backlash compensation (port of PHD2 <c>BacklashComp</c>). When the Dec direction reverses on a
 /// guide move, a fixed extra pulse is added. In adaptive mode (ceiling − floor ≥ 20 ms) the follow-on
 /// deflections are tracked and the pulse is increased by at most 10 % or decreased by at most 20 %
@@ -79,6 +86,9 @@ public sealed class BacklashCompensation
 
     public static int PulseMaxValue => MaxCompAmount;
 
+    /// <summary>The ceiling of the adaptive range for a pulse when none is set: 1.5 × the pulse, at most 8000 ms.</summary>
+    public static int DefaultCeiling(int pulseMs) => (int)Math.Min(1.50 * pulseMs, MaxCompAmount);
+
     private void SetCompValues(int requestedSize, int floor, int ceiling)
     {
         pulseWidth = Math.Clamp(requestedSize, 0, MaxCompAmount);
@@ -90,7 +100,7 @@ public sealed class BacklashCompensation
         else
             adjustmentFloor = floor;
         if (ceiling < pulseWidth)
-            adjustmentCeiling = (int)Math.Min(1.50 * pulseWidth, MaxCompAmount);
+            adjustmentCeiling = DefaultCeiling(pulseWidth);
         else
             adjustmentCeiling = Math.Min(ceiling, MaxCompAmount);
         fixedSize = Math.Abs(adjustmentCeiling - adjustmentFloor) < MinCompAmount;

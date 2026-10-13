@@ -233,8 +233,8 @@ dismissable chip in the status strip; `LiveHints` in the engine settings is on b
   (the header lines that changed). `NINA.GuideEngine/tools/guide-log-stats` summarises a log per block (RMS, overshoot after large
   corrections, pulse lengths, Dec reversals).
 * Calibrations: `~/.local/share/NINA/InternalGuider/calibrations.json`
-* Learned periodic errors and pulse models: `~/.local/share/NINA/InternalGuider/periodic-error.json`,
-  `~/.local/share/NINA/InternalGuider/pulse-model.json`
+* Learned periodic errors, pulse models and Dec backlash pulses: `~/.local/share/NINA/InternalGuider/periodic-error.json`,
+  `~/.local/share/NINA/InternalGuider/pulse-model.json`, `~/.local/share/NINA/InternalGuider/backlash.json`
 * Dark libraries: `~/.local/share/NINA/InternalGuider/Darks/`
 * Guiding Coach reports: `~/.local/share/NINA/InternalGuider/Coach/coach-*.json`
 * Incidents (flight recorder): `~/.local/share/NINA/InternalGuider/Incidents/<id>/` (`incident.json` + FITS images)

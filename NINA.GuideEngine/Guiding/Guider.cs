@@ -1409,6 +1409,7 @@ public sealed partial class Guider : IAsyncDisposable
                 {
                     PrepareAlgorithms(settle.IsActive, snapshot, sigma);
                     corr = corrector.GuideStep(mountOfs.X, mountOfs.Y, rates.X, rates.Y, now);
+                    BacklashStepDone(now);
                 }
             }
             else
@@ -1962,8 +1963,7 @@ public sealed partial class Guider : IAsyncDisposable
         var limiter = new PulseLimiter();
         limiter.SetMaxRaDuration(s.MaxRaDurationMs);
         limiter.SetMaxDecDuration(s.MaxDecDurationMs);
-        var backlash = new BacklashCompensation(s.Backlash.PulseMs, s.Backlash.FloorMs, s.Backlash.CeilingMs, s.Backlash.Enabled, limiter);
-        var newCorrector = new AxisCorrector(ra, dec, limiter, backlash)
+        var newCorrector = new AxisCorrector(ra, dec, limiter, CreateBacklash(s.Backlash, limiter))
         {
             DecGuideMode = s.DecGuideMode,
             MinPulseMs = s.MinPulseMs,

@@ -98,6 +98,9 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     private readonly string periodicErrorStorePath;
     private readonly string pulseModelStorePath;
 
+    // the learned Dec backlash pulses, next to the pulse models (so tests that move those move these too)
+    private readonly string backlashStorePath;
+
     private Guider? guider;
     private GuidingCoach? coach;
     private GuideCameraSource? slotCamera;
@@ -153,6 +156,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         this.profileService = profileService;
         this.periodicErrorStorePath = periodicErrorStorePath ?? DefaultPeriodicErrorStorePath;
         this.pulseModelStorePath = pulseModelStorePath ?? DefaultPulseModelStorePath;
+        backlashStorePath = Path.Combine(Path.GetDirectoryName(this.pulseModelStorePath)!, "backlash.json");
         this.telescopeMediator = telescopeMediator;
         this.guideCameraMediator = guideCameraMediator;
         options = new InternalGuiderOptions(profileService, InternalGuiderOptions.SettingsId);
@@ -168,6 +172,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             ApplySettingsIfConnected();
             RestoreStoredPeriodicError();
             RestoreStoredPulseModel();
+            RestoreStoredBacklash();
             incidents.Options = IncidentStoreOptionsNow();
         };
     }
@@ -416,6 +421,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
         RestoreStoredPeriodicError();
         RestoreStoredPulseModel();
+        RestoreStoredBacklash();
 
         if (options.SaveGuideLog)
         {
@@ -738,6 +744,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 RaAlgorithmState = ToDto(g?.RaAlgorithm, PixelScale),
                 DecAlgorithmState = ToDto(g?.DecAlgorithm, PixelScale),
                 DecDrift = ToDecDriftDto(decDirection, PixelScale),
+                DecBacklashPulseMs = g?.DecBacklashPulseMs,
             };
         }
     }
@@ -1521,6 +1528,10 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 case PulseModelUpdatedEvent pu:
                     Logger.Info($"InternalGuider: {GuideLogBridge.PulseModelText(pu)}");
                     break;
+                case BacklashPulseLearnedEvent bl:
+                    Logger.Info($"InternalGuider: Dec backlash compensation pulse {bl.State.PulseMs} ms (set {bl.State.SetPulseMs} ms)");
+                    PersistBacklash(bl.State);
+                    break;
                 case SettleBeginEvent:
                     settleStatus = "Settling";
                     Report("Settling");
@@ -2060,6 +2071,55 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         catch (Exception ex)
         {
             Logger.Warning($"InternalGuider: could not save the pulse model: {ex.Message}");
+        }
+    }
+
+    private BacklashStore LoadBacklashStore()
+    {
+        try
+        {
+            if (File.Exists(backlashStorePath))
+            {
+                return BacklashStore.FromJson(File.ReadAllText(backlashStorePath));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not read the backlash store: {ex.Message}");
+        }
+
+        return new BacklashStore();
+    }
+
+    private void RestoreStoredBacklash()
+    {
+        try
+        {
+            if (guider is { } g)
+            {
+                g.RestoreBacklash(LoadBacklashStore().Get(PulseModelKeyNow()));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not restore the backlash pulse: {ex.Message}");
+        }
+    }
+
+    private void PersistBacklash(BacklashState state)
+    {
+        try
+        {
+            var store = LoadBacklashStore();
+            store.Set(PulseModelKeyNow(), state);
+            Directory.CreateDirectory(Path.GetDirectoryName(backlashStorePath)!);
+            var tmp = backlashStorePath + ".tmp";
+            File.WriteAllText(tmp, store.ToJson());
+            File.Move(tmp, backlashStorePath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not save the backlash pulse: {ex.Message}");
         }
     }
 

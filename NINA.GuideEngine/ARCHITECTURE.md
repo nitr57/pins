@@ -149,7 +149,8 @@ Pluggable `IGuideAlgorithm` (so PPEC/GP and dark guiding can land in v2).
 * Min-move default `max(0.1515 + 0.1548/scale, 0.15)` px.
 * Dec guide mode Off / Auto / North / South, and Drift (not in PHD2: one direction along the measured drift, see
   [ALGORITHMS.md](docs/ALGORITHMS.md#dec-guide-mode-drift)). Dec backlash compensation (adaptive, PHD2 port; as in PHD2 only while both Dec
-  directions are guided).
+  directions are guided). The pulse it learns is kept per profile and mount (`backlash.json`) and used while the
+  setting is still the one it was learned from; unlike PHD2 the setting itself isn't overwritten.
 * Max pulse 2500 ms per axis (hard clamp).
 * Min pulse 20 ms (not in PHD2; 0 = PHD2, any length), for every algorithm: an algorithm or deduced pulse shorter than
   it is rounded to 0 or to it, whichever is nearer, before the Dec backlash compensation. EQMod drops pulses under

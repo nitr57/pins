@@ -133,6 +133,9 @@ public sealed class GuideLogBridge : IDisposable
             case PulseModelUpdatedEvent pm when guiding:
                 log.Info(PulseModelText(pm));
                 break;
+            case BacklashPulseLearnedEvent b when guiding:
+                log.Info($"Dec backlash compensation: pulse {b.State.PulseMs} ms (set {b.State.SetPulseMs} ms)");
+                break;
             case DecDirectionNoteEvent d when guiding && d.Kind is not (DecDirectionNoteKind.Summary or DecDirectionNoteKind.Reset):
                 // the direction changes and the safety valve; summaries and resets go to the debug log only
                 log.Info($"Dec guide direction: {d.Message}");
