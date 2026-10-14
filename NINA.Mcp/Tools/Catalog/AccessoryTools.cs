@@ -160,7 +160,8 @@ internal sealed class ControlDomeTool : ObservatoryTool {
         + "safety_monitor) and confirm with the user. Other jobs do not block it, so closing stays possible in bad weather; "
         + "while the advanced sequence runs it needs force like every hardware tool. If the profile parks the mount before "
         + "shutter moves, NINA parks it as part of open_shutter and close_shutter. Runs as a background job holding the dome; "
-        + "shutters can take minutes, poll get_job; cancel_job stops the dome. Not every dome supports every action; roll-off "
+        + "shutters can take minutes, poll get_job; cancel_job stops the dome, except while the shutter closes (closing "
+        + "continues). Not every dome supports every action; roll-off "
         + "roofs that open by unparking are not covered.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;

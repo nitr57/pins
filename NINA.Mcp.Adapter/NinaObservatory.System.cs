@@ -153,13 +153,14 @@ public sealed partial class NinaObservatory {
 
         var full = Path.GetFullPath(path);
 
-        // IsReady stats the mount point, which blocks on a stale network share: only check the matching mounts.
+        // IsReady stats the mount point, which blocks on a stale network share: only check the one that holds the path.
+        // A mount that is not ready is not replaced by its parent, whose free space would be reported as the path's.
         var drive = DriveInfo.GetDrives()
             .Where(candidate => IsUnder(full, candidate.RootDirectory.FullName))
             .OrderByDescending(candidate => candidate.RootDirectory.FullName.Length)
-            .FirstOrDefault(candidate => candidate.IsReady);
+            .FirstOrDefault();
 
-        if (drive == null) {
+        if (drive == null || !drive.IsReady) {
             return null;
         }
 

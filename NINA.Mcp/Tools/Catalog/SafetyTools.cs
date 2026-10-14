@@ -27,8 +27,8 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         + "the advanced sequence, cancels every background job and aborts the exposure (like stop_all), stops guiding, parks "
         + "the mount, closes the dome shutter and the flat panel's dust cover, and optionally warms the camera. Steps for "
         + "devices that are not connected are skipped. The dome is only closed when the mount is parked (closing a roof on an "
-        + "unparked telescope can damage it). Not refused while a sequence runs and not blocked by other jobs; while it runs it "
-        + "holds all devices, so nothing can unpark or open in between. Runs as a background job (parking and closing take "
+        + "unparked telescope can damage it). Not refused while a sequence runs and not blocked by other jobs; until the camera "
+        + "warming starts it holds all devices, so nothing can unpark or open in between. Runs as a background job (parking and closing take "
         + "minutes): poll get_job; outcome.data lists every step. Moves the telescope and the dome.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
@@ -93,23 +93,35 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         try {
             hold = jobs.Reserve(StartSequenceTool.HardwareResources, "secure_observatory");
         } catch (JobConflictException ex) {
-            steps.Add(new SecureStep("hold_devices", false, $"Could not hold every device ({ex.Message}); continuing."));
+            // A warning, not a failure: the shutdown itself can still succeed.
+            steps.Add(new SecureStep("hold_devices", true, $"Warning: could not hold every device ({ex.Message}); continuing."));
         }
+
+        var status = Observatory.GetStatus();
 
         using (hold) {
-            return await ShutDownDevicesAsync(steps, park, closeDome, closeCover, warmCamera, cancellationToken).ConfigureAwait(false);
+            await ShutDownDevicesAsync(status, steps, park, closeDome, closeCover, cancellationToken).ConfigureAwait(false);
         }
+
+        // After the hold: warming takes ten minutes and only needs the cooler, while the user may have to park or close by hand.
+        if (warmCamera && Connected(status, DeviceKind.Camera)) {
+            await StepAsync(steps, "warm_camera", () => Observatory.WarmCameraAsync(TimeSpan.FromMinutes(10), cancellationToken)).ConfigureAwait(false);
+        }
+
+        var failed = steps.Where(step => !step.Success).Select(step => step.Step).ToList();
+
+        return failed.Count == 0
+            ? JobOutcome.Ok("Observatory secured.", steps)
+            : JobOutcome.Fail($"Not every step succeeded ({string.Join(", ", failed)}); see outcome.data and check get_status.", steps);
     }
 
-    private async Task<JobOutcome> ShutDownDevicesAsync(
+    private async Task ShutDownDevicesAsync(
+        ObservatoryStatus status,
         List<SecureStep> steps,
         bool park,
         bool closeDome,
         bool closeCover,
-        bool warmCamera,
         CancellationToken cancellationToken) {
-        var status = Observatory.GetStatus();
-
         if (Connected(status, DeviceKind.Guider)) {
             await StepAsync(steps, "stop_guiding", () => Observatory.StopGuidingAsync(cancellationToken)).ConfigureAwait(false);
         }
@@ -138,16 +150,6 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         if (closeCover && Connected(status, DeviceKind.FlatDevice) && Property(status, DeviceKind.FlatDevice, "coverState") is not null) {
             await StepAsync(steps, "close_cover", () => Observatory.ControlFlatDeviceAsync(FlatDeviceAction.CloseCover, null, cancellationToken)).ConfigureAwait(false);
         }
-
-        if (warmCamera && Connected(status, DeviceKind.Camera)) {
-            await StepAsync(steps, "warm_camera", () => Observatory.WarmCameraAsync(TimeSpan.FromMinutes(10), cancellationToken)).ConfigureAwait(false);
-        }
-
-        var failed = steps.Where(step => !step.Success).Select(step => step.Step).ToList();
-
-        return failed.Count == 0
-            ? JobOutcome.Ok("Observatory secured.", steps)
-            : JobOutcome.Fail($"Not every step succeeded ({string.Join(", ", failed)}); see outcome.data and check get_status.", steps);
     }
 
     private static async Task WaitForJobsToEndAsync(IJobManager jobs, CancellationToken cancellationToken) {

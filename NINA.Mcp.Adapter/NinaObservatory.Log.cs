@@ -78,14 +78,13 @@ public sealed partial class NinaObservatory {
 
     /// <summary>
     /// The newest .log file in <paramref name="directory"/> this process holds open; null when /proc is not available.
-    /// Link targets are real paths, so a symlinked data directory is compared in its resolved form too.
+    /// Link targets are fully resolved paths (a symlinked ~/.local would never match the folder), so open files are
+    /// matched by name: log names carry start time and process id and are unique in the folder.
     /// </summary>
     private static string? FindOpenLogFile(string directory) {
         if (!Directory.Exists(OpenFileDescriptors)) {
             return null;
         }
-
-        var resolved = Directory.ResolveLinkTarget(directory, returnFinalTarget: true)?.FullName ?? directory;
 
         string? newest = null;
         var newestTime = DateTime.MinValue;
@@ -100,24 +99,24 @@ public sealed partial class NinaObservatory {
                 continue;
             }
 
-            var targetDirectory = target == null ? null : Path.GetDirectoryName(target);
-
-            if (target == null
-                || !target.EndsWith(".log", StringComparison.Ordinal)
-                || !(string.Equals(targetDirectory, directory, StringComparison.Ordinal)
-                    || string.Equals(targetDirectory, resolved, StringComparison.Ordinal))) {
+            if (target == null || !target.EndsWith(".log", StringComparison.Ordinal)) {
                 continue;
             }
 
-            var written = File.GetLastWriteTimeUtc(target);
+            var candidate = Path.Combine(directory, Path.GetFileName(target));
+
+            if (!File.Exists(candidate)) {
+                continue;
+            }
+
+            var written = File.GetLastWriteTimeUtc(candidate);
 
             if (newest == null || written > newestTime) {
-                newest = target;
+                newest = candidate;
                 newestTime = written;
             }
         }
 
-        // Callers compare file names in the listed directory.
-        return newest == null ? null : Path.Combine(directory, Path.GetFileName(newest));
+        return newest;
     }
 }
