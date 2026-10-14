@@ -22,7 +22,8 @@ internal sealed class StopAllTool : ObservatoryTool {
         + "background job, aborts the running camera exposure, stops the mount if it is slewing and halts a focuser move "
         + "started over MCP. Every step runs even if an earlier one fails; the result lists each step. It does NOT park the "
         + "mount, stop guiding, warm the camera or disconnect anything; an idle mount is left alone (note that aborting a "
-        + "slew stops tracking on some mount drivers). Safe to repeat. Use it whenever the user says stop/abort or something "
+        + "slew stops tracking on some mount drivers); a dome shutter that is closing keeps closing. Safe to repeat. "
+        + "Use it whenever the user says stop/abort or something "
         + "looks wrong (unexpected movement, collision risk, clouds/rain). This tool is never refused: together with "
         + "cancel_job it stays available in read-only mode, and it needs no force while a sequence runs. Afterwards check "
         + "get_status.";

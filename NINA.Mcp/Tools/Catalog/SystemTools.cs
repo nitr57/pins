@@ -24,11 +24,12 @@ internal sealed class GetSystemHealthTool : ObservatoryTool {
     public override string Description =>
         "Health of the pins box: local time and, when client_time is given, the clock error against it (a Raspberry Pi "
         + "without RTC battery and without network starts with a wrong clock, which spoils plate solving, planning and "
-        + "meridian flips), whether the clock is NTP-synchronized, the mount's UTC time, free disk space for images and for "
+        + "meridian flips), whether the clock is NTP-synchronized, the UTC time the mount last reported, free disk space for "
+        + "images and for "
         + "pins, CPU temperature, power problems (under-voltage, frequency capping, thermal throttling, now and since boot: "
         + "brown-outs at the field power supply show up here), memory and load. warnings lists what needs attention. Call it at "
-        + "the start of a session (with client_time set to the current UTC time of the client) and when frames fail to save or "
-        + "devices drop. Side-effect free.";
+        + "the start of a session and when frames fail to save or devices drop. Pass client_time only with a time read from a "
+        + "real clock (e.g. date -u on the client); a guessed time produces a false clock warning. Side-effect free.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Query;
 
@@ -55,7 +56,6 @@ internal sealed class GetSystemHealthTool : ObservatoryTool {
         var warnings = new List<string>();
 
         double? clockOffset = client is null ? null : Math.Round((health.LocalTime - client.Value).TotalSeconds, 1);
-        double? mountOffset = health.MountUtc is null ? null : Math.Round((health.MountUtc.Value - health.LocalTime).TotalSeconds, 1);
 
         if (clockOffset is not null && Math.Abs(clockOffset.Value) > ClockWarningSeconds) {
             warnings.Add(string.Create(
@@ -67,12 +67,18 @@ internal sealed class GetSystemHealthTool : ObservatoryTool {
             warnings.Add("The system clock is not NTP-synchronized (no internet or time server); compare it with client_time.");
         }
 
-        if (mountOffset is not null && Math.Abs(mountOffset.Value) > ClockWarningSeconds) {
-            warnings.Add(string.Create(CultureInfo.InvariantCulture, $"The mount's clock differs from pins by {mountOffset:+0;-0} s."));
+        if (health.ImageDisk is { Exists: false } missing) {
+            warnings.Add($"The image folder {missing.Path} does not exist (unmounted drive?); frames cannot be saved there.");
         }
 
-        foreach (var disk in new[] { health.ImageDisk, health.AppDisk }) {
-            if (disk is not null && disk.FreeGb < LowDiskGb) {
+        // Both folders usually share one file system: warn once.
+        var disks = new[] { health.ImageDisk, health.AppDisk }
+            .Where(disk => disk is not null)
+            .Select(disk => disk!)
+            .DistinctBy(disk => (disk.FreeGb, disk.TotalGb));
+
+        foreach (var disk in disks) {
+            if (disk.FreeGb < LowDiskGb) {
                 warnings.Add(string.Create(CultureInfo.InvariantCulture, $"Only {disk.FreeGb:0.0} GB free on the disk of {disk.Path}."));
             }
         }
@@ -97,8 +103,7 @@ internal sealed class GetSystemHealthTool : ObservatoryTool {
             localTime = health.LocalTime,
             clockOffsetSeconds = clockOffset,
             clockSynchronized = health.ClockSynchronized,
-            mountUtc = health.MountUtc,
-            mountClockOffsetSeconds = mountOffset,
+            mountUtcLastReported = health.MountUtc,
             uptimeHours = health.UptimeHours is null ? (double?)null : Math.Round(health.UptimeHours.Value, 2),
             imageDisk = health.ImageDisk,
             appDisk = health.AppDisk,

@@ -28,7 +28,7 @@ internal sealed class GetSessionSummaryTool : ObservatoryTool {
     public override string Description =>
         "Summary of the frames taken in this pins run (the image history, also what the sequence captured), grouped by "
         + "target and filter: frame count, total integration in hours, first and last frame time, HFR (pixels: median, 90th "
-        + "percentile, best, worst), star count, FWHM (arcsec) and eccentricity medians, guiding RMS (arcsec, median and "
+        + "percentile, best, worst), star count, FWHM (pixels) and eccentricity medians, guiding RMS (arcsec, median and "
         + "worst), camera temperature range, and suspect frames (HFR more than 30 % above the group median, or fewer than "
         + "half the median stars: focus drift, clouds, dew or guiding trouble) with their ids. By default only LIGHT frames "
         + "count; image_type all includes snapshots, flats and darks. Use it for the morning report and to decide whether a "
@@ -58,11 +58,7 @@ internal sealed class GetSessionSummaryTool : ObservatoryTool {
             .ToList();
 
         var groups = selected
-            .GroupBy(image => groupBy switch {
-                "target" => (Target: image.TargetName ?? "(no target)", Filter: (string?)null),
-                "filter" => (Target: (string?)null, Filter: image.Filter ?? "(no filter)"),
-                _ => (Target: image.TargetName ?? "(no target)", Filter: image.Filter ?? "(no filter)")
-            })
+            .GroupBy(image => GroupKey(image, groupBy))
             .Select(group => Summarize(group.Key.Target, group.Key.Filter, group.ToList()))
             .ToList();
 
@@ -84,6 +80,21 @@ internal sealed class GetSessionSummaryTool : ObservatoryTool {
         };
 
         return Task.FromResult(ToolCallResult.Json(payload));
+    }
+
+    private static (string? Target, string? Filter) GroupKey(ImageRecord image, string groupBy) {
+        var target = image.TargetName ?? "(no target)";
+        var filter = image.Filter ?? "(no filter)";
+
+        if (groupBy == "target") {
+            return (target, null);
+        }
+
+        if (groupBy == "filter") {
+            return (null, filter);
+        }
+
+        return (target, filter);
     }
 
     private static object Summarize(string? target, string? filter, List<ImageRecord> images) {
@@ -126,7 +137,7 @@ internal sealed class GetSessionSummaryTool : ObservatoryTool {
                     worst = Round(hfr.Max(), 2)
                 },
             starsMedian = Round(medianStars, 0),
-            fwhmArcsecMedian = Round(Percentile(Values(images.Select(image => image.FwhmArcsec)), 0.5), 2),
+            fwhmPixelsMedian = Round(Percentile(Values(images.Select(image => image.FwhmPixels)), 0.5), 2),
             eccentricityMedian = Round(Percentile(Values(images.Select(image => image.Eccentricity)), 0.5), 2),
             guidingRmsArcsec = rms.Count == 0
                 ? null
@@ -181,6 +192,10 @@ internal sealed class GetSessionSummaryTool : ObservatoryTool {
     }
 
     private static double? Round(double? value, int digits) {
-        return value is null || !double.IsFinite(value.Value) ? null : Math.Round(value.Value, digits, MidpointRounding.AwayFromZero);
+        if (value is null || !double.IsFinite(value.Value)) {
+            return null;
+        }
+
+        return Math.Round(value.Value, digits, MidpointRounding.AwayFromZero);
     }
 }

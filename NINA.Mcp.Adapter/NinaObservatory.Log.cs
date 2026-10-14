@@ -35,9 +35,13 @@ public sealed partial class NinaObservatory {
             var marker = $".{Environment.ProcessId}-";
             var open = FindOpenLogFile(directory);
 
+            // Only the newest segment of a run is open; earlier segments of this run (monthly or size roll) share the name
+            // up to the process id: "{start}-{version}.{pid}-".
+            var runPrefix = RunPrefix(open, marker);
+
             bool IsCurrentRun(FileInfo file) {
-                return open != null
-                    ? string.Equals(file.FullName, open, StringComparison.Ordinal)
+                return runPrefix != null
+                    ? file.Name.StartsWith(runPrefix, StringComparison.Ordinal)
                     : file.Name.Contains(marker, StringComparison.Ordinal);
             }
 
@@ -61,11 +65,27 @@ public sealed partial class NinaObservatory {
         }
     }
 
-    /// <summary>The newest .log file in <paramref name="directory"/> this process holds open; null when /proc is not available.</summary>
+    private static string? RunPrefix(string? openFile, string marker) {
+        if (openFile == null) {
+            return null;
+        }
+
+        var name = Path.GetFileName(openFile);
+        var index = name.IndexOf(marker, StringComparison.Ordinal);
+
+        return index < 0 ? name : name[..(index + marker.Length)];
+    }
+
+    /// <summary>
+    /// The newest .log file in <paramref name="directory"/> this process holds open; null when /proc is not available.
+    /// Link targets are real paths, so a symlinked data directory is compared in its resolved form too.
+    /// </summary>
     private static string? FindOpenLogFile(string directory) {
         if (!Directory.Exists(OpenFileDescriptors)) {
             return null;
         }
+
+        var resolved = Directory.ResolveLinkTarget(directory, returnFinalTarget: true)?.FullName ?? directory;
 
         string? newest = null;
         var newestTime = DateTime.MinValue;
@@ -80,9 +100,12 @@ public sealed partial class NinaObservatory {
                 continue;
             }
 
+            var targetDirectory = target == null ? null : Path.GetDirectoryName(target);
+
             if (target == null
                 || !target.EndsWith(".log", StringComparison.Ordinal)
-                || !string.Equals(Path.GetDirectoryName(target), directory, StringComparison.Ordinal)) {
+                || !(string.Equals(targetDirectory, directory, StringComparison.Ordinal)
+                    || string.Equals(targetDirectory, resolved, StringComparison.Ordinal))) {
                 continue;
             }
 
@@ -94,6 +117,7 @@ public sealed partial class NinaObservatory {
             }
         }
 
-        return newest;
+        // Callers compare file names in the listed directory.
+        return newest == null ? null : Path.Combine(directory, Path.GetFileName(newest));
     }
 }

@@ -31,7 +31,7 @@ internal static class PinsInstructions {
         While the advanced sequence runs, hardware and editing tools are refused so they cannot disturb it. Pass force: true only when the user explicitly wants that; load_sequence, clear_targets, reset_sequence and start_sequence need the sequence stopped (stop_sequence). stop_all is the emergency stop: it stops the sequence, cancels all jobs, aborts the exposure, stops slewing and the focuser. It is never refused, not even in read-only mode (cancel_job neither). Use it when the user says stop or something looks wrong; for rain or the end of the night use secure_observatory.
 
         Typical imaging session
-        1. get_status (what is connected, sequence state, running jobs) and get_system_health with the client's current UTC time (a wrong clock on the Pi spoils solving and planning).
+        1. get_status (what is connected, sequence state, running jobs) and get_system_health (with the client's real UTC time if you can read it: a wrong clock on the Pi spoils solving and planning).
         2. connect_device for camera, mount, focuser, filter_wheel, guider as needed.
         3. cool_camera (e.g. -10 °C, poll until reached); unpark_mount.
         4. Get coordinates from find_targets (offline catalog) and choose with plan_targets (transit, hours above the altitude limit in the dark, moon). Either center_target (or slew_mount) + capture_image to frame manually, or build the plan: clear_targets, add_target (name, ra, dec, exposures or a template from list_target_templates); or load_sequence from list_saved_sequences.

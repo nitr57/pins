@@ -401,8 +401,10 @@ public sealed partial class NinaObservatory {
             Positive(point.Rms),
             string.IsNullOrEmpty(point.Target?.Name) ? null : point.Target.Name,
             string.IsNullOrEmpty(point.LocalPath) ? null : point.LocalPath,
-            Positive(point.FWHMArcseconds),
-            Positive(point.Eccentricity),
+            // Pixels like HFR: the arcsec value uses the profile's unbinned scale and is wrong for binned frames.
+            Positive(point.FWHMPixels),
+            Number(point.Eccentricity),
+            // 0 is also the "not set" default of the history point.
             point.FocuserPosition > 0 ? point.FocuserPosition : null);
     }
 

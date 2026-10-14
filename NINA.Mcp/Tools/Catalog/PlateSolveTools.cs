@@ -114,6 +114,9 @@ internal sealed class CenterTargetTool : ObservatoryTool {
                 // Checked idle atomically with the claim above; a job that grabbed one of them in between fails this one.
                 using var reservation = context.Jobs.Reserve(CenterReserves, description);
 
+                // Released on the cancel request already: an abandoned job (hung driver) must not keep them forever.
+                using var releaseOnCancel = token.Register(reservation.Dispose);
+
                 return PlateSolveTool.ToOutcome(await Observatory.CenterAsync(ra, dec, token).ConfigureAwait(false));
             },
             cancellationToken);

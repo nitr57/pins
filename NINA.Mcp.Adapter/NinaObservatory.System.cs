@@ -18,6 +18,13 @@ public sealed partial class NinaObservatory {
     /// <summary>The sky atlas query (DatabaseInteraction.GetDeepSkyObjects); the database keeps sizes in arcsec.</summary>
     public async Task<CatalogSearchResult> FindTargetsAsync(CatalogSearch search, CancellationToken cancellationToken) {
         try {
+            // GetDeepSkyObjects swallows query errors and returns an empty list; a missing database must not look like "no match".
+            var databaseFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NINA", "NINA.sqlite");
+
+            if (!File.Exists(databaseFile)) {
+                return new CatalogSearchResult(false, $"The catalog database {databaseFile} does not exist.", []);
+            }
+
             var parameters = new DatabaseInteraction.DeepSkyObjectSearchParams {
                 Constellation = search.Constellation ?? string.Empty,
                 DsoTypes = search.Types.ToList(),
@@ -56,21 +63,35 @@ public sealed partial class NinaObservatory {
             cancellationToken.ThrowIfCancellationRequested();
 
             var objects = found
-                .Select(dso => new CatalogObject(
-                    string.IsNullOrWhiteSpace(dso.Name) ? dso.Id : dso.Name,
-                    (dso.AlsoKnownAs ?? new List<string>()).Take(8).ToList(),
-                    dso.DSOType,
-                    dso.Constellation,
-                    dso.Coordinates.RA,
-                    dso.Coordinates.Dec,
-                    dso.Magnitude,
-                    dso.SurfaceBrightness,
-                    dso.Size / 60,
-                    dso.SizeMin / 60,
-                    dso.PositionAngle == null ? null : Number(dso.PositionAngle.Degree)))
+                .Select(dso => (Dso: dso, Name: string.IsNullOrWhiteSpace(dso.Name) ? dso.Id : dso.Name))
+                .Select(item => (item.Dso, item.Name, Aliases: (item.Dso.AlsoKnownAs ?? new List<string>())
+                    .Where(alias => !string.Equals(alias, item.Name, StringComparison.OrdinalIgnoreCase))
+                    .Take(8)
+                    .ToList()))
+                .Select(item => new CatalogObject(
+                    item.Name,
+                    item.Aliases,
+                    item.Dso.DSOType,
+                    item.Dso.Constellation,
+                    item.Dso.Coordinates.RA,
+                    item.Dso.Coordinates.Dec,
+                    item.Dso.Magnitude,
+                    item.Dso.SurfaceBrightness,
+                    item.Dso.Size / 60,
+                    item.Dso.SizeMin / 60,
+                    item.Dso.PositionAngle == null ? null : Number(item.Dso.PositionAngle.Degree)))
                 .ToList();
 
-            return new CatalogSearchResult(true, Invariant($"{objects.Count} object(s)."), objects);
+            // The query sorts by catalog id; "name" means the displayed name.
+            if (search.Order == "name") {
+                objects = objects.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToList();
+            }
+
+            var message = objects.Count == 0
+                ? "No match. If one was expected, read_log may show a catalog error."
+                : Invariant($"{objects.Count} object(s).");
+
+            return new CatalogSearchResult(true, message, objects);
         } catch (OperationCanceledException) {
             throw;
         } catch (Exception ex) {
@@ -132,10 +153,11 @@ public sealed partial class NinaObservatory {
 
         var full = Path.GetFullPath(path);
 
+        // IsReady stats the mount point, which blocks on a stale network share: only check the matching mounts.
         var drive = DriveInfo.GetDrives()
-            .Where(candidate => candidate.IsReady && full.StartsWith(candidate.RootDirectory.FullName, StringComparison.Ordinal))
+            .Where(candidate => IsUnder(full, candidate.RootDirectory.FullName))
             .OrderByDescending(candidate => candidate.RootDirectory.FullName.Length)
-            .FirstOrDefault();
+            .FirstOrDefault(candidate => candidate.IsReady);
 
         if (drive == null) {
             return null;
@@ -144,7 +166,19 @@ public sealed partial class NinaObservatory {
         return new DiskSpace(
             full,
             Math.Round(drive.AvailableFreeSpace / 1e9, 1),
-            Math.Round(drive.TotalSize / 1e9, 1));
+            Math.Round(drive.TotalSize / 1e9, 1),
+            Directory.Exists(full));
+    }
+
+    /// <summary>True when <paramref name="path"/> is <paramref name="root"/> or inside it (/mnt/data does not contain /mnt/data2).</summary>
+    private static bool IsUnder(string path, string root) {
+        if (string.Equals(path, root, StringComparison.Ordinal)) {
+            return true;
+        }
+
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+
+        return path.StartsWith(prefix, StringComparison.Ordinal);
     }
 
     private static double? ReadCpuTemperature() {
@@ -190,7 +224,7 @@ public sealed partial class NinaObservatory {
     private static string? RunCommand(string fileName, string arguments) {
         var start = new ProcessStartInfo(fileName, arguments) {
             RedirectStandardOutput = true,
-            RedirectStandardError = true,
+            RedirectStandardError = false,
             UseShellExecute = false,
             CreateNoWindow = true
         };

@@ -26,10 +26,10 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         "Shuts the observatory down for the end of the night or for bad weather (rain, clouds, unsafe). In this order: stops "
         + "the advanced sequence, cancels every background job and aborts the exposure (like stop_all), stops guiding, parks "
         + "the mount, closes the dome shutter and the flat panel's dust cover, and optionally warms the camera. Steps for "
-        + "devices that are not connected are skipped. The dome is only closed after the mount reports parked (closing a roof "
-        + "on an unparked telescope can damage it), unless park is false. Not refused while a sequence runs and not blocked by "
-        + "other jobs. Runs as a background job (parking and closing take minutes): poll get_job; outcome.data lists every "
-        + "step. Moves the telescope and the dome.";
+        + "devices that are not connected are skipped. The dome is only closed when the mount is parked (closing a roof on an "
+        + "unparked telescope can damage it). Not refused while a sequence runs and not blocked by other jobs; while it runs it "
+        + "holds all devices, so nothing can unpark or open in between. Runs as a background job (parking and closing take "
+        + "minutes): poll get_job; outcome.data lists every step. Moves the telescope and the dome.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -67,17 +67,41 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
             return OperationResult.Ok("Exposure abort requested.");
         });
 
-        await WaitForJobsToEndAsync(context.Jobs, cancellationToken).ConfigureAwait(false);
-
         return await RunJobAsync(
             arguments,
             context,
             new JobRequest("secure", "Secure the observatory", null),
-            token => ShutDownAsync(steps, park, closeDome, closeCover, warmCamera, token),
+            token => ShutDownAsync(context.Jobs, steps, park, closeDome, closeCover, warmCamera, token),
             cancellationToken).ConfigureAwait(false);
     }
 
     private async Task<JobOutcome> ShutDownAsync(
+        IJobManager jobs,
+        List<SecureStep> steps,
+        bool park,
+        bool closeDome,
+        bool closeCover,
+        bool warmCamera,
+        CancellationToken cancellationToken) {
+        // In the job, not the request: a client that gives up during the grace period must not stop the shutdown.
+        await WaitForJobsToEndAsync(jobs, cancellationToken).ConfigureAwait(false);
+
+        // Best effort: nothing may unpark, slew, open or start the sequence while the shutdown runs. A job that ignored
+        // its cancellation keeps its device; the shutdown continues without the hold.
+        IDisposable? hold = null;
+
+        try {
+            hold = jobs.Reserve(StartSequenceTool.HardwareResources, "secure_observatory");
+        } catch (JobConflictException ex) {
+            steps.Add(new SecureStep("hold_devices", false, $"Could not hold every device ({ex.Message}); continuing."));
+        }
+
+        using (hold) {
+            return await ShutDownDevicesAsync(steps, park, closeDome, closeCover, warmCamera, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<JobOutcome> ShutDownDevicesAsync(
         List<SecureStep> steps,
         bool park,
         bool closeDome,
@@ -100,11 +124,11 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         }
 
         if (closeDome && Connected(status, DeviceKind.Dome)) {
-            if (park && !parked) {
+            if (!parked) {
                 steps.Add(new SecureStep(
                     "close_dome",
                     false,
-                    "Skipped: the mount did not park, and closing the dome on an unparked telescope can damage it. Check the "
+                    "Skipped: the mount is not parked, and closing the dome on an unparked telescope can damage it. Check the "
                     + "mount, then close the dome with control_dome."));
             } else {
                 await StepAsync(steps, "close_dome", () => Observatory.ControlDomeAsync(DomeAction.CloseShutter, null, cancellationToken)).ConfigureAwait(false);
@@ -129,7 +153,8 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
     private static async Task WaitForJobsToEndAsync(IJobManager jobs, CancellationToken cancellationToken) {
         var deadline = DateTime.UtcNow + CancelGrace;
 
-        while (jobs.List().Any(job => job.State == JobState.Running) && DateTime.UtcNow < deadline) {
+        // The shutdown job itself is running too.
+        while (jobs.List().Any(job => job.State == JobState.Running && job.Kind != "secure") && DateTime.UtcNow < deadline) {
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
     }

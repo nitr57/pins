@@ -2,6 +2,7 @@
 
 using NINA.Core.Utility;
 using NINA.Equipment.Equipment.MyGuider.Advanced;
+using NINA.Equipment.Equipment.MyGuider.Internal;
 using NINA.Equipment.Interfaces;
 using NINA.Mcp.Observatory;
 
@@ -184,7 +185,15 @@ public sealed partial class NinaObservatory {
             return true;
         }
 
-        if (internalGuider is T stored) {
+        // Only while no other guider is connected and the profile's guider is the internal one: with PHD2 in use, old
+        // internal guider data would be taken for the active guider's.
+        var otherConnected = guiderMediator.GetInfo()?.Connected == true;
+        var profileUsesInternal = string.Equals(
+            profileService.ActiveProfile.GuiderSettings.GuiderName,
+            InternalGuider.DeviceId,
+            StringComparison.Ordinal);
+
+        if (!otherConnected && profileUsesInternal && internalGuider is T stored) {
             guider = stored;
             return true;
         }

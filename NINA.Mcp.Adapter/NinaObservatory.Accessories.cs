@@ -166,8 +166,11 @@ public sealed partial class NinaObservatory {
         }
 
         try {
-            // DomeVM passes the token on, but the INDI dome only stops waiting: stop the motion itself on cancel.
-            using var stopOnCancel = cancellationToken.Register(StopDome);
+            // DomeVM passes the token on, but the INDI dome only stops waiting: stop the motion itself on cancel. Never for
+            // closing: stop_all and secure_observatory cancel every job, and a generic stop must not leave the roof open.
+            using var stopOnCancel = action == DomeAction.CloseShutter
+                ? default
+                : cancellationToken.Register(StopDome);
 
             switch (action) {
                 case DomeAction.OpenShutter:
@@ -191,9 +194,15 @@ public sealed partial class NinaObservatory {
                         return OperationResult.Fail("The dome could not find home; the pins log has details.");
                     }
 
-                    return await WaitForStateAsync(() => domeMediator.GetInfo().AtHome, cancellationToken)
+                    // The INDI dome returns as soon as the command is sent: wait for the rotation to end (at most five minutes).
+                    if (!await WaitWhileSlewingAsync(cancellationToken)) {
+                        return OperationResult.Fail("The dome was still rotating five minutes after find home; check it.");
+                    }
+
+                    // Some INDI drivers have no at-home property, so a stopped dome that does not report it is not a failure.
+                    return domeMediator.GetInfo().AtHome
                         ? OperationResult.Ok("Dome is at home.")
-                        : OperationResult.Fail("The find home command completed, but the dome does not report being at home; the pins log has details.");
+                        : OperationResult.Ok("The dome stopped after find home, but its driver does not report being at home.");
 
                 case DomeAction.SlewToAzimuth:
                     if (domeMediator.IsFollowingScope) {
@@ -284,6 +293,26 @@ public sealed partial class NinaObservatory {
         }
 
         return true;
+    }
+
+    /// <summary>Waits until the dome reports not slewing, after one polling interval for the state to appear.</summary>
+    private async Task<bool> WaitWhileSlewingAsync(CancellationToken cancellationToken) {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromMinutes(5));
+
+        var pollingSeconds = profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval;
+
+        try {
+            await Task.Delay(TimeSpan.FromSeconds(Math.Max(pollingSeconds, 0.5)), timeout.Token);
+
+            while (domeMediator.GetInfo().Slewing) {
+                await Task.Delay(500, timeout.Token);
+            }
+
+            return true;
+        } catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) {
+            return false;
+        }
     }
 
     private static double AzimuthDistance(double a, double b) {

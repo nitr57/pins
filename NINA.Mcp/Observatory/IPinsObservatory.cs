@@ -241,7 +241,7 @@ public sealed record ImageRecord(
     double? GuidingRmsArcsec,
     string? TargetName,
     string? FilePath,
-    double? FwhmArcsec = null,
+    double? FwhmPixels = null,
     double? Eccentricity = null,
     int? FocuserPosition = null);
 
@@ -457,6 +457,7 @@ public sealed record CatalogObject(
 /// <summary>
 /// Health of the pins box. Null members could not be read (not a Raspberry Pi, command missing). <see cref="Throttling"/>
 /// is the decoded <c>vcgencmd get_throttled</c> state (under-voltage, frequency capping, thermal throttling now and since boot).
+/// <see cref="MountUtc"/> is the time the mount last reported, which INDI drivers may only publish at connect.
 /// </summary>
 public sealed record SystemHealth(
     DateTimeOffset LocalTime,
@@ -471,8 +472,11 @@ public sealed record SystemHealth(
     double? MemoryTotalMb,
     double? LoadAverage1m);
 
-/// <summary>Free space of the file system that holds <see cref="Path"/>.</summary>
-public sealed record DiskSpace(string Path, double FreeGb, double TotalGb);
+/// <summary>
+/// Free space of the file system that holds <see cref="Path"/>. <see cref="Exists"/> is false when the folder itself is
+/// missing (an unmounted USB stick): the space is then that of the file system the path would land on.
+/// </summary>
+public sealed record DiskSpace(string Path, double FreeGb, double TotalGb, bool Exists = true);
 
 public sealed record ThrottleState(
     string Raw,

@@ -227,6 +227,17 @@ public class ToolsSessionAndSafetyTests {
     }
 
     [Test]
+    public async Task Secure_NeverClosesTheDomeOverAnUnparkedMount() {
+        ConnectAll(atPark: false);
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"park":false}"""));
+
+        Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("failed"));
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("Park"));
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("Dome"));
+    }
+
+    [Test]
     public async Task Secure_SkipsDisconnectedDevicesAndOptOuts() {
         ConnectAll(atPark: true);
 
