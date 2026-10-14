@@ -220,6 +220,21 @@ The flip-path sun check turned out to refuse daytime flips from a low southern l
   - The move re-checks with the same rule right before it starts. The next plan is checked normally again.
 - **Watchdog:** during an overridden move the watchdog alerts but does not stop the mount, because stopping mid-swing would leave the tube pointing near the Sun. Normal behaviour returns when the move ends.
 
+## Changes after the four-reviewer review (2026-10-14)
+
+- **Flip path:**
+  - In the southern hemisphere the beyond-the-pole axes are (15·h + 180, −180 − δ), so the sampled swing goes over the visible (south) pole.
+  - For a pier change the sampler also takes OnStepX's default route via the home position (MFLIP_SKIP_HOME OFF). Below 20° altitude at latitudes under 45° it also takes the horizon-avoiding waypoint (Goto::waypoint).
+  - Only a full flip (≥ 135° of RA travel) is sampled both ways round.
+- **Sun below the horizon:** a Sun more than 2° below the horizon refuses nothing. Its visible disc sets at about −0.8°.
+- **Side order:** when the meridian limits are too small to alternate the side order, every pair is measured West first (HA < 0) and East second (HA > 0), with no counterweight-up sample.
+- **Home position:** a run from OnStepX's home position starts on the West side. At home the firmware ignores the preferred side and picks it from the sign of the hour angle.
+- **Lockout of other gotos:** this is not implemented; detection replaces it. TNS framing and centring go through the ninaAPI plugin, which this feature does not change.
+  - The automated run's watchdog stops the run when a goto it did not start begins.
+  - The daytime check drops the captured position when the pointing changes by more than 2° outside its own moves, or the pier side changes.
+- **Daytime drift:** daytime corrections aim ahead by the time until tracking is off again. NINA settles with tracking on; the first correction uses the profile settle time, later ones the measured duration.
+- **Daytime pier labels:** the daytime estimate needs the one-time counterweight check too (`POST manual/pier-labels`, on the east side).
+
 ## Error handling and abort
 
 - **Abort:** cancels the CTS, calls `StopSlew` synchronously in the request thread, calls camera `AbortExposure`, then restores in `finally`: preferred pier side, then tracking (mode B: the earlier state). Restore failures stay in the journal and show as restorePending.

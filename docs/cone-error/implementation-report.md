@@ -20,8 +20,8 @@ All commits are local. Nothing was pushed, rebased or amended.
 | Repository | Branch (base) | Commits |
 |---|---|---|
 | pins | `feat/cone-error` (`unstable` eeb81e4f0) | 8a16def4a `docs: cone error measurement design`, 28b836692 `docs: cone error implementation report`, plus the override docs update |
-| NINA.Plugins/Touch-N-Stars | `feat/cone-error` (`unstable` 2a2a942) | 49a0612 `cone error: domain math` → 5eb145e `cone error: measurement sessions` → 4c32a1c `cone error: API` → 9662b28 `cone error: per-move override of the sun path check` |
-| Touch-N-Stars (app) | `feat/cone-error` (`develop` 6689531a7) | 6571f0e22 `feat(cone-error): cone error measurement panel (PINS)` → 130ac943b `feat(cone-error): override the sun path check for one daytime move` |
+| NINA.Plugins/Touch-N-Stars | `feat/cone-error` (`unstable` 2a2a942) | 49a0612 `cone error: domain math` → 5eb145e `cone error: measurement sessions` → 4c32a1c `cone error: API` → 9662b28 `cone error: per-move override of the sun path check` → 64083ad `cone error: fixes from the four-reviewer review` |
+| Touch-N-Stars (app) | `feat/cone-error` (`develop` 6689531a7) | 6571f0e22 `feat(cone-error): cone error measurement panel (PINS)` → 130ac943b `feat(cone-error): override the sun path check for one daytime move` → eb1dc436c `fix(cone-error): review fixes in the panel` |
 
 No NINA core file was changed. `package-lock.json` in the app stays uncommitted, from your `npm install`. No version or CHANGELOG changes were made.
 
@@ -86,7 +86,11 @@ No NINA core file was changed. `package-lock.json` in the app stays uncommitted,
    - During an overridden move the watchdog alerts instead of stopping the mount mid-swing.
    - The next plan is checked normally again.
    - Details are in the design under "Sun path override".
-9. **The open questions were implemented with their stated defaults**:
+9. **The design's lockout of other gotos is not implemented; detection replaces it.**
+   - TNS framing and centring go through the ninaAPI plugin, which this feature does not change.
+   - The automated run stops when a goto it did not start begins.
+   - The daytime check drops the captured position after a move or sync from elsewhere.
+10. **The open questions were implemented with their stated defaults**:
    - non-strict paths by default
    - an active or unknown pointing model needs an explicit acknowledgment and is not a hard block
    - ASCOM/Alpaca is unsupported
@@ -106,7 +110,7 @@ How the convention is backed up:
 
 **Plugin build** (`dotnet build Touch-N-Stars.sln --no-incremental`). Builds ran with a scratch HOME, so the post-build copy did not touch the deployed plugin in `~/.local/share/NINA/Plugins`.
 
-| | Baseline (`unstable` 2a2a942) | Final (`feat/cone-error` 9662b28) |
+| | Baseline (`unstable` 2a2a942) | Final (`feat/cone-error` 64083ad) |
 |---|---|---|
 | Errors | 0 | 0 |
 | Warnings (total) | 362 | 362 |
@@ -116,8 +120,8 @@ How the convention is backed up:
 
 | | Baseline | Final |
 |---|---|---|
-| Passed / total | 306 / 306 | 497 / 497 |
-| New cone error tests | — | 191 |
+| Passed / total | 306 / 306 | 535 / 535 |
+| New cone error tests | — | 229 |
 
 The new tests by area:
 
@@ -127,12 +131,12 @@ The new tests by area:
 | Math and statistics | 36 |
 | Sun ephemeris (Meeus examples 12.a, 12.b, 25.a) | 9 |
 | Limits | 17 |
-| Flip path and sun window | 19 |
-| Planner | 12 |
-| Automated session | 21 |
-| Daytime session (incl. 6 sun-override tests) | 29 |
-| Adapters and store | 13 |
-| API end-to-end | 13 |
+| Flip path (incl. southern hemisphere, via home) and sun window | 24 |
+| Planner | 14 |
+| Automated session | 27 |
+| Daytime session (incl. sun override) | 40 |
+| Adapters and store | 21 |
+| API end-to-end | 19 |
 
 The failure paths the spec named are all covered:
 - a solve failure on the east side and on the west side
@@ -155,16 +159,65 @@ So the end-to-end test is `ConeErrorApiTests`. It runs the real controller on Em
 **TNS app.**
 - `npm run lint` and `npm run format:check`: clean.
 - Every new `.vue` file compiles with `@vue/compiler-sfc`.
-- `npm run test:run`: 877/877 after both app commits. No separate pre-change run was taken; the panel adds no app tests (convention) and changes no existing module.
-- `npm run i18n:check` reports only the expected `missing (152)` keys in the 13 other locales; you keep TNS strings in `en.json` only.
+- `npm run test:run`: 877/877 after all three app commits. No separate pre-change run was taken; the panel adds no app tests (convention) and changes no existing module.
+- `npm run i18n:check` reports only the expected `missing (155)` keys in the 13 other locales; you keep TNS strings in `en.json` only.
 - No `vite`/`npm run build` was run.
 
 **pins.** Docs only, so no build was needed.
 
+## Four-reviewer review and fixes
+
+Four independent reviewers each reviewed all three repositories. All four confirmed the sign convention, the parallax term, the units, the Meeus ephemeris, the OnStepX meridian-limit semantics and the scope of the override.
+
+Their findings were checked against the code, the OnStepX 10.20a source and lx200_OnStep, and fixed in 64083ad (plugin) and eb1dc436c (app). Each fix has a test that reproduces the bug.
+
+**High:**
+- **Tracking restore:** `ITelescopeMediator.SetTrackingEnabled` returns the tracking state, not whether it worked, so restoring "tracking off" looked like a failure. That left a journal behind that blocked both modes.
+- **Stuck daytime move:** a failed daytime move left the phase at "Moving", which disabled End, Capture and both Move buttons.
+- **Southern flip path:** the sun check sampled the flip over the north pole in the southern hemisphere.
+- **OnStepX's real flip route:** the route via its home position was not sampled.
+
+**Medium:**
+- **INDI OnStep limits:** they were never used, because their state stays Idle.
+- **Leaving the panel:** opening the panel's own live view or jog pad links stopped the status polls, so the deadman stopped the mount mid-flip (even during an overridden move).
+- **Plan countdown:** it compared the Pi's clock with the phone's.
+- **Abort during the counterweight question:** it was reported as "labels inverted".
+- **Daytime drift:** corrections could not converge with NINA's settle time.
+- **INDI pier-side confirmation:**
+  - It returned before the driver had answered.
+  - The stock driver rejects OnStepX's `1` and only reads `:GX96#` back on its next poll.
+  - A sent but unconfirmed change was never restored.
+- **Lockout of other gotos:** missing; detection replaces it.
+- **Daytime estimate:** it ran without the counterweight check.
+- **Runs from home:** they failed at the first slew, because OnStepX ignores the preferred side at home.
+
+**Low:**
+- Capture was not guarded during a move.
+- A failed daytime start left a stuck session.
+- The abort fallback did nothing after a finished session.
+- Races between End and a move, and a session counted as finished before its restore had run.
+- No cancellation check between preparing the side and the goto.
+- The History tab trapped the user while a session ran.
+- The exposure default ignored the saved setting.
+- A settings save reset unsent fields.
+- The clock check ran only in the app.
+- A meridian limit of 0 made every plan impossible.
+- The confirmed hour-angle envelope could be widened.
+- The INDI switch could be ambiguous.
+- Daytime step 6 of this report was impossible.
+
+**Not changed:**
+- **The ASTAP hint in JNow:** not a bug, because `PlateSolveParameter.Coordinates` converts to J2000.
+- **Few usable daytime landmarks under the profile's meridian limit:** this is by design.
+
 ## Limitations and open issues
 
 - **The NINA adapters have not been run against real hardware or drivers.** This covers the OnStepX `:SX96` path, the INDI "Preferred Pier Side" path, the model probe, the capture and solve, and the J2000→JNow conversion. Their contracts were checked against the OnStepX 10.20a and INDI `lx200_OnStep` sources, but the first night is the real check.
-- **Daytime flips are rarely allowed with a 30° Sun radius.** A flip from a low southern landmark swings the tube over the pole through the eastern or western sky. At 50° N, in June, March and December, it comes within 30° of the Sun for most of the day; it is allowed only when the Sun is within a few degrees of the horizon or below it (around sunrise and sunset). The rule is as specified; the UI says so and shows when a move becomes allowed. You can override the path check per move; the endpoint check stays. Making the default path model stricter would block even more. Firmware-specific flip paths (one RA rotation direction only) could relax this, but that needs per-firmware evidence.
+- **Daytime flips are rarely allowed with a 30° Sun radius.**
+  - A flip from a low southern landmark swings the tube over the pole through the eastern or western sky. At 50° N, in June, March and December, it comes within 30° of the Sun for most of the day; it is allowed only when the Sun is within a few degrees of the horizon or below it (around sunrise and sunset).
+  - A Sun more than 2° below the horizon is ignored.
+  - The UI shows when a move becomes allowed. You can override the path check per move; the endpoint check stays.
+  - OnStepX's via-home route is sampled as well. Firmware-specific single-direction flips could relax the check, but the direction of a flip is not known.
 - **Supported mounts.** Pier side forcing works only on the native OnStepX driver and the INDI OnStep and Proxisky drivers. Everything else, including ASCOM/Alpaca, 10micron and other INDI drivers, is refused with a reason. INDI's `TELESCOPE_PIER_SIDE` is read-only in pins and the ASCOM/INDI telescope classes are internal.
 - **Pointing model.** It can be read on native OnStepX and on INDI OnStep over TCP; over a serial INDI connection it is "unknown" and needs an acknowledgment. A firmware without the alignment commands may answer `0`, which looks like "no model".
 - **The measured value is CH + NP · sin δ** (non-perpendicularity). Near δ = 0° this is negligible. Separating the two terms would need two declinations.
@@ -173,6 +226,8 @@ So the end-to-end test is `ConeErrorApiTests`. It runs the real controller on Em
 - **Mode A has no deadman.** Locking the phone does not abort a run at night. The mode B deadman (20 s without status polls during a move) also fires when the app is backgrounded mid-move, which is intended.
 - **PHD2 guiding is not detected;** the UI warns about it. The internal guider is detected.
 - **Mount clock/site.** The Sun check uses the Pi's clock and the profile longitude; mount hour angles use the mount's sidereal time. Their difference is shown, warns at 1 minute and blocks at 8. The Pi-vs-phone clock difference warns at 2 minutes and blocks at 10.
+- **The automated run's stop bar is only on the panel.** The status poll and the backend continue on other pages, but stopping from there needs the mount page's stop. The daytime check disables its own links during a move.
+- **Other INDI OnStep forks:** the INDI "Preferred Pier Side" confirmation relies on the stock driver reading `:GX96#` back on its status poll. A driver that never reads it back times out ("not confirmed") and refuses safely.
 - **The panel has not been rendered in a browser or app** (no build). Nico builds and should look at it on a phone in the dark, especially the stop bar against the bottom navigation.
 - **Translations** for the 13 other app locales are not generated.
 
@@ -185,7 +240,7 @@ So the end-to-end test is `ConeErrorApiTests`. It runs the real controller on Em
 - Pointing model cleared.
 - No sequence, no guiding.
 
-1. **Preconditions.** Open Cone Error → Measure. All rows should be green.
+1. **Preconditions.** Open Cone Error → Measure. All rows should be green. Starting from the home position is fine: the first slew then goes to the West side, where OnStepX puts it at home.
    - "Pier side control" names the OnStepX or INDI OnStep control.
    - "Mount limits" shows the mount as the source. Compare its meridian limits with the mount's own settings page.
    - "Pointing model" is None.
@@ -217,7 +272,7 @@ So the end-to-end test is `ConeErrorApiTests`. It runs the real controller on Em
 5. **Read the shift.** In live view (Live view link → camera loop), the landmark's shift between the sides is about twice the cone error.
    - Optionally, re-centre the landmark with the jog pad, enter the RA-axis-to-tube distance and the landmark distance, and tap "Landmark re-centred".
    - Compare the estimate with the night result (same sign; size within about 1′).
-6. **Override, only from a safe position.** When the Sun is far from the whole sky region of the flip, raise the Sun radius temporarily until the plan is refused for the path only.
+6. **Override, only from a safe position.** End the daytime check, raise the Sun radius in Settings (it is fixed while a check runs), then start the check again. Do this when the Sun is far from the whole sky region of the flip, and raise the radius until the plan is refused for the path only.
    - Check that "Override the sun check for this move" appears and that the confirmation names the closest approach.
    - Check that the override does not appear when the endpoint is refused.
    - After the overridden move, check that the next plan is refused again without the override.
