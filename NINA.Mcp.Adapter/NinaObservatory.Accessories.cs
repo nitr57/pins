@@ -9,6 +9,9 @@ namespace NINA.Mcp.Adapter;
 
 public sealed partial class NinaObservatory {
 
+    /// <summary>Upper bound for closing the shutter, which no MCP cancellation may stop.</summary>
+    private static readonly TimeSpan ShutterCloseTimeout = TimeSpan.FromMinutes(10);
+
     // ----- Rotator -----
 
     /// <summary>RotatorVM halts the rotator when the token is cancelled and returns NaN when the move did not finish.</summary>
@@ -167,7 +170,8 @@ public sealed partial class NinaObservatory {
 
         try {
             // DomeVM passes the token on, but the INDI dome only stops waiting: stop the motion itself on cancel. Never for
-            // closing: stop_all and secure_observatory cancel every job, and a generic stop must not leave the roof open.
+            // closing: stop_all and secure_observatory cancel every job, and a generic stop must not leave the roof open
+            // (the close does not get the job's token either).
             using var stopOnCancel = action == DomeAction.CloseShutter
                 ? default
                 : cancellationToken.Register(StopDome);
@@ -177,7 +181,7 @@ public sealed partial class NinaObservatory {
                     return await ShutterResultAsync(await domeMediator.OpenShutter(cancellationToken), "open", ShutterState.ShutterOpen, cancellationToken);
 
                 case DomeAction.CloseShutter:
-                    return await ShutterResultAsync(await domeMediator.CloseShutter(cancellationToken), "close", ShutterState.ShutterClosed, cancellationToken);
+                    return await ShutterResultAsync(await CloseShutterUncancellableAsync(cancellationToken), "close", ShutterState.ShutterClosed, cancellationToken);
 
                 case DomeAction.Park:
                     if (!await domeMediator.Park(cancellationToken)) {
@@ -252,6 +256,28 @@ public sealed partial class NinaObservatory {
             Logger.Error("MCP: dome command failed", ex);
             return OperationResult.Fail($"Dome command failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Closes on a token of its own: DomeVM hands its token to the driver (ASCOM and Alpaca abort the shutter when it is
+    /// cancelled) and to the park-before-close steps, and stop_all, secure_observatory and the pins shutdown cancel every
+    /// job. <paramref name="cancellationToken"/> only ends the wait; the close itself goes on (at most ten minutes).
+    /// </summary>
+    private async Task<bool> CloseShutterUncancellableAsync(CancellationToken cancellationToken) {
+        var timeout = new CancellationTokenSource(ShutterCloseTimeout);
+        var close = domeMediator.CloseShutter(timeout.Token);
+
+        _ = close.ContinueWith(
+            task => {
+                timeout.Dispose();
+
+                if (cancellationToken.IsCancellationRequested) {
+                    Logger.Info($"MCP: the dome close that a cancelled job started has ended ({(task.IsCompletedSuccessfully ? task.Result.ToString() : task.Status.ToString())})");
+                }
+            },
+            TaskScheduler.Default);
+
+        return await close.WaitAsync(cancellationToken);
     }
 
     /// <summary>
