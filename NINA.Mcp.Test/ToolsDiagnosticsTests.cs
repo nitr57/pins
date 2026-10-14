@@ -502,6 +502,26 @@ public class ToolsDiagnosticsTests {
     }
 
     [Test]
+    public async Task PlanTargets_AllDarkNight_Is24Hours() {
+        // Polar night with a circumpolar target: every one of the 289 samples is dark and usable.
+        catalog.Observatory.NightSkyFactory = request => {
+            var sky = ToolsNightSky.Create(request.Targets);
+
+            return sky with {
+                SunAltitude = Enumerable.Repeat(-30.0, ToolsNightSky.Samples).ToList(),
+                Targets = sky.Targets.Select(target => target with { Altitude = Enumerable.Repeat(60.0, ToolsNightSky.Samples).ToList() }).ToList()
+            };
+        };
+
+        var result = await catalog.CallAsync("plan_targets", """{"targets":[{"name":"T","ra":1,"dec":89}]}""");
+        var target = result.Structured!["targets"]![0]!;
+
+        Assert.That(result.Structured!["sun"]!["darkHours"]!.GetValue<double>(), Is.EqualTo(24));
+        Assert.That(target["usableDarkHours"]!.GetValue<double>(), Is.EqualTo(24));
+        Assert.That(target["bestWindow"]!["hours"]!.GetValue<double>(), Is.EqualTo(24));
+    }
+
+    [Test]
     public async Task PlanTargets_PassesTheObservatorysNotesOn() {
         catalog.Observatory.NightSkyFactory = request => ToolsNightSky.Create(request.Targets) with {
             Notes = ["The pins box's time zone (UTC+00:00) is about 10 h away from the site's solar time."]

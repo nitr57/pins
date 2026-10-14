@@ -42,7 +42,7 @@ internal static class NightPlanner {
         var darkLimit = DarkLimit(darkness);
         var dark = Enumerable.Range(0, count).Select(i => sky.SunAltitude[i] < darkLimit).ToArray();
         var stepHours = count > 1 ? (times[1] - times[0]).TotalHours : 0;
-        var darkHours = dark.Count(value => value) * stepHours;
+        var darkHours = Hours(dark, stepHours);
         var darkWindow = LongestRun(dark);
 
         var sun = new {
@@ -60,7 +60,7 @@ internal static class NightPlanner {
             darkHours = Round(darkHours, 2)
         };
 
-        var moonUpInDark = Enumerable.Range(0, count).Count(i => dark[i] && sky.MoonAltitude[i] > 0) * stepHours;
+        var moonUpInDark = Hours(Enumerable.Range(0, count).Select(i => dark[i] && sky.MoonAltitude[i] > 0).ToArray(), stepHours);
 
         var moon = new {
             illuminationPercent = sky.MoonIllumination is null ? (double?)null : Round(sky.MoonIllumination.Value * 100, 0),
@@ -164,13 +164,13 @@ internal static class NightPlanner {
             lowestAltitude = count == 0 ? (double?)null : Round(target.Altitude[lowestIndex], 1),
             risesAboveLimit = Format(rises.Time),
             setsBelowLimit = Format(sets.Time),
-            usableDarkHours = Round(usable.Count(value => value) * stepHours, 2),
+            usableDarkHours = Round(Hours(usable, stepHours), 2),
             bestWindow = best is null
                 ? null
                 : new {
                     from = Format(times[best.Value.Start]),
                     to = Format(times[best.Value.End]),
-                    hours = Round((best.Value.End - best.Value.Start + 1) * stepHours, 2),
+                    hours = Round(RunHours(best.Value, count, stepHours), 2),
                     minMoonSeparation = minSeparation
                 },
             notes = notes.Count > 0 ? notes : null
@@ -233,6 +233,27 @@ internal static class NightPlanner {
         }
 
         return crossings;
+    }
+
+    /// <summary>
+    /// Hours during which <paramref name="values"/> is true, by the trapezoid rule over the sampling intervals: an interval
+    /// counts fully when both ends are true and half when one is, so an all-dark night is 24 hours, not one step more.
+    /// </summary>
+    private static double Hours(bool[] values, double stepHours) {
+        var halves = 0;
+
+        for (var i = 1; i < values.Length; i++) {
+            halves += (values[i - 1] ? 1 : 0) + (values[i] ? 1 : 0);
+        }
+
+        return halves * stepHours / 2;
+    }
+
+    /// <summary>Hours of one run of true samples, counted like <see cref="Hours"/>: half a step beyond each end inside the night.</summary>
+    private static double RunHours((int Start, int End) run, int count, double stepHours) {
+        var steps = run.End - run.Start + (run.Start > 0 ? 0.5 : 0) + (run.End < count - 1 ? 0.5 : 0);
+
+        return steps * stepHours;
     }
 
     /// <summary>First and last index of the longest run of true values; null when there is none.</summary>
