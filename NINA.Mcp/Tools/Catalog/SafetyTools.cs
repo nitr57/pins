@@ -34,7 +34,8 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         + "unparked telescope can damage it); a disconnected mount counts as not parked, because its position is unknown, "
         + "unless close_dome_without_mount is set. The dome step only succeeds when the dome then reports its shutter closed. "
         + "Not refused while a sequence runs and not blocked by other jobs; until the camera "
-        + "warming starts it holds all devices, so nothing can unpark or open in between. Runs as a background job (parking and closing take "
+        + "warming starts it holds all devices, so no other MCP tool can unpark or open in between (Touch-N-Stars and NINA "
+        + "itself are not blocked). Runs as a background job (parking and closing take "
         + "minutes): poll get_job; outcome.data lists every step. While a shutdown runs, calling it again returns that job "
         + "(its arguments are ignored) instead of starting a second one. Moves the telescope and the dome.";
 
