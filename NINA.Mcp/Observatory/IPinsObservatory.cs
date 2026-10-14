@@ -169,7 +169,7 @@ public interface IPinsObservatory {
     // ----- Rotator, flat device, dome -----
 
     /// <summary>
-    /// Moves the rotator to a sky position angle (degrees, as synced by plate solving) or, with
+    /// Moves the rotator to a sky position angle (degrees; needs a rotator synced by plate solving with sync) or, with
     /// <paramref name="mechanical"/>, to a mechanical position. Returns when the move has finished.
     /// </summary>
     Task<OperationResult> MoveRotatorAsync(double degrees, bool mechanical, CancellationToken cancellationToken);

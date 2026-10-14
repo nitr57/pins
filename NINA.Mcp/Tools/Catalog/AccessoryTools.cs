@@ -18,12 +18,12 @@ internal sealed class MoveRotatorTool : ObservatoryTool {
     public override string Title => "Move rotator";
 
     public override string Description =>
-        "Turns the camera rotator to a position angle in degrees (0-360). By default this is the sky position angle as NINA "
-        + "uses it after a plate solve synced the rotator (plate_solve with sync, center_target); before any sync it equals "
-        + "the mechanical position. mechanical: true moves to the mechanical position of the device instead. NINA may adjust "
+        "Turns the camera rotator to a position angle in degrees (0-360). By default this is the sky position angle, which "
+        + "needs a rotator synced by a plate solve (plate_solve with sync: true); before that the call is refused. "
+        + "mechanical: true moves to the mechanical position of the device instead. NINA may adjust "
         + "the target to the rotator's allowed range (the result reports where it ended). Runs as a background job holding "
         + "the rotator; refused while a capture, plate solve, centering or autofocus job runs, because rotating smears an "
-        + "exposure. A sky position angle needs a synced rotator. get_status shows the current position.";
+        + "exposure. get_status shows the current position.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
