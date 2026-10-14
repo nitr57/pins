@@ -15,6 +15,10 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
     /// <summary>How long cancelled jobs get to end before the shutdown moves hardware.</summary>
     internal static readonly TimeSpan CancelGrace = TimeSpan.FromSeconds(10);
 
+    private const string JobKind = "secure";
+
+    private readonly object startGate = new();
+
     public SecureObservatoryTool(IPinsObservatory observatory) : base(observatory) {
     }
 
@@ -28,9 +32,11 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         + "the mount, closes the dome shutter and the flat panel's dust cover, and optionally warms the camera. Steps for "
         + "devices that are not connected are skipped. The dome is only closed when the mount is parked (closing a roof on an "
         + "unparked telescope can damage it); a disconnected mount counts as not parked, because its position is unknown, "
-        + "unless close_dome_without_mount is set. The dome step only succeeds when the dome then reports its shutter closed. Not refused while a sequence runs and not blocked by other jobs; until the camera "
+        + "unless close_dome_without_mount is set. The dome step only succeeds when the dome then reports its shutter closed. "
+        + "Not refused while a sequence runs and not blocked by other jobs; until the camera "
         + "warming starts it holds all devices, so nothing can unpark or open in between. Runs as a background job (parking and closing take "
-        + "minutes): poll get_job; outcome.data lists every step. Moves the telescope and the dome.";
+        + "minutes): poll get_job; outcome.data lists every step. While a shutdown runs, calling it again returns that job "
+        + "(its arguments are ignored) instead of starting a second one. Moves the telescope and the dome.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
@@ -57,29 +63,45 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         var closeCover = arguments.GetBool("close_cover") ?? true;
         var warmCamera = arguments.GetBool("warm_camera") ?? false;
 
-        var steps = new List<SecureStep>();
+        var wait = JobPayload.ReadWait(arguments, DefaultWaitSeconds);
+        JobInfo job;
 
-        // Before the job starts, so that it does not cancel itself.
-        Step(steps, "stop_sequence", () => Observatory.StopSequence());
-        Step(steps, "cancel_jobs", () => {
-            var cancel = context.Jobs.CancelAll();
+        // Checked and started under one lock: a retry (or a second client) joins the running shutdown instead of
+        // cancelling it, which would abort its park and run two shutdowns at once.
+        lock (startGate) {
+            var running = context.Jobs.List().FirstOrDefault(candidate => candidate.Kind == JobKind && candidate.State == JobState.Running);
 
-            return cancel.Errors.Count == 0
-                ? OperationResult.Ok($"Cancellation requested for {cancel.Requested} running job(s).")
-                : OperationResult.Fail($"Cancellation requested for {cancel.Requested} running job(s); stopping failed for {string.Join(" | ", cancel.Errors)}.");
-        });
-        Step(steps, "abort_exposure", () => {
-            Observatory.AbortExposure();
+            if (running is not null) {
+                job = running;
+            } else {
+                var steps = new List<SecureStep>();
 
-            return OperationResult.Ok("Exposure abort requested.");
-        });
+                // Before the job starts, so that it does not cancel itself.
+                Step(steps, "stop_sequence", () => Observatory.StopSequence());
+                Step(steps, "cancel_jobs", () => {
+                    var cancel = context.Jobs.CancelAll();
 
-        return await RunJobAsync(
-            arguments,
-            context,
-            new JobRequest("secure", "Secure the observatory", null),
-            token => ShutDownAsync(context.Jobs, steps, park, closeDome, closeDomeWithoutMount, closeCover, warmCamera, token),
-            cancellationToken).ConfigureAwait(false);
+                    return cancel.Errors.Count == 0
+                        ? OperationResult.Ok($"Cancellation requested for {cancel.Requested} running job(s).")
+                        : OperationResult.Fail($"Cancellation requested for {cancel.Requested} running job(s); stopping failed for {string.Join(" | ", cancel.Errors)}.");
+                });
+                Step(steps, "abort_exposure", () => {
+                    Observatory.AbortExposure();
+
+                    return OperationResult.Ok("Exposure abort requested.");
+                });
+
+                job = context.Jobs.Start(
+                    JobKind,
+                    "Secure the observatory",
+                    null,
+                    token => ShutDownAsync(context.Jobs, steps, park, closeDome, closeDomeWithoutMount, closeCover, warmCamera, token));
+            }
+        }
+
+        var current = await context.Jobs.WaitAsync(job.Id, wait, cancellationToken).ConfigureAwait(false) ?? job;
+
+        return JobPayload.Result(current);
     }
 
     private async Task<JobOutcome> ShutDownAsync(
@@ -194,7 +216,7 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         var deadline = DateTime.UtcNow + CancelGrace;
 
         // The shutdown job itself is running too.
-        while (jobs.List().Any(job => job.State == JobState.Running && job.Kind != "secure") && DateTime.UtcNow < deadline) {
+        while (jobs.List().Any(job => job.State == JobState.Running && job.Kind != JobKind) && DateTime.UtcNow < deadline) {
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
     }

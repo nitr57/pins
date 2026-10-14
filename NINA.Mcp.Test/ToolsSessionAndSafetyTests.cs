@@ -304,6 +304,32 @@ public class ToolsSessionAndSafetyTests {
         Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("succeeded"));
     }
 
+    [Test]
+    public async Task Secure_RetryJoinsTheRunningShutdown() {
+        ConnectAll(atPark: false);
+        catalog.Observatory.Block("Park");
+
+        var first = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"wait_seconds":0}"""));
+
+        await catalog.Observatory.WaitForCallAsync("Park");
+
+        var second = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"wait_seconds":0}"""));
+
+        Assert.That(second["id"]!.GetValue<string>(), Is.EqualTo(first["id"]!.GetValue<string>()));
+        Assert.That(second["state"]!.GetValue<string>(), Is.EqualTo("running"));
+        Assert.That(second["cancelRequested"]!.GetValue<bool>(), Is.False, "the retry must not cancel the shutdown");
+        Assert.That(catalog.Observatory.Calls.Count(call => call == "StopSequence"), Is.EqualTo(1));
+        Assert.That(catalog.Observatory.Calls.Count(call => call == "StopSlew"), Is.EqualTo(0));
+        Assert.That(catalog.Jobs.List().Count(job => job.Kind == "secure"), Is.EqualTo(1));
+
+        catalog.Observatory.Release("Park");
+
+        var done = await catalog.Jobs.WaitAsync(first["id"]!.GetValue<string>(), TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        Assert.That(done!.State, Is.EqualTo(JobState.Succeeded), done.Outcome?.Message);
+        Assert.That(catalog.Observatory.Calls.Count(call => call == "Park"), Is.EqualTo(1));
+    }
+
     // ----- Helpers -----
 
     private void AddLight(int id, string target, string filter, double hfr, int stars) {
