@@ -20,7 +20,7 @@ internal sealed class FindTargetsTool : ObservatoryTool {
         + "common names), so coordinates never have to be guessed, also without internet. Returns J2000 RA in hours and Dec in "
         + "degrees ready for plan_targets, add_target or center_target, plus type, constellation, magnitude, surface "
         + "brightness, size in arcmin and position angle. Search by name (\"M 42\", \"NGC 7000\", \"Orion Nebula\", substring "
-        + "match) or browse with filters: types (GALXY galaxy, BRTNB bright nebula, PLNNB planetary, OPNCL open cluster, GLOCL "
+        + "match; an exact designation or alias comes first, then names that start with it) or browse with filters: types (GALXY galaxy, BRTNB bright nebula, PLNNB planetary, OPNCL open cluster, GLOCL "
         + "globular, DRKNB dark nebula, SNREM supernova remnant, CL+NB cluster with nebula, ASTER asterism), constellation "
         + "(three-letter IAU code such as ORI or CYG), max_magnitude and size limits; order by name, magnitude (brightest "
         + "first) or size (largest first). Side-effect free.";

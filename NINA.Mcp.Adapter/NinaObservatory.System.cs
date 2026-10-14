@@ -3,6 +3,7 @@
 using NINA.Astrometry;
 using NINA.Core.Utility;
 using NINA.Mcp.Observatory;
+using NINA.Mcp.Tools;
 using System.Diagnostics;
 using System.Globalization;
 using static System.FormattableString;
@@ -29,7 +30,8 @@ public sealed partial class NinaObservatory {
                 Constellation = search.Constellation ?? string.Empty,
                 DsoTypes = search.Types.ToList(),
                 ObjectName = search.Name ?? string.Empty,
-                Limit = search.Limit
+                // A name matches by substring and the query truncates before any ranking: fetch more, rank, then truncate.
+                Limit = string.IsNullOrWhiteSpace(search.Name) ? search.Limit : Math.Max(search.Limit, CatalogRanking.NameSearchFetchLimit)
             };
 
             parameters.Magnitude.Thru = search.MaxMagnitude;
@@ -62,11 +64,10 @@ public sealed partial class NinaObservatory {
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            var objects = found
+            IEnumerable<CatalogObject> objects = found
                 .Select(dso => (Dso: dso, Name: string.IsNullOrWhiteSpace(dso.Name) ? dso.Id : dso.Name))
                 .Select(item => (item.Dso, item.Name, Aliases: (item.Dso.AlsoKnownAs ?? new List<string>())
                     .Where(alias => !string.Equals(alias, item.Name, StringComparison.OrdinalIgnoreCase))
-                    .Take(8)
                     .ToList()))
                 .Select(item => new CatalogObject(
                     item.Name,
@@ -79,19 +80,25 @@ public sealed partial class NinaObservatory {
                     item.Dso.SurfaceBrightness,
                     item.Dso.Size / 60,
                     item.Dso.SizeMin / 60,
-                    item.Dso.PositionAngle == null ? null : Number(item.Dso.PositionAngle.Degree)))
-                .ToList();
+                    item.Dso.PositionAngle == null ? null : Number(item.Dso.PositionAngle.Degree)));
 
             // The query sorts by catalog id; "name" means the displayed name.
             if (search.Order == "name") {
-                objects = objects.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToList();
+                objects = objects.OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase);
             }
 
-            var message = objects.Count == 0
-                ? "No match. If one was expected, read_log may show a catalog error."
-                : Invariant($"{objects.Count} object(s).");
+            // Ranked on every alias, so the named object comes first; only then truncated and the aliases trimmed.
+            var ranked = string.IsNullOrWhiteSpace(search.Name) ? objects.ToList() : CatalogRanking.Rank(objects, search.Name);
+            var result = ranked
+                .Take(search.Limit)
+                .Select(item => item with { Aliases = item.Aliases.Take(8).ToList() })
+                .ToList();
 
-            return new CatalogSearchResult(true, message, objects);
+            var message = result.Count == 0
+                ? "No match. If one was expected, read_log may show a catalog error."
+                : Invariant($"{result.Count} object(s).");
+
+            return new CatalogSearchResult(true, message, result);
         } catch (OperationCanceledException) {
             throw;
         } catch (Exception ex) {
