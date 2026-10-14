@@ -9,7 +9,9 @@ using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Mcp.Adapter;
 using NINA.Mcp.Observatory;
+using NINA.WPF.Base.Interfaces.Mediator;
 using System;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -114,6 +116,33 @@ namespace NINA.Test.Mcp {
 
                 Assert.That(disconnect.Severity, Is.EqualTo(severity));
                 Assert.That(disconnect.Message, Is.EqualTo(message));
+            } finally {
+                await bridge.StopAsync(CancellationToken.None);
+            }
+        }
+
+        [Test]
+        public async Task ImageSaveFailure_WithLinuxNoSpaceLeft_IsDiskFull() {
+            Assume.That(OperatingSystem.IsWindows(), Is.False, "the errno is the Linux HResult of an IOException");
+
+            var saving = new Mock<IImageSaveMediator>();
+            var log = new ObservatoryEventLog();
+            var bridge = Start(log, services => services.AddSingleton(saving.Object));
+
+            try {
+                var full = new ImageSaveFailedEventArgs(null, "/media/usb/M31.fits", "$$TARGETNAME$$", ImageSaveFailureStage.SaveToDisk, new IOException("No space left on device", 28));
+                var other = new ImageSaveFailedEventArgs(null, "/media/usb/M33.fits", "$$TARGETNAME$$", ImageSaveFailureStage.SaveToDisk, new IOException("Permission denied", 13));
+
+                await saving.RaiseAsync(mediator => mediator.ImageSaveFailed += null, saving.Object, full);
+                await saving.RaiseAsync(mediator => mediator.ImageSaveFailed += null, saving.Object, other);
+
+                var events = log.Recent(10, entry => entry.Kind == "image").Events;
+
+                Assert.That(events.Select(entry => entry.Message), Is.EqualTo(new[] {
+                    "Saving an image failed: the disk is full.", "Saving an image failed: Permission denied."
+                }));
+                Assert.That(events[0].Data!["diskFull"], Is.EqualTo(true));
+                Assert.That(events[1].Data!["diskFull"], Is.EqualTo(false));
             } finally {
                 await bridge.StopAsync(CancellationToken.None);
             }

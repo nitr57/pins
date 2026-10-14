@@ -328,17 +328,21 @@ public sealed class NinaEventBridge : IHostedService {
             Publish("image", EventSeverity.Info, Invariant($"Image saved: {file ?? "(unknown file)"}."), data);
         };
 
-        Func<object, ImageSaveFailedEventArgs, Task> failed = (_, args) => Publish(
-            "image",
-            EventSeverity.Error,
-            args.IsDiskFull
-                ? "Saving an image failed: the disk is full."
-                : $"Saving an image failed: {args.Exception?.Message ?? "unknown error"}.",
-            new Dictionary<string, object?> {
-                ["path"] = args.FilePath,
-                ["stage"] = args.FailureStage.ToString(),
-                ["diskFull"] = args.IsDiskFull
-            });
+        Func<object, ImageSaveFailedEventArgs, Task> failed = (_, args) => {
+            var diskFull = args.IsDiskFull || IsNoSpaceLeft(args.Exception);
+
+            return Publish(
+                "image",
+                EventSeverity.Error,
+                diskFull
+                    ? "Saving an image failed: the disk is full."
+                    : $"Saving an image failed: {args.Exception?.Message ?? "unknown error"}.",
+                new Dictionary<string, object?> {
+                    ["path"] = args.FilePath,
+                    ["stage"] = args.FailureStage.ToString(),
+                    ["diskFull"] = diskFull
+                });
+        };
 
         mediator.ImageSaved += saved;
         mediator.ImageSaveFailed += failed;
@@ -475,6 +479,22 @@ public sealed class NinaEventBridge : IHostedService {
         }
 
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// <see cref="ImageSaveFailedEventArgs.IsDiskFull"/> knows only the Windows error codes; on Linux an IOException's
+    /// HResult is the errno, ENOSPC (28) for a full disk.
+    /// </summary>
+    private static bool IsNoSpaceLeft(Exception? exception) {
+        const int NoSpaceLeftOnDevice = 28;
+
+        return exception switch {
+            null => false,
+            _ when OperatingSystem.IsWindows() => false,
+            IOException io when (io.HResult & 0xffff) == NoSpaceLeftOnDevice => true,
+            AggregateException aggregate => aggregate.InnerExceptions.Any(IsNoSpaceLeft),
+            _ => IsNoSpaceLeft(exception.InnerException)
+        };
     }
 
     private static Dictionary<string, object?> Data(string key, object? value) {
