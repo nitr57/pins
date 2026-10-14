@@ -211,6 +211,15 @@ The code has four layers:
   - non-perpendicularity is reported as a limitation: the measured value is CH + NP·sin δ
   - mode B move confirmations include a collision warning: counterweight-up at low altitude can hit the tripod, so stay at the mount
 
+## Sun path override (added after approval, 2026-10-14)
+
+The flip-path sun check turned out to refuse daytime flips from a low southern landmark for most of the day. So a refusal whose **only** violation is the Sun near the path (`SunTooCloseOnPath`) can be overridden:
+- **Scope:**
+  - The endpoint check (`SunTooClose`) and every limit can never be overridden.
+  - The override applies to one planned move (`POST manual/plan-move {side, overrideSunPath: true}`) after a confirmation in the app that names the closest approach. It is logged.
+  - The move re-checks with the same rule right before it starts. The next plan is checked normally again.
+- **Watchdog:** during an overridden move the watchdog alerts but does not stop the mount, because stopping mid-swing would leave the tube pointing near the Sun. Normal behaviour returns when the move ends.
+
 ## Error handling and abort
 
 - **Abort:** cancels the CTS, calls `StopSlew` synchronously in the request thread, calls camera `AbortExposure`, then restores in `finally`: preferred pier side, then tracking (mode B: the earlier state). Restore failures stay in the journal and show as restorePending.
