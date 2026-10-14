@@ -20,8 +20,8 @@ All commits are local. Nothing was pushed, rebased or amended.
 | Repository | Branch (base) | Commits |
 |---|---|---|
 | pins | `feat/cone-error` (`unstable` eeb81e4f0) | 8a16def4a `docs: cone error measurement design`, 28b836692 `docs: cone error implementation report`, plus the override docs update |
-| NINA.Plugins/Touch-N-Stars | `feat/cone-error` (`unstable` 2a2a942) | 49a0612 `cone error: domain math` → 5eb145e `cone error: measurement sessions` → 4c32a1c `cone error: API` → 9662b28 `cone error: per-move override of the sun path check` → 64083ad `cone error: fixes from the four-reviewer review` |
-| Touch-N-Stars (app) | `feat/cone-error` (`develop` 6689531a7) | 6571f0e22 `feat(cone-error): cone error measurement panel (PINS)` → 130ac943b `feat(cone-error): override the sun path check for one daytime move` → eb1dc436c `fix(cone-error): review fixes in the panel` |
+| NINA.Plugins/Touch-N-Stars | `feat/cone-error` (`unstable` 2a2a942) | 49a0612 `cone error: domain math` → 5eb145e `cone error: measurement sessions` → 4c32a1c `cone error: API` → 9662b28 `cone error: per-move override of the sun path check` → 64083ad `cone error: fixes from the four-reviewer review` → b520081 `cone error: fixes from the second review pass` |
+| Touch-N-Stars (app) | `feat/cone-error` (`develop` 6689531a7) | 6571f0e22 `feat(cone-error): cone error measurement panel (PINS)` → 130ac943b `feat(cone-error): override the sun path check for one daytime move` → eb1dc436c `fix(cone-error): review fixes in the panel` → 2ae52e106 `fix(cone-error): counterweight check answered once, shown when refused` |
 
 No NINA core file was changed. `package-lock.json` in the app stays uncommitted, from your `npm install`. No version or CHANGELOG changes were made.
 
@@ -110,7 +110,7 @@ How the convention is backed up:
 
 **Plugin build** (`dotnet build Touch-N-Stars.sln --no-incremental`). Builds ran with a scratch HOME, so the post-build copy did not touch the deployed plugin in `~/.local/share/NINA/Plugins`.
 
-| | Baseline (`unstable` 2a2a942) | Final (`feat/cone-error` 64083ad) |
+| | Baseline (`unstable` 2a2a942) | Final (`feat/cone-error` b520081) |
 |---|---|---|
 | Errors | 0 | 0 |
 | Warnings (total) | 362 | 362 |
@@ -120,8 +120,8 @@ How the convention is backed up:
 
 | | Baseline | Final |
 |---|---|---|
-| Passed / total | 306 / 306 | 535 / 535 |
-| New cone error tests | — | 229 |
+| Passed / total | 306 / 306 | 548 / 548 |
+| New cone error tests | — | 242 |
 
 The new tests by area:
 
@@ -131,12 +131,12 @@ The new tests by area:
 | Math and statistics | 36 |
 | Sun ephemeris (Meeus examples 12.a, 12.b, 25.a) | 9 |
 | Limits | 17 |
-| Flip path (incl. southern hemisphere, via home) and sun window | 24 |
+| Flip path (incl. southern hemisphere, via home, waypoints, dipped horizon) and sun window | 26 |
 | Planner | 14 |
-| Automated session | 27 |
-| Daytime session (incl. sun override) | 40 |
-| Adapters and store | 21 |
-| API end-to-end | 19 |
+| Automated session | 28 |
+| Daytime session (incl. sun override) | 46 |
+| Adapters and store | 22 |
+| API end-to-end | 22 |
 
 The failure paths the spec named are all covered:
 - a solve failure on the east side and on the west side
@@ -159,8 +159,8 @@ So the end-to-end test is `ConeErrorApiTests`. It runs the real controller on Em
 **TNS app.**
 - `npm run lint` and `npm run format:check`: clean.
 - Every new `.vue` file compiles with `@vue/compiler-sfc`.
-- `npm run test:run`: 877/877 after all three app commits. No separate pre-change run was taken; the panel adds no app tests (convention) and changes no existing module.
-- `npm run i18n:check` reports only the expected `missing (155)` keys in the 13 other locales; you keep TNS strings in `en.json` only.
+- `npm run test:run`: 877/877 after all four app commits. No separate pre-change run was taken; the panel adds no app tests (convention) and changes no existing module.
+- `npm run i18n:check` reports only the expected `missing (156)` keys in the 13 other locales; you keep TNS strings in `en.json` only.
 - No `vite`/`npm run build` was run.
 
 **pins.** Docs only, so no build was needed.
@@ -210,6 +210,31 @@ Their findings were checked against the code, the OnStepX 10.20a source and lx20
 - **The ASTAP hint in JNow:** not a bug, because `PlateSolveParameter.Coordinates` converts to J2000.
 - **Few usable daytime landmarks under the profile's meridian limit:** this is by design.
 
+## Second review pass
+
+All four reviewers checked their findings against the fixes. Every one was fixed or accepted (the goto lockout replaced by detection; the ambiguous INDI switch over serial falls back to Best).
+
+Two reviewers checked parts of the reasoning against the source:
+- **INDI confirmation:** INDIClient's local `SetProperty` changes neither the timestamp nor the state, and every driver set message copies both.
+- **OnStepX flip route:** the via-home route and the home coordinates in both hemispheres match OnStepX.
+
+They found one medium regression and one medium gap, both fixed in b520081 (plugin) and 2ae52e106 (app), each with a test:
+
+**Medium:**
+- **Stopped daytime move (all four reviewers):** stopping or failing a daytime move wiped the captured landmark. The reference position was not updated, so the stop looked like a move from elsewhere and the real error, e.g. the Sun stop, was overwritten.
+- **Counterweight check far from the meridian:** it was accepted at any hour angle. On pierEast beyond 6 h from the meridian the counterweight really is east, so an honest answer would have been stored wrongly per mount. It is now accepted only within 4 h of the meridian, and only once per session.
+
+**Low:**
+- Abort cancelled before it stopped the mount.
+- A settings update could add verified mounts, and a wrong type gave 500.
+- The daytime check started when the mount kept tracking.
+- The Sun cut-off ignored pointings below the horizon. It now follows the session's minimum altitude.
+- Teardown waited 5 s while a move can take 15 s.
+- A disconnected mount was reported as restored.
+- A "No" to the counterweight check could be undone.
+- An abort during the daytime start was lost.
+- OnStepX's 60°/120° waypoint was not sampled.
+
 ## Limitations and open issues
 
 - **The NINA adapters have not been run against real hardware or drivers.** This covers the OnStepX `:SX96` path, the INDI "Preferred Pier Side" path, the model probe, the capture and solve, and the J2000→JNow conversion. Their contracts were checked against the OnStepX 10.20a and INDI `lx200_OnStep` sources, but the first night is the real check.
@@ -227,6 +252,11 @@ Their findings were checked against the code, the OnStepX 10.20a source and lx20
 - **PHD2 guiding is not detected;** the UI warns about it. The internal guider is detected.
 - **Mount clock/site.** The Sun check uses the Pi's clock and the profile longitude; mount hour angles use the mount's sidereal time. Their difference is shown, warns at 1 minute and blocks at 8. The Pi-vs-phone clock difference warns at 2 minutes and blocks at 10.
 - **The automated run's stop bar is only on the panel.** The status poll and the backend continue on other pages, but stopping from there needs the mount page's stop. The daytime check disables its own links during a move.
+- **INDI at home:** pins' INDI telescope reports "at home" only after a NINA home command. A run started from the power-on home position can still be refused at the first slew (safely, "mount refused the pier side"). Moving the mount off home first avoids it.
+- **INDI refusal looks confirmed:** when OnStepX refuses `:SX96` (replies `0`), the stock driver shows the requested side as Ok. The check of the reported side after the slew still stops the run.
+- **INDI limits right after connect:** before the driver's first poll the INDI limit properties hold its built-in defaults (east 20, west −20 minutes). These are stricter than usual, so they can refuse plans with a confusing reason, but never allow too much.
+- **False external slews on INDI:** pins' INDI slewing flag partly comes from a coordinate-motion heuristic. A late report could, rarely, be taken for a goto from elsewhere and stop a run. Not observed.
+- **Gotos from elsewhere during the daytime check:** they are detected (more than 2° of movement drops the capture) but not prevented, and they get no endpoint or path Sun check of ours. The watchdog still alerts inside the radius.
 - **Other INDI OnStep forks:** the INDI "Preferred Pier Side" confirmation relies on the stock driver reading `:GX96#` back on its status poll. A driver that never reads it back times out ("not confirmed") and refuses safely.
 - **The panel has not been rendered in a browser or app** (no build). Nico builds and should look at it on a phone in the dark, especially the stop bar against the bottom navigation.
 - **Translations** for the 13 other app locales are not generated.
