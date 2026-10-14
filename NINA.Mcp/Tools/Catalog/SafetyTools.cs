@@ -27,7 +27,8 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         + "the advanced sequence, cancels every background job and aborts the exposure (like stop_all), stops guiding, parks "
         + "the mount, closes the dome shutter and the flat panel's dust cover, and optionally warms the camera. Steps for "
         + "devices that are not connected are skipped. The dome is only closed when the mount is parked (closing a roof on an "
-        + "unparked telescope can damage it). Not refused while a sequence runs and not blocked by other jobs; until the camera "
+        + "unparked telescope can damage it); a disconnected mount counts as not parked, because its position is unknown, "
+        + "unless close_dome_without_mount is set. Not refused while a sequence runs and not blocked by other jobs; until the camera "
         + "warming starts it holds all devices, so nothing can unpark or open in between. Runs as a background job (parking and closing take "
         + "minutes): poll get_job; outcome.data lists every step. Moves the telescope and the dome.";
 
@@ -40,6 +41,11 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
     protected override void DefineArguments(ToolSchema arguments) {
         arguments.Boolean("park", "Park the mount. Default true.", defaultValue: true);
         arguments.Boolean("close_dome", "Close the dome shutter (after the mount parked). Default true.", defaultValue: true);
+        arguments.Boolean(
+            "close_dome_without_mount",
+            "Close the dome even though no mount is connected (its position is unknown). Only for sites without a mount "
+            + "under the dome, or when the user has checked that the telescope cannot be hit. Default false.",
+            defaultValue: false);
         arguments.Boolean("close_cover", "Close the flat panel's dust cover. Default true.", defaultValue: true);
         arguments.Boolean("warm_camera", "Warm the camera over 10 minutes at the end. Default false.", defaultValue: false);
     }
@@ -47,6 +53,7 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
     protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var park = arguments.GetBool("park") ?? true;
         var closeDome = arguments.GetBool("close_dome") ?? true;
+        var closeDomeWithoutMount = arguments.GetBool("close_dome_without_mount") ?? false;
         var closeCover = arguments.GetBool("close_cover") ?? true;
         var warmCamera = arguments.GetBool("warm_camera") ?? false;
 
@@ -71,7 +78,7 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
             arguments,
             context,
             new JobRequest("secure", "Secure the observatory", null),
-            token => ShutDownAsync(context.Jobs, steps, park, closeDome, closeCover, warmCamera, token),
+            token => ShutDownAsync(context.Jobs, steps, park, closeDome, closeDomeWithoutMount, closeCover, warmCamera, token),
             cancellationToken).ConfigureAwait(false);
     }
 
@@ -80,6 +87,7 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         List<SecureStep> steps,
         bool park,
         bool closeDome,
+        bool closeDomeWithoutMount,
         bool closeCover,
         bool warmCamera,
         CancellationToken cancellationToken) {
@@ -100,7 +108,7 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         var status = Observatory.GetStatus();
 
         using (hold) {
-            await ShutDownDevicesAsync(status, steps, park, closeDome, closeCover, cancellationToken).ConfigureAwait(false);
+            await ShutDownDevicesAsync(status, steps, park, closeDome, closeDomeWithoutMount, closeCover, cancellationToken).ConfigureAwait(false);
         }
 
         // After the hold: warming takes ten minutes and only needs the cooler, while the user may have to park or close by hand.
@@ -120,14 +128,16 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         List<SecureStep> steps,
         bool park,
         bool closeDome,
+        bool closeDomeWithoutMount,
         bool closeCover,
         CancellationToken cancellationToken) {
         if (Connected(status, DeviceKind.Guider)) {
             await StepAsync(steps, "stop_guiding", () => Observatory.StopGuidingAsync(cancellationToken)).ConfigureAwait(false);
         }
 
+        // A disconnected mount is not parked: its position cannot be determined (as in NINA's DomeVM.CloseShutter).
         var mountConnected = Connected(status, DeviceKind.Mount);
-        var parked = !mountConnected || Property(status, DeviceKind.Mount, "atPark") is true;
+        var parked = mountConnected && Property(status, DeviceKind.Mount, "atPark") is true;
 
         if (park && mountConnected) {
             var result = await StepAsync(steps, "park_mount", () => Observatory.ParkAsync(cancellationToken)).ConfigureAwait(false);
@@ -136,7 +146,15 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         }
 
         if (closeDome && Connected(status, DeviceKind.Dome)) {
-            if (!parked) {
+            if (!mountConnected && !closeDomeWithoutMount) {
+                steps.Add(new SecureStep(
+                    "close_dome",
+                    false,
+                    "Skipped: no mount is connected, so it is unknown whether the telescope is parked, and closing the dome on "
+                    + "an unparked telescope can damage it. Reconnect and park the mount, or, once the user confirmed the "
+                    + "telescope is clear, call secure_observatory again with close_dome_without_mount: true (or close the "
+                    + "dome with control_dome)."));
+            } else if (mountConnected && !parked) {
                 steps.Add(new SecureStep(
                     "close_dome",
                     false,

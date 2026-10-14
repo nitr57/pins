@@ -238,6 +238,32 @@ public class ToolsSessionAndSafetyTests {
     }
 
     [Test]
+    public async Task Secure_DoesNotCloseTheDome_WhenTheMountIsDisconnected() {
+        ConnectAll(atPark: false);
+        DisconnectMount();
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory"));
+        var closeDome = job["outcome"]!["data"]!.AsArray().Single(step => step!["step"]!.GetValue<string>() == "close_dome")!;
+
+        Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("failed"));
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("Dome"));
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("Park"));
+        Assert.That(closeDome["success"]!.GetValue<bool>(), Is.False);
+        Assert.That(closeDome["message"]!.GetValue<string>(), Does.Contain("no mount is connected").And.Contain("close_dome_without_mount"));
+    }
+
+    [Test]
+    public async Task Secure_ClosesTheDomeWithoutMount_WhenOptedIn() {
+        ConnectAll(atPark: false);
+        DisconnectMount();
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"close_dome_without_mount":true}"""));
+
+        Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("succeeded"), job.ToJsonString());
+        Assert.That(catalog.Observatory.LastDome, Is.EqualTo((DomeAction.CloseShutter, (double?)null)));
+    }
+
+    [Test]
     public async Task Secure_SkipsDisconnectedDevicesAndOptOuts() {
         ConnectAll(atPark: true);
 
@@ -279,5 +305,11 @@ public class ToolsSessionAndSafetyTests {
         catalog.Observatory.Devices.Add(new DeviceStatus(DeviceKind.Mount, true, "Mount", new Dictionary<string, object?> { ["atPark"] = atPark }));
         catalog.Observatory.Devices.Add(new DeviceStatus(DeviceKind.Dome, true, "Dome", new Dictionary<string, object?> { ["shutter"] = "ShutterOpen" }));
         catalog.Observatory.Devices.Add(new DeviceStatus(DeviceKind.FlatDevice, true, "Panel", new Dictionary<string, object?> { ["coverState"] = "Open" }));
+    }
+
+    private void DisconnectMount() {
+        var index = catalog.Observatory.Devices.FindIndex(device => device.Kind == DeviceKind.Mount);
+
+        catalog.Observatory.Devices[index] = new DeviceStatus(DeviceKind.Mount, false, null, new Dictionary<string, object?>());
     }
 }
