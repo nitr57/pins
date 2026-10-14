@@ -44,11 +44,14 @@ public class ToolsEventTests {
         }
 
         var first = log.Read(start, 2);
+        var fromZero = log.Read(0, 10);
         var second = log.Read(first.NextSinceId, 10);
 
         Assert.That(first.Events.Select(entry => entry.Message), Is.EqualTo(new[] { "event 1", "event 2" }));
         Assert.That(first.More, Is.True);
         Assert.That(first.Missed, Is.False);
+        Assert.That(fromZero.Events, Has.Count.EqualTo(5));
+        Assert.That(fromZero.Missed, Is.False, "since_id 0 is the start of this run");
         Assert.That(first.NextSinceId, Is.EqualTo(start + 2));
         Assert.That(second.Events.Select(entry => entry.Id), Is.EqualTo(new[] { start + 3, start + 4, start + 5 }));
         Assert.That(second.More, Is.False);

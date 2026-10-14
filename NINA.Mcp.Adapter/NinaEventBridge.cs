@@ -192,6 +192,15 @@ public sealed class NinaEventBridge : IHostedService {
         watch.WasConnected = connected;
 
         if (connected) {
+            // A drop that recovered before the next poll (INDI drivers reconnect quickly) is still worth knowing about.
+            if (watch.PendingLossSince is not null) {
+                await Publish(
+                    "device",
+                    EventSeverity.Warning,
+                    $"{watch.Device} dropped its connection and reconnected.",
+                    Data("device", watch.Device));
+            }
+
             watch.PendingLossSince = null;
             await Publish("device", EventSeverity.Info, $"{watch.Device} connected.", Data("device", watch.Device));
         } else if (DateTime.UtcNow - watch.DisconnectRequestedAt <= ExpectedDisconnectWindow) {

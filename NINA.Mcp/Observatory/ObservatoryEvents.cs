@@ -42,6 +42,8 @@ public sealed class ObservatoryEventLog {
     private readonly Queue<ObservatoryEvent> events = new();
     private readonly TimeProvider timeProvider;
 
+    private readonly long firstId;
+
     private long lastId;
     private TaskCompletionSource published = NewSignal();
 
@@ -50,7 +52,8 @@ public sealed class ObservatoryEventLog {
 
     public ObservatoryEventLog(TimeProvider timeProvider) {
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
-        lastId = InitialId(timeProvider.GetUtcNow());
+        firstId = InitialId(timeProvider.GetUtcNow());
+        lastId = firstId;
     }
 
     /// <summary>
@@ -118,7 +121,11 @@ public sealed class ObservatoryEventLog {
             var page = matching.Take(Math.Max(1, max)).ToList();
             var more = matching.Count > page.Count;
             var oldest = events.Count == 0 ? lastId + 1 : events.Peek().Id;
-            var missed = reset || (sinceId < lastId && sinceId + 1 < oldest);
+            // since_id 0 means "from the start of this run": missed only when this run's first events were dropped.
+            var missed = reset
+                || (sinceId == 0
+                    ? oldest > firstId + 1
+                    : sinceId < lastId && sinceId + 1 < oldest);
 
             // Without more matching events the cursor jumps to the newest event, past events the filter left out.
             var next = more ? page[^1].Id : Math.Max(sinceId, lastId);
