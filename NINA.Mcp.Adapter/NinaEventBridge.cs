@@ -178,13 +178,16 @@ public sealed class NinaEventBridge : IHostedService {
                 await Task.Delay(ConnectionPollInterval, cancellationToken);
 
                 foreach (var watch in watches) {
-                    await CheckConnectionAsync(watch);
+                    // Per device and round: one unexpected failure must not end the watching for the rest of the run.
+                    try {
+                        await CheckConnectionAsync(watch);
+                    } catch (Exception ex) {
+                        Logger.Error($"MCP: checking the connection of the {watch.Device} failed", ex);
+                    }
                 }
             }
         } catch (OperationCanceledException) {
             // pins stops.
-        } catch (Exception ex) {
-            Logger.Error("MCP: watching device connections failed", ex);
         }
     }
 
