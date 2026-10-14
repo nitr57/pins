@@ -50,6 +50,18 @@ public sealed class ObservatoryEventLog {
 
     public ObservatoryEventLog(TimeProvider timeProvider) {
         this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
+        lastId = InitialId(timeProvider.GetUtcNow());
+    }
+
+    /// <summary>
+    /// Ids of a run start above every id of an earlier run (four per second since 2025, below int.MaxValue until about
+    /// 2042), so that a client's cursor from before a pins restart is always recognized: it is older than the oldest
+    /// event and reported as <see cref="EventPage.Missed"/> instead of hiding the new run's first events.
+    /// </summary>
+    internal static long InitialId(DateTimeOffset now) {
+        var seconds = (now - new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero)).Ticks / TimeSpan.TicksPerSecond;
+
+        return Math.Max(0, seconds) * 4;
     }
 
     public long LatestId {
@@ -88,8 +100,8 @@ public sealed class ObservatoryEventLog {
 
     /// <summary>
     /// Events after <paramref name="sinceId"/> that match <paramref name="filter"/>, oldest first, at most
-    /// <paramref name="max"/>. A cursor beyond the newest id comes from before a pins restart (ids start at 1 again):
-    /// it reads from the beginning and reports <see cref="EventPage.Missed"/>.
+    /// <paramref name="max"/>. A cursor beyond the newest id (the clock went back across a restart) reads from the
+    /// beginning and reports <see cref="EventPage.Missed"/>, like a cursor older than the oldest event.
     /// </summary>
     public EventPage Read(long sinceId, int max, Func<ObservatoryEvent, bool>? filter = null) {
         lock (gate) {

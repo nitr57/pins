@@ -25,74 +25,93 @@ public class ToolsEventTests {
     // ----- Log -----
 
     [Test]
+    public void Log_IdsOfARunStartAboveEarlierRuns() {
+        var earlier = ObservatoryEventLog.InitialId(new DateTimeOffset(2026, 10, 13, 20, 0, 0, TimeSpan.Zero));
+        var later = ObservatoryEventLog.InitialId(new DateTimeOffset(2026, 10, 13, 20, 1, 0, TimeSpan.Zero));
+
+        Assert.That(later - earlier, Is.EqualTo(240), "four ids per second");
+        Assert.That(ObservatoryEventLog.InitialId(new DateTimeOffset(2042, 1, 1, 0, 0, 0, TimeSpan.Zero)), Is.LessThan(int.MaxValue));
+        Assert.That(ObservatoryEventLog.InitialId(new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero)), Is.EqualTo(0));
+    }
+
+    [Test]
     public void Log_ReadPagesWithCursor() {
         var log = new ObservatoryEventLog();
+        var start = log.LatestId;
 
         for (var i = 1; i <= 5; i++) {
             log.Publish("device", EventSeverity.Info, $"event {i}");
         }
 
-        var first = log.Read(0, 2);
+        var first = log.Read(start, 2);
         var second = log.Read(first.NextSinceId, 10);
 
         Assert.That(first.Events.Select(entry => entry.Message), Is.EqualTo(new[] { "event 1", "event 2" }));
         Assert.That(first.More, Is.True);
-        Assert.That(first.NextSinceId, Is.EqualTo(2));
-        Assert.That(second.Events.Select(entry => entry.Id), Is.EqualTo(new long[] { 3, 4, 5 }));
+        Assert.That(first.Missed, Is.False);
+        Assert.That(first.NextSinceId, Is.EqualTo(start + 2));
+        Assert.That(second.Events.Select(entry => entry.Id), Is.EqualTo(new[] { start + 3, start + 4, start + 5 }));
         Assert.That(second.More, Is.False);
-        Assert.That(second.NextSinceId, Is.EqualTo(5));
-        Assert.That(second.LatestId, Is.EqualTo(5));
+        Assert.That(second.NextSinceId, Is.EqualTo(start + 5));
+        Assert.That(second.LatestId, Is.EqualTo(start + 5));
     }
 
     [Test]
     public void Log_FilterMovesCursorPastSkippedEvents() {
         var log = new ObservatoryEventLog();
+        var start = log.LatestId;
 
         log.Publish("device", EventSeverity.Info, "connected");
         log.Publish("safety", EventSeverity.Critical, "unsafe");
         log.Publish("device", EventSeverity.Info, "connected again");
 
-        var page = log.Read(0, 10, entry => entry.Severity >= EventSeverity.Warning);
+        var page = log.Read(start, 10, entry => entry.Severity >= EventSeverity.Warning);
 
         Assert.That(page.Events.Single().Message, Is.EqualTo("unsafe"));
-        Assert.That(page.NextSinceId, Is.EqualTo(3));
+        Assert.That(page.NextSinceId, Is.EqualTo(start + 3));
     }
 
     [Test]
     public void Log_DropsOldestBeyondCapacity_AndReportsMissed() {
         var log = new ObservatoryEventLog();
+        var start = log.LatestId;
 
         for (var i = 0; i < ObservatoryEventLog.Capacity + 10; i++) {
             log.Publish("image", EventSeverity.Info, $"saved {i}");
         }
 
-        var page = log.Read(5, 1);
+        var page = log.Read(start + 5, 1);
 
         Assert.That(page.Missed, Is.True);
-        Assert.That(page.Events.Single().Id, Is.EqualTo(11));
+        Assert.That(page.Events.Single().Id, Is.EqualTo(start + 11));
         Assert.That(log.Read(page.LatestId, 1).Missed, Is.False);
-        Assert.That(log.Recent(3).Events.Select(entry => entry.Id), Is.EqualTo(new long[] { 2008, 2009, 2010 }));
+        Assert.That(log.Recent(3).Events.Select(entry => entry.Id), Is.EqualTo(new[] { start + 2008, start + 2009, start + 2010 }));
     }
 
     [Test]
-    public void Log_CursorFromBeforeARestartReadsFromTheStart() {
+    public void Log_CursorFromAnEarlierRunIsMissed() {
         var log = new ObservatoryEventLog();
+        var start = log.LatestId;
 
         log.Publish("device", EventSeverity.Info, "camera connected.");
         log.Publish("safety", EventSeverity.Critical, "unsafe");
 
-        var page = log.Read(500, 10);
+        var earlierRun = log.Read(start - 1000, 10);
+        var clockWentBack = log.Read(start + 500, 10);
 
-        Assert.That(page.Events.Select(entry => entry.Id), Is.EqualTo(new long[] { 1, 2 }));
-        Assert.That(page.Missed, Is.True);
-        Assert.That(page.NextSinceId, Is.EqualTo(2));
+        Assert.That(earlierRun.Events.Select(entry => entry.Id), Is.EqualTo(new[] { start + 1, start + 2 }));
+        Assert.That(earlierRun.Missed, Is.True);
+        Assert.That(clockWentBack.Events, Has.Count.EqualTo(2));
+        Assert.That(clockWentBack.Missed, Is.True);
+        Assert.That(clockWentBack.NextSinceId, Is.EqualTo(start + 2));
     }
 
     [Test]
     public async Task Log_WaitReturnsWhenAMatchingEventArrives() {
         var log = new ObservatoryEventLog();
+        var start = log.LatestId;
 
-        var waiting = log.WaitAsync(0, 10, entry => entry.Kind == "safety", TimeSpan.FromSeconds(10), CancellationToken.None);
+        var waiting = log.WaitAsync(start, 10, entry => entry.Kind == "safety", TimeSpan.FromSeconds(10), CancellationToken.None);
 
         log.Publish("device", EventSeverity.Info, "not this one");
 
@@ -104,19 +123,18 @@ public class ToolsEventTests {
         var page = await waiting.WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.That(page.Events.Single().Message, Is.EqualTo("unsafe"));
-        Assert.That(page.NextSinceId, Is.EqualTo(2));
+        Assert.That(page.NextSinceId, Is.EqualTo(start + 2));
     }
 
     [Test]
     public async Task Log_WaitTimesOutEmpty() {
         var log = new ObservatoryEventLog();
+        var old = log.Publish("device", EventSeverity.Info, "old");
 
-        log.Publish("device", EventSeverity.Info, "old");
-
-        var page = await log.WaitAsync(1, 10, null, TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        var page = await log.WaitAsync(old.Id, 10, null, TimeSpan.FromMilliseconds(100), CancellationToken.None);
 
         Assert.That(page.Events, Is.Empty);
-        Assert.That(page.NextSinceId, Is.EqualTo(1));
+        Assert.That(page.NextSinceId, Is.EqualTo(old.Id));
     }
 
     // ----- get_events -----
@@ -124,7 +142,7 @@ public class ToolsEventTests {
     [Test]
     public async Task GetEvents_WithoutCursorReturnsNewest() {
         catalog.Events.Publish("device", EventSeverity.Warning, "camera disconnected.", new Dictionary<string, object?> { ["device"] = "camera" });
-        catalog.Events.Publish("safety", EventSeverity.Critical, "The safety monitor reports UNSAFE.");
+        var last = catalog.Events.Publish("safety", EventSeverity.Critical, "The safety monitor reports UNSAFE.");
 
         var result = await catalog.CallAsync("get_events");
 
@@ -136,16 +154,18 @@ public class ToolsEventTests {
         Assert.That(events[0]!["kind"]!.GetValue<string>(), Is.EqualTo("device"));
         Assert.That(events[0]!["data"]!["device"]!.GetValue<string>(), Is.EqualTo("camera"));
         Assert.That(events[1]!["severity"]!.GetValue<string>(), Is.EqualTo("critical"));
-        Assert.That(result.Structured!["nextSinceId"]!.GetValue<long>(), Is.EqualTo(2));
+        Assert.That(result.Structured!["nextSinceId"]!.GetValue<long>(), Is.EqualTo(last.Id));
     }
 
     [Test]
     public async Task GetEvents_FiltersByKindAndSeverity() {
+        var start = catalog.Events.LatestId;
+
         catalog.Events.Publish("device", EventSeverity.Info, "camera connected.");
         catalog.Events.Publish("image", EventSeverity.Error, "Saving an image failed: the disk is full.");
         catalog.Events.Publish("guider", EventSeverity.Warning, "Guide star lost.");
 
-        var result = await catalog.CallAsync("get_events", """{"since_id":0,"kinds":"image, guider","min_severity":"error"}""");
+        var result = await catalog.CallAsync("get_events", $$"""{"since_id":{{start}},"kinds":"image, Guider","min_severity":"error"}""");
 
         var events = result.Structured!["events"]!.AsArray();
 
@@ -154,9 +174,9 @@ public class ToolsEventTests {
 
     [Test]
     public async Task GetEvents_LongPollsWithCursor() {
-        catalog.Events.Publish("device", EventSeverity.Info, "old");
+        var old = catalog.Events.Publish("device", EventSeverity.Info, "old");
 
-        var call = catalog.CallAsync("get_events", """{"since_id":1,"wait_seconds":10}""");
+        var call = catalog.CallAsync("get_events", $$"""{"since_id":{{old.Id}},"wait_seconds":10}""");
 
         await Task.Delay(50);
         catalog.Events.Publish("mount", EventSeverity.Info, "Mount parked.");

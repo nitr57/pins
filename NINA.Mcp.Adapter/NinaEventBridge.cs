@@ -40,6 +40,9 @@ public sealed class NinaEventBridge : IHostedService {
     }
 
     public Task StartAsync(CancellationToken cancellationToken) {
+        // pins disconnects all equipment while stopping, before StopAsync runs: stop watching first.
+        Subscribe<IHostApplicationLifetime>(lifetime => lifetime.ApplicationStopping.Register(() => stopping.Cancel()));
+
         Subscribe<ICameraMediator>(mediator => WatchDevice(mediator, "camera"));
         Subscribe<ITelescopeMediator>(mediator => {
             WatchDevice(mediator, "mount");
@@ -151,31 +154,50 @@ public sealed class NinaEventBridge : IHostedService {
                 await Task.Delay(ConnectionPollInterval, cancellationToken);
 
                 foreach (var watch in watches) {
-                    var connected = IsConnected(watch);
-
-                    if (connected == watch.WasConnected) {
-                        continue;
-                    }
-
-                    watch.WasConnected = connected;
-
-                    if (connected) {
-                        await Publish("device", EventSeverity.Info, $"{watch.Device} connected.", Data("device", watch.Device));
-                    } else if (DateTime.UtcNow - watch.DisconnectRequestedAt <= ExpectedDisconnectWindow) {
-                        await Publish("device", EventSeverity.Info, $"{watch.Device} disconnected.", Data("device", watch.Device));
-                    } else {
-                        await Publish(
-                            "device",
-                            EventSeverity.Error,
-                            $"{watch.Device} lost its connection (not disconnected by request): check cable, power and driver.",
-                            Data("device", watch.Device));
-                    }
+                    await CheckConnectionAsync(watch);
                 }
             }
         } catch (OperationCanceledException) {
             // pins stops.
         } catch (Exception ex) {
             Logger.Error("MCP: watching device connections failed", ex);
+        }
+    }
+
+    /// <summary>
+    /// A VM marks its info disconnected before it raises Disconnected (a driver disconnect can take seconds in between),
+    /// so a disconnect seen without a request is only judged one poll later.
+    /// </summary>
+    private async Task CheckConnectionAsync(DeviceWatch watch) {
+        var connected = IsConnected(watch);
+
+        if (watch.PendingLossSince is { } since && !connected) {
+            watch.PendingLossSince = null;
+
+            if (watch.DisconnectRequestedAt >= since - ExpectedDisconnectWindow) {
+                await Publish("device", EventSeverity.Info, $"{watch.Device} disconnected.", Data("device", watch.Device));
+            } else {
+                await Publish(
+                    "device",
+                    EventSeverity.Error,
+                    $"{watch.Device} lost its connection (not disconnected by request): check cable, power and driver.",
+                    Data("device", watch.Device));
+            }
+        }
+
+        if (connected == watch.WasConnected) {
+            return;
+        }
+
+        watch.WasConnected = connected;
+
+        if (connected) {
+            watch.PendingLossSince = null;
+            await Publish("device", EventSeverity.Info, $"{watch.Device} connected.", Data("device", watch.Device));
+        } else if (DateTime.UtcNow - watch.DisconnectRequestedAt <= ExpectedDisconnectWindow) {
+            await Publish("device", EventSeverity.Info, $"{watch.Device} disconnected.", Data("device", watch.Device));
+        } else {
+            watch.PendingLossSince = DateTime.UtcNow;
         }
     }
 
@@ -410,5 +432,8 @@ public sealed class NinaEventBridge : IHostedService {
         public bool WasConnected { get; set; }
 
         public DateTime DisconnectRequestedAt { get; set; } = DateTime.MinValue;
+
+        /// <summary>When a disconnect without a request was seen; judged on the next poll.</summary>
+        public DateTime? PendingLossSince { get; set; }
     }
 }
