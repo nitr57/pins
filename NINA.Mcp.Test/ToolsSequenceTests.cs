@@ -46,6 +46,7 @@ public class ToolsSequenceTests {
         Assert.That(request.StartGuiding, Is.True);
         Assert.That(request.AutofocusAtStart, Is.False);
         Assert.That(request.DitherEvery, Is.EqualTo(0));
+        Assert.That(request.MeridianFlip, Is.True);
         Assert.That(request.Exposures, Is.EqualTo(new[] {
             new ExposurePlanItem(300, 20, "Ha", 100, 50, 1),
             new ExposurePlanItem(60, 5)
@@ -59,7 +60,7 @@ public class ToolsSequenceTests {
     public async Task AddTarget_ExposurePlan_PassesOptions() {
         await catalog.CallAsync(
             "add_target",
-            """{"name":"NGC 7000","ra":20.98,"dec":44.5,"rotation_degrees":90,"exposures":[{"exposure_seconds":120,"count":1}],"slew_and_center":false,"start_guiding":false,"autofocus_at_start":true,"dither_every":3}""");
+            """{"name":"NGC 7000","ra":20.98,"dec":44.5,"rotation_degrees":90,"exposures":[{"exposure_seconds":120,"count":1}],"slew_and_center":false,"start_guiding":false,"autofocus_at_start":true,"dither_every":3,"meridian_flip":false}""");
 
         var request = catalog.Observatory.LastTarget!;
 
@@ -68,6 +69,7 @@ public class ToolsSequenceTests {
         Assert.That(request.StartGuiding, Is.False);
         Assert.That(request.AutofocusAtStart, Is.True);
         Assert.That(request.DitherEvery, Is.EqualTo(3));
+        Assert.That(request.MeridianFlip, Is.False);
     }
 
     [Test]
@@ -108,6 +110,7 @@ public class ToolsSequenceTests {
     [TestCase("start_guiding", "true")]
     [TestCase("autofocus_at_start", "true")]
     [TestCase("dither_every", "2")]
+    [TestCase("meridian_flip", "false")]
     public void AddTarget_PlanOptionsWithTemplate_AreRejected(string option, string value) {
         var message = catalog.ArgumentError("add_target", $$"""{"name":"X","ra":1,"dec":1,"template":"LRGB","{{option}}":{{value}}}""");
 

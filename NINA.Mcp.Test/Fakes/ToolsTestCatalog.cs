@@ -27,6 +27,7 @@ internal sealed class ToolsTestCatalog : IDisposable {
         provider = services.BuildServiceProvider();
         Tools = provider.GetServices<McpTool>().ToList();
         Instructions = provider.GetRequiredService<McpServerInstructions>();
+        Events = provider.GetRequiredService<Observatory.ObservatoryEventLog>();
     }
 
     public ToolsFakeObservatory Observatory { get; }
@@ -40,6 +41,8 @@ internal sealed class ToolsTestCatalog : IDisposable {
     public IReadOnlyList<McpTool> Tools { get; }
 
     public McpServerInstructions Instructions { get; }
+
+    public Observatory.ObservatoryEventLog Events { get; }
 
     public McpTool Tool(string name) {
         return Tools.Single(tool => tool.Name == name);

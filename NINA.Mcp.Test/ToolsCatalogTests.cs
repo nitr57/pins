@@ -29,6 +29,7 @@ public class ToolsCatalogTests {
         "find_targets",
         "get_session_summary",
         "get_system_health",
+        "get_events",
         "stop_all",
         "cancel_job",
         "stop_sequence",
@@ -78,7 +79,8 @@ public class ToolsCatalogTests {
         "plan_targets",
         "find_targets",
         "get_session_summary",
-        "get_system_health"
+        "get_system_health",
+        "get_events"
     ];
 
     private static readonly string[] StopTools = ["stop_all", "cancel_job", "stop_sequence", "stop_guiding"];
@@ -208,7 +210,7 @@ public class ToolsCatalogTests {
     [TestCaseSource(nameof(AllToolNames))]
     public void Tool_JobToolsHaveWaitSeconds(string name) {
         var properties = catalog.Tool(name).InputSchema["properties"]!.AsObject();
-        var expected = JobTools.Contains(name) || name is "get_job" or "cancel_job";
+        var expected = JobTools.Contains(name) || name is "get_job" or "cancel_job" or "get_events";
 
         Assert.That(properties.ContainsKey("wait_seconds"), Is.EqualTo(expected));
 

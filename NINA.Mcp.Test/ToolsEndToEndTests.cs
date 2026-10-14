@@ -34,7 +34,7 @@ public class ToolsEndToEndTests {
 
         var tools = list["result"]!["tools"]!.AsArray();
 
-        Assert.That(tools, Has.Count.EqualTo(47));
+        Assert.That(tools, Has.Count.EqualTo(48));
         Assert.That(tools[0]!["name"]!.GetValue<string>(), Is.EqualTo("get_status"));
 
         var slew = tools.Single(tool => tool!["name"]!.GetValue<string>() == "slew_mount")!;
@@ -55,7 +55,7 @@ public class ToolsEndToEndTests {
         Assert.That(names, Is.EqualTo(new[] {
             "get_status", "get_recent_images", "get_sequence", "list_saved_sequences", "list_target_templates", "get_job", "list_jobs",
             "get_guider_report", "get_guiding_coach_report", "list_guide_incidents", "get_guide_incident", "read_log", "plan_targets",
-            "find_targets", "get_session_summary", "get_system_health", "stop_all", "cancel_job"
+            "find_targets", "get_session_summary", "get_system_health", "get_events", "stop_all", "cancel_job"
         }));
 
         var slew = await DispatchAsync(dispatcher, """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"slew_mount","arguments":{"ra":1,"dec":1}}}""");
@@ -116,7 +116,7 @@ public class ToolsEndToEndTests {
             using var listResponse = await PostAsync(client, endpoint, """{"jsonrpc":"2.0","id":1,"method":"tools/list"}""", session);
             var list = JsonNode.Parse(await listResponse.Content.ReadAsStringAsync())!;
 
-            Assert.That(list["result"]!["tools"]!.AsArray(), Has.Count.EqualTo(47));
+            Assert.That(list["result"]!["tools"]!.AsArray(), Has.Count.EqualTo(48));
 
             var call = """{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"slew_mount","arguments":{"ra":"05h35m17.3s","dec":"-05°23'28\""}}}""";
 

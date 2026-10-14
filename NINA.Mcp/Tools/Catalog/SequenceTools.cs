@@ -139,7 +139,7 @@ internal sealed class LoadSequenceTool : ObservatoryTool {
 
 internal sealed class AddTargetTool : ObservatoryTool {
 
-    private static readonly string[] PlanOnlyArguments = ["slew_and_center", "start_guiding", "autofocus_at_start", "dither_every"];
+    private static readonly string[] PlanOnlyArguments = ["slew_and_center", "start_guiding", "autofocus_at_start", "dither_every", "meridian_flip"];
 
     public AddTargetTool(IPinsObservatory observatory) : base(observatory) {
     }
@@ -155,7 +155,9 @@ internal sealed class AddTargetTool : ObservatoryTool {
         + "(2) 'exposures': an exposure plan; pins builds the target from standard instructions in this order: slew and "
         + "center with plate solving (slew_and_center, default true), autofocus (autofocus_at_start, default false), start "
         + "guiding (start_guiding, default true), then one exposure block per entry (filter, exposure, count, gain/offset/"
-        + "binning, dithering every dither_every frames). Coordinates are J2000. Only edits the sequence (nothing moves); "
+        + "binning, dithering every dither_every frames), with NINA's meridian flip trigger on the target (meridian_flip, "
+        + "default true; settings from the profile) so that a German equatorial mount flips instead of tracking into the "
+        + "pier. Coordinates are J2000. Only edits the sequence (nothing moves); "
         + "check the result with get_sequence, then start_sequence. Adding while the sequence runs needs force.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Change;
@@ -189,6 +191,7 @@ internal sealed class AddTargetTool : ObservatoryTool {
         arguments.Boolean("start_guiding", "Exposure plan only: start guiding before the exposures. Default true.", defaultValue: true);
         arguments.Boolean("autofocus_at_start", "Exposure plan only: run autofocus after centering. Default false.", defaultValue: false);
         arguments.Integer("dither_every", "Exposure plan only: dither after every N frames (0 = never, max 32 like NINA). Default 0.", minimum: 0, maximum: 32, defaultValue: 0);
+        arguments.Boolean("meridian_flip", "Exposure plan only: add NINA's meridian flip trigger to the target. Default true; turn off for fork mounts.", defaultValue: true);
     }
 
     protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
@@ -233,7 +236,8 @@ internal sealed class AddTargetTool : ObservatoryTool {
             SlewAndCenter: arguments.GetBool("slew_and_center") ?? true,
             StartGuiding: arguments.GetBool("start_guiding") ?? true,
             AutofocusAtStart: arguments.GetBool("autofocus_at_start") ?? false,
-            DitherEvery: arguments.GetInt("dither_every") ?? 0);
+            DitherEvery: arguments.GetInt("dither_every") ?? 0,
+            MeridianFlip: arguments.GetBool("meridian_flip") ?? true);
 
         var result = await Observatory.AddTargetAsync(request, cancellationToken).ConfigureAwait(false);
 

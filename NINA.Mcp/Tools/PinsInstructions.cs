@@ -36,7 +36,7 @@ internal static class PinsInstructions {
         3. cool_camera (e.g. -10 °C, poll until reached); unpark_mount.
         4. Get coordinates from find_targets (offline catalog) and choose with plan_targets (transit, hours above the altitude limit in the dark, moon). Either center_target (or slew_mount) + capture_image to frame manually, or build the plan: clear_targets, add_target (name, ra, dec, exposures or a template from list_target_templates); or load_sequence from list_saved_sequences.
         5. run_autofocus and start_guiding (a target from add_target does centering, guiding and optional autofocus itself).
-        6. start_sequence, then monitor with get_status, get_sequence and get_recent_images (HFR rising → focus; star count dropping → clouds).
+        6. start_sequence, then monitor with get_events (long-poll for what happens: unsafe, device dropped, save failed, guiding alerts), get_status, get_sequence and get_recent_images (HFR rising → focus; star count dropping → clouds).
         7. End or bad weather: secure_observatory (stops everything, parks, closes dome and cover); get_session_summary for the report.
 
         Diagnosing problems

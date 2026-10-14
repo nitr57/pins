@@ -14,6 +14,7 @@ using NINA.Sequencer.SequenceItem.Guider;
 using NINA.Sequencer.SequenceItem.Imaging;
 using NINA.Sequencer.SequenceItem.Platesolving;
 using NINA.Sequencer.Trigger.Guider;
+using NINA.Sequencer.Trigger.MeridianFlip;
 
 namespace NINA.Mcp.Adapter.Sequence;
 
@@ -169,6 +170,17 @@ public sealed partial class NinaSequenceService {
 
             container.Add(smartExposure);
             steps.Add(DescribePlanItem(plan[i], filterNames[i]));
+        }
+
+        if (request.MeridianFlip) {
+            // Like NINA's target templates: the flip is checked between the target's items, with the profile's settings.
+            MeridianFlipTrigger? meridianFlip = factory.GetTrigger<MeridianFlipTrigger>();
+            if (meridianFlip == null) {
+                return OperationResult.Fail("The sequencer factory provides no Meridian Flip trigger.");
+            }
+
+            container.Add(meridianFlip);
+            steps.Add("meridian flip trigger");
         }
 
         ApplyTarget(container, request);

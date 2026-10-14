@@ -302,7 +302,8 @@ public sealed record TargetRequest(
     bool SlewAndCenter = true,
     bool StartGuiding = true,
     bool AutofocusAtStart = false,
-    int DitherEvery = 0);
+    int DitherEvery = 0,
+    bool MeridianFlip = true);
 
 /// <summary>One block of exposures. Null gain/offset/binning use the camera defaults of the profile.</summary>
 public sealed record ExposurePlanItem(

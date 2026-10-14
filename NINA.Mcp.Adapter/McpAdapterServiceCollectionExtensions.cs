@@ -27,6 +27,9 @@ public static class McpAdapterServiceCollectionExtensions {
         services.AddSingleton<NinaSequenceService>();
         services.AddSingleton<IPinsObservatory, NinaObservatory>();
 
+        // Records NINA's events for get_events from the start on; it never fails the pins start.
+        services.AddHostedService<NinaEventBridge>();
+
         return services;
     }
 }

@@ -62,6 +62,7 @@ public class ToolsGuardAndJobTests {
         new object[] { "find_targets", """{"name":"M 42"}""" },
         new object[] { "get_session_summary", "{}" },
         new object[] { "get_system_health", "{}" },
+        new object[] { "get_events", "{}" },
         new object[] { "secure_observatory", "{}" },
         new object[] { "stop_all", "{}" },
         new object[] { "stop_sequence", "{}" }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using NINA.Mcp.Observatory;
 using NINA.Mcp.Tools.Catalog;
 
@@ -15,6 +16,9 @@ public static class ToolServiceCollectionExtensions {
     public static IServiceCollection AddPinsMcpTools(this IServiceCollection services) {
         services.AddSingleton(provider => new McpServerInstructions(
             PinsInstructions.Build(provider.GetService<McpServerOptions>()?.ReadOnly ?? false)));
+
+        // Filled by the host (the adapter's event bridge), read by get_events.
+        services.TryAddSingleton<ObservatoryEventLog>();
 
         // Status and queries.
         Add(services, observatory => new GetStatusTool(observatory));
@@ -33,6 +37,9 @@ public static class ToolServiceCollectionExtensions {
         Add(services, observatory => new FindTargetsTool(observatory));
         Add(services, observatory => new GetSessionSummaryTool(observatory));
         Add(services, observatory => new GetSystemHealthTool(observatory));
+        services.AddSingleton<McpTool>(provider => new GetEventsTool(
+            provider.GetRequiredService<IPinsObservatory>(),
+            provider.GetRequiredService<ObservatoryEventLog>()));
 
         // Stop tools.
         Add(services, observatory => new StopAllTool(observatory));
