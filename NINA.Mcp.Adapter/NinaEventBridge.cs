@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NINA.Core.Utility;
 using NINA.Equipment.Equipment;
+using NINA.Equipment.Equipment.MyGuider;
 using NINA.Equipment.Equipment.MyGuider.Advanced;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
@@ -24,9 +25,6 @@ public sealed class NinaEventBridge : IHostedService {
 
     /// <summary>How often the connection state of the devices is compared with the last one.</summary>
     private static readonly TimeSpan ConnectionPollInterval = TimeSpan.FromSeconds(3);
-
-    /// <summary>A connection that ends within this time after a Disconnected event was asked for, not lost.</summary>
-    private static readonly TimeSpan ExpectedDisconnectWindow = TimeSpan.FromSeconds(15);
 
     private readonly IServiceProvider services;
     private readonly ObservatoryEventLog log;
@@ -51,7 +49,7 @@ public sealed class NinaEventBridge : IHostedService {
         Subscribe<IFocuserMediator>(mediator => WatchDevice(mediator, "focuser"));
         Subscribe<IFilterWheelMediator>(mediator => WatchDevice(mediator, "filter_wheel"));
         Subscribe<IGuiderMediator>(mediator => {
-            WatchDevice(mediator, "guider");
+            WatchGuiderDrops(mediator, WatchDevice(mediator, "guider"));
             WatchGuiding(mediator);
         });
         Subscribe<IRotatorMediator>(mediator => WatchDevice(mediator, "rotator"));
@@ -117,15 +115,16 @@ public sealed class NinaEventBridge : IHostedService {
     /// <summary>
     /// Connections are tracked by polling the device info, not by the Connected/Disconnected events alone: several VMs
     /// raise Disconnected at the start of every connect, and a device that drops (USB, INDI) raises no event at all, its
-    /// poll loop only marks it disconnected. The Disconnected event only tells a requested disconnect from a lost one.
+    /// poll loop only marks it disconnected. The Disconnected event only tells a requested disconnect from a lost one
+    /// (see <see cref="DeviceConnectionTracker"/>).
     /// </summary>
-    private void WatchDevice<THandler, TConsumer, TInfo>(IDeviceMediator<THandler, TConsumer, TInfo> mediator, string device)
+    private DeviceWatch WatchDevice<THandler, TConsumer, TInfo>(IDeviceMediator<THandler, TConsumer, TInfo> mediator, string device)
         where THandler : IDeviceVM<TInfo>
         where TConsumer : IDeviceConsumer<TInfo> {
         var watch = new DeviceWatch(device, () => mediator.GetInfo() is DeviceInfo info && info.Connected);
 
         Func<object, EventArgs, Task> disconnected = (_, _) => {
-            watch.DisconnectRequestedAt = DateTime.UtcNow;
+            watch.Tracker?.DisconnectRequested(DateTime.UtcNow);
 
             return Task.CompletedTask;
         };
@@ -136,6 +135,21 @@ public sealed class NinaEventBridge : IHostedService {
         lock (devices) {
             devices.Add(watch);
         }
+
+        return watch;
+    }
+
+    /// <summary>
+    /// When the guider device reports disconnected, GuiderVM broadcasts the info while it still holds the device and then
+    /// calls its own Disconnect, which raises Disconnected like a requested disconnect. A requested disconnect drops the
+    /// device before its broadcast. So a broadcast that turns a connected guider disconnected while the VM still holds a
+    /// device is a lost connection.
+    /// </summary>
+    private void WatchGuiderDrops(IGuiderMediator mediator, DeviceWatch watch) {
+        var consumer = new GuiderDropConsumer(mediator, () => watch.Tracker?.ConnectionDropped(DateTime.UtcNow));
+
+        mediator.RegisterConsumer(consumer);
+        OnUnsubscribe(() => mediator.RemoveConsumer(consumer));
     }
 
     private async Task PollConnectionsAsync(CancellationToken cancellationToken) {
@@ -146,7 +160,7 @@ public sealed class NinaEventBridge : IHostedService {
         }
 
         foreach (var watch in watches) {
-            watch.WasConnected = IsConnected(watch);
+            watch.Tracker = new DeviceConnectionTracker(watch.Device, IsConnected(watch, false));
         }
 
         try {
@@ -164,57 +178,19 @@ public sealed class NinaEventBridge : IHostedService {
         }
     }
 
-    /// <summary>
-    /// A VM marks its info disconnected before it raises Disconnected (a driver disconnect can take seconds in between),
-    /// so a disconnect seen without a request is only judged one poll later.
-    /// </summary>
     private async Task CheckConnectionAsync(DeviceWatch watch) {
-        var connected = IsConnected(watch);
+        var tracker = watch.Tracker!;
 
-        if (watch.PendingLossSince is { } since && !connected) {
-            watch.PendingLossSince = null;
-
-            if (watch.DisconnectRequestedAt >= since - ExpectedDisconnectWindow) {
-                await Publish("device", EventSeverity.Info, $"{watch.Device} disconnected.", Data("device", watch.Device));
-            } else {
-                await Publish(
-                    "device",
-                    EventSeverity.Error,
-                    $"{watch.Device} lost its connection (not disconnected by request): check cable, power and driver.",
-                    Data("device", watch.Device));
-            }
-        }
-
-        if (connected == watch.WasConnected) {
-            return;
-        }
-
-        watch.WasConnected = connected;
-
-        if (connected) {
-            // A drop that recovered before the next poll (INDI drivers reconnect quickly) is still worth knowing about.
-            if (watch.PendingLossSince is not null) {
-                await Publish(
-                    "device",
-                    EventSeverity.Warning,
-                    $"{watch.Device} dropped its connection and reconnected.",
-                    Data("device", watch.Device));
-            }
-
-            watch.PendingLossSince = null;
-            await Publish("device", EventSeverity.Info, $"{watch.Device} connected.", Data("device", watch.Device));
-        } else if (DateTime.UtcNow - watch.DisconnectRequestedAt <= ExpectedDisconnectWindow) {
-            await Publish("device", EventSeverity.Info, $"{watch.Device} disconnected.", Data("device", watch.Device));
-        } else {
-            watch.PendingLossSince = DateTime.UtcNow;
+        foreach (var change in tracker.Poll(IsConnected(watch, tracker.WasConnected), DateTime.UtcNow)) {
+            await Publish("device", change.Severity, change.Message, Data("device", watch.Device));
         }
     }
 
-    private static bool IsConnected(DeviceWatch watch) {
+    private static bool IsConnected(DeviceWatch watch, bool fallback) {
         try {
             return watch.IsConnected();
         } catch (Exception) {
-            return watch.WasConnected;
+            return fallback;
         }
     }
 
@@ -438,11 +414,40 @@ public sealed class NinaEventBridge : IHostedService {
 
         public Func<bool> IsConnected { get; }
 
-        public bool WasConnected { get; set; }
+        /// <summary>Created with the first poll; events before it have nothing to compare with.</summary>
+        public DeviceConnectionTracker? Tracker { get; set; }
+    }
 
-        public DateTime DisconnectRequestedAt { get; set; } = DateTime.MinValue;
+    private sealed class GuiderDropConsumer : IGuiderConsumer {
 
-        /// <summary>When a disconnect without a request was seen; judged on the next poll.</summary>
-        public DateTime? PendingLossSince { get; set; }
+        private readonly IGuiderMediator mediator;
+        private readonly Action dropped;
+        private bool connected;
+
+        public GuiderDropConsumer(IGuiderMediator mediator, Action dropped) {
+            this.mediator = mediator;
+            this.dropped = dropped;
+        }
+
+        public void UpdateDeviceInfo(GuiderInfo deviceInfo) {
+            var wasConnected = connected;
+
+            connected = deviceInfo?.Connected == true;
+
+            if (wasConnected && !connected && HoldsDevice()) {
+                dropped();
+            }
+        }
+
+        public void Dispose() {
+        }
+
+        private bool HoldsDevice() {
+            try {
+                return mediator.GetDevice() != null;
+            } catch (Exception) {
+                return false;
+            }
+        }
     }
 }
