@@ -75,6 +75,20 @@ public class ToolsEventTests {
     }
 
     [Test]
+    public void Log_CursorFromBeforeARestartReadsFromTheStart() {
+        var log = new ObservatoryEventLog();
+
+        log.Publish("device", EventSeverity.Info, "camera connected.");
+        log.Publish("safety", EventSeverity.Critical, "unsafe");
+
+        var page = log.Read(500, 10);
+
+        Assert.That(page.Events.Select(entry => entry.Id), Is.EqualTo(new long[] { 1, 2 }));
+        Assert.That(page.Missed, Is.True);
+        Assert.That(page.NextSinceId, Is.EqualTo(2));
+    }
+
+    [Test]
     public async Task Log_WaitReturnsWhenAMatchingEventArrives() {
         var log = new ObservatoryEventLog();
 

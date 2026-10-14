@@ -3,6 +3,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using NINA.Core.Utility;
+using NINA.Equipment.Equipment;
 using NINA.Equipment.Equipment.MyGuider.Advanced;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
@@ -21,14 +22,17 @@ namespace NINA.Mcp.Adapter;
 /// </summary>
 public sealed class NinaEventBridge : IHostedService {
 
-    /// <summary>A lost guide star raises an event per frame; one per minute is enough.</summary>
-    private static readonly TimeSpan StarLostInterval = TimeSpan.FromMinutes(1);
+    /// <summary>How often the connection state of the devices is compared with the last one.</summary>
+    private static readonly TimeSpan ConnectionPollInterval = TimeSpan.FromSeconds(3);
+
+    /// <summary>A connection that ends within this time after a Disconnected event was asked for, not lost.</summary>
+    private static readonly TimeSpan ExpectedDisconnectWindow = TimeSpan.FromSeconds(15);
 
     private readonly IServiceProvider services;
     private readonly ObservatoryEventLog log;
     private readonly List<Action> unsubscribers = [];
-
-    private DateTime lastStarLost = DateTime.MinValue;
+    private readonly List<DeviceWatch> devices = [];
+    private readonly CancellationTokenSource stopping = new();
 
     public NinaEventBridge(IServiceProvider services, ObservatoryEventLog log) {
         this.services = services ?? throw new ArgumentNullException(nameof(services));
@@ -61,10 +65,14 @@ public sealed class NinaEventBridge : IHostedService {
         Subscribe<ISequenceMediator>(WatchSequence);
         Subscribe<IAdvancedGuider>(WatchInternalGuider);
 
+        _ = Task.Run(() => PollConnectionsAsync(stopping.Token));
+
         return Task.CompletedTask;
     }
 
     public Task StopAsync(CancellationToken cancellationToken) {
+        stopping.Cancel();
+
         lock (unsubscribers) {
             foreach (var unsubscribe in unsubscribers) {
                 try {
@@ -103,27 +111,98 @@ public sealed class NinaEventBridge : IHostedService {
 
     // ----- Watchers -----
 
+    /// <summary>
+    /// Connections are tracked by polling the device info, not by the Connected/Disconnected events alone: several VMs
+    /// raise Disconnected at the start of every connect, and a device that drops (USB, INDI) raises no event at all, its
+    /// poll loop only marks it disconnected. The Disconnected event only tells a requested disconnect from a lost one.
+    /// </summary>
     private void WatchDevice<THandler, TConsumer, TInfo>(IDeviceMediator<THandler, TConsumer, TInfo> mediator, string device)
         where THandler : IDeviceVM<TInfo>
         where TConsumer : IDeviceConsumer<TInfo> {
-        Func<object, EventArgs, Task> connected = (_, _) => Publish("device", EventSeverity.Info, $"{device} connected.", Data("device", device));
-        Func<object, EventArgs, Task> disconnected = (_, _) => Publish("device", EventSeverity.Warning, $"{device} disconnected.", Data("device", device));
+        var watch = new DeviceWatch(device, () => mediator.GetInfo() is DeviceInfo info && info.Connected);
 
-        mediator.Connected += connected;
+        Func<object, EventArgs, Task> disconnected = (_, _) => {
+            watch.DisconnectRequestedAt = DateTime.UtcNow;
+
+            return Task.CompletedTask;
+        };
+
         mediator.Disconnected += disconnected;
+        OnUnsubscribe(() => mediator.Disconnected -= disconnected);
 
-        OnUnsubscribe(() => {
-            mediator.Connected -= connected;
-            mediator.Disconnected -= disconnected;
-        });
+        lock (devices) {
+            devices.Add(watch);
+        }
     }
 
+    private async Task PollConnectionsAsync(CancellationToken cancellationToken) {
+        List<DeviceWatch> watches;
+
+        lock (devices) {
+            watches = devices.ToList();
+        }
+
+        foreach (var watch in watches) {
+            watch.WasConnected = IsConnected(watch);
+        }
+
+        try {
+            while (!cancellationToken.IsCancellationRequested) {
+                await Task.Delay(ConnectionPollInterval, cancellationToken);
+
+                foreach (var watch in watches) {
+                    var connected = IsConnected(watch);
+
+                    if (connected == watch.WasConnected) {
+                        continue;
+                    }
+
+                    watch.WasConnected = connected;
+
+                    if (connected) {
+                        await Publish("device", EventSeverity.Info, $"{watch.Device} connected.", Data("device", watch.Device));
+                    } else if (DateTime.UtcNow - watch.DisconnectRequestedAt <= ExpectedDisconnectWindow) {
+                        await Publish("device", EventSeverity.Info, $"{watch.Device} disconnected.", Data("device", watch.Device));
+                    } else {
+                        await Publish(
+                            "device",
+                            EventSeverity.Error,
+                            $"{watch.Device} lost its connection (not disconnected by request): check cable, power and driver.",
+                            Data("device", watch.Device));
+                    }
+                }
+            }
+        } catch (OperationCanceledException) {
+            // pins stops.
+        } catch (Exception ex) {
+            Logger.Error("MCP: watching device connections failed", ex);
+        }
+    }
+
+    private static bool IsConnected(DeviceWatch watch) {
+        try {
+            return watch.IsConnected();
+        } catch (Exception) {
+            return watch.WasConnected;
+        }
+    }
+
+    /// <summary>
+    /// The safety monitor VM raises "unsafe" when it is disconnected or its poll stops (its last values are reset), and
+    /// "safe" right after connecting: only changes of a connected monitor are real.
+    /// </summary>
     private void WatchSafety(ISafetyMonitorMediator mediator) {
-        EventHandler<IsSafeEventArgs> changed = (_, args) => Publish(
-            "safety",
-            args.IsSafe ? EventSeverity.Info : EventSeverity.Critical,
-            args.IsSafe ? "The safety monitor reports safe." : "The safety monitor reports UNSAFE.",
-            Data("isSafe", args.IsSafe));
+        EventHandler<IsSafeEventArgs> changed = (_, args) => {
+            if (mediator.GetInfo()?.Connected != true) {
+                return;
+            }
+
+            Publish(
+                "safety",
+                args.IsSafe ? EventSeverity.Info : EventSeverity.Critical,
+                args.IsSafe ? "The safety monitor reports safe." : "The safety monitor reports UNSAFE.",
+                Data("isSafe", args.IsSafe));
+        };
 
         mediator.IsSafeChanged += changed;
         OnUnsubscribe(() => mediator.IsSafeChanged -= changed);
@@ -209,20 +288,42 @@ public sealed class NinaEventBridge : IHostedService {
         });
     }
 
+    /// <summary>
+    /// The sequence mediator forwards its events to the sequencer view models, which exist only once the plugins are
+    /// loaded (after the web host started on a Pi): subscribe when it reports initialized.
+    /// </summary>
     private void WatchSequence(ISequenceMediator mediator) {
-        Func<object, EventArgs, Task> starting = (_, _) => Publish("sequence", EventSeverity.Info, "Advanced sequence starting.");
-        Func<object, EventArgs, Task> finished = (_, _) => Publish("sequence", EventSeverity.Info, "Advanced sequence finished or stopped.");
+        Func<object, EventArgs, Task> starting = (_, _) => Publish("sequence", EventSeverity.Info, "Sequence starting.");
+        Func<object, EventArgs, Task> finished = (_, _) => Publish(
+            "sequence",
+            EventSeverity.Info,
+            "Sequence ended (finished, stopped or failed); get_sequence shows where.");
 
-        mediator.SequenceStarting += starting;
-        mediator.SequenceFinished += finished;
+        _ = Task.Run(async () => {
+            try {
+                while (!mediator.Initialized) {
+                    await Task.Delay(500, stopping.Token);
+                }
 
-        OnUnsubscribe(() => {
-            mediator.SequenceStarting -= starting;
-            mediator.SequenceFinished -= finished;
+                mediator.SequenceStarting += starting;
+                mediator.SequenceFinished += finished;
+
+                OnUnsubscribe(() => {
+                    mediator.SequenceStarting -= starting;
+                    mediator.SequenceFinished -= finished;
+                });
+            } catch (OperationCanceledException) {
+                // pins stops before the sequencer was ready.
+            } catch (Exception ex) {
+                Logger.Error("MCP: subscribing to the sequence events failed", ex);
+            }
         });
     }
 
-    /// <summary>Alerts, incidents and (rate-limited) star losses of the internal guider; steps and frames are far too many.</summary>
+    /// <summary>
+    /// Alerts (a star loss raises one alert when reacquiring starts) and saved incidents of the internal guider; steps
+    /// and frames are far too many.
+    /// </summary>
     private void WatchInternalGuider(IAdvancedGuider guider) {
         EventHandler<AdvancedGuiderEventArgs> handler = (_, args) => {
             try {
@@ -244,22 +345,23 @@ public sealed class NinaEventBridge : IHostedService {
                         break;
 
                     case AdvancedGuiderEventTypes.Incident when args.Payload is AdvancedIncidentEvent incident:
+                        // "started" comes before the incident is stored; only "saved" can be opened with get_guide_incident.
                         if (incident.Action == "started") {
                             Publish(
                                 "guider",
                                 EventSeverity.Warning,
-                                $"Guiding incident recorded ({incident.Summary?.Kind ?? "unknown"}); get_guide_incident {incident.Id} has the details.",
+                                $"Guiding incident started ({incident.Summary?.Kind ?? "unknown"}); the flight recorder is recording.",
                                 new Dictionary<string, object?> { ["incidentId"] = incident.Id });
-                        }
-
-                        break;
-
-                    case AdvancedGuiderEventTypes.StarLost:
-                        var now = DateTime.UtcNow;
-
-                        if (now - lastStarLost >= StarLostInterval) {
-                            lastStarLost = now;
-                            Publish("guider", EventSeverity.Warning, "Guide star lost.");
+                        } else if (incident.Action == "saved") {
+                            Publish(
+                                "guider",
+                                EventSeverity.Info,
+                                $"Guiding incident saved ({incident.Summary?.Kind ?? "unknown"}, {incident.Summary?.FrameCount ?? 0} frames); get_guide_incident has the details.",
+                                new Dictionary<string, object?> {
+                                    ["incidentId"] = incident.Id,
+                                    ["cause"] = incident.Summary?.Cause,
+                                    ["endReason"] = incident.Summary?.EndReason
+                                });
                         }
 
                         break;
@@ -292,5 +394,21 @@ public sealed class NinaEventBridge : IHostedService {
 
     private static double? Finite(double value) {
         return double.IsFinite(value) ? value : null;
+    }
+
+    private sealed class DeviceWatch {
+
+        public DeviceWatch(string device, Func<bool> isConnected) {
+            Device = device;
+            IsConnected = isConnected;
+        }
+
+        public string Device { get; }
+
+        public Func<bool> IsConnected { get; }
+
+        public bool WasConnected { get; set; }
+
+        public DateTime DisconnectRequestedAt { get; set; } = DateTime.MinValue;
     }
 }

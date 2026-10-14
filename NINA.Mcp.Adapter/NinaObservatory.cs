@@ -223,8 +223,29 @@ public sealed partial class NinaObservatory : IPinsObservatory {
         return sequence.LoadSequenceAsync(name, cancellationToken);
     }
 
-    public Task<OperationResult> AddTargetAsync(TargetRequest request, CancellationToken cancellationToken) {
-        return sequence.AddTargetAsync(request, cancellationToken);
+    /// <summary>
+    /// The meridian flip trigger fails the start validation without a mount; a camera-only plan (no mount connected)
+    /// gets none, and the result says so.
+    /// </summary>
+    public async Task<OperationResult> AddTargetAsync(TargetRequest request, CancellationToken cancellationToken) {
+        var skipFlip = request.TemplateName == null
+            && request.MeridianFlip
+            && telescopeMediator.GetInfo()?.Connected != true;
+
+        if (skipFlip) {
+            request = request with { MeridianFlip = false };
+        }
+
+        var result = await sequence.AddTargetAsync(request, cancellationToken);
+
+        if (!skipFlip || !result.Success) {
+            return result;
+        }
+
+        return OperationResult.Ok(
+            result.Message
+            + " No meridian flip trigger was added because no mount is connected; connect the mount and add the target again "
+            + "if it needs one.");
     }
 
     public Task<OperationResult> ClearTargetsAsync(CancellationToken cancellationToken) {

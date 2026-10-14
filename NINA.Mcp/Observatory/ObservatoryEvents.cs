@@ -86,9 +86,19 @@ public sealed class ObservatoryEventLog {
         return entry;
     }
 
-    /// <summary>Events after <paramref name="sinceId"/> that match <paramref name="filter"/>, oldest first, at most <paramref name="max"/>.</summary>
+    /// <summary>
+    /// Events after <paramref name="sinceId"/> that match <paramref name="filter"/>, oldest first, at most
+    /// <paramref name="max"/>. A cursor beyond the newest id comes from before a pins restart (ids start at 1 again):
+    /// it reads from the beginning and reports <see cref="EventPage.Missed"/>.
+    /// </summary>
     public EventPage Read(long sinceId, int max, Func<ObservatoryEvent, bool>? filter = null) {
         lock (gate) {
+            var reset = sinceId > lastId;
+
+            if (reset) {
+                sinceId = 0;
+            }
+
             var matching = events
                 .Where(entry => entry.Id > sinceId && (filter?.Invoke(entry) ?? true))
                 .ToList();
@@ -96,7 +106,7 @@ public sealed class ObservatoryEventLog {
             var page = matching.Take(Math.Max(1, max)).ToList();
             var more = matching.Count > page.Count;
             var oldest = events.Count == 0 ? lastId + 1 : events.Peek().Id;
-            var missed = sinceId < lastId && sinceId + 1 < oldest;
+            var missed = reset || (sinceId < lastId && sinceId + 1 < oldest);
 
             // Without more matching events the cursor jumps to the newest event, past events the filter left out.
             var next = more ? page[^1].Id : Math.Max(sinceId, lastId);
