@@ -25,7 +25,7 @@ public sealed record ObservatoryEvent(
 /// <summary>
 /// One read of the event log. <see cref="NextSinceId"/> is the cursor for the next call; <see cref="More"/> is true
 /// when more matching events are waiting; <see cref="Missed"/> is true when events after the cursor were already dropped
-/// from the buffer (the client polled too rarely).
+/// from the buffer (the client polled too rarely; less severe events are dropped first).
 /// </summary>
 public sealed record EventPage(IReadOnlyList<ObservatoryEvent> Events, long LatestId, long NextSinceId, bool More, bool Missed);
 
@@ -34,17 +34,22 @@ public sealed record EventPage(IReadOnlyList<ObservatoryEvent> Events, long Late
 /// instead of only the current state. Publishers are the adapter's event bridge (mediator events) and anything else in
 /// pins; readers are the get_events tool, optionally long-polling. Thread-safe.
 /// </summary>
+/// <remarks>
+/// When full, the oldest event of the lowest severity present is dropped: a flood of image or incident events pushes out
+/// older info events first, never a critical UNSAFE while less severe ones remain.
+/// </remarks>
 public sealed class ObservatoryEventLog {
 
     public const int Capacity = 2000;
 
     private readonly object gate = new();
-    private readonly Queue<ObservatoryEvent> events = new();
+    private readonly List<ObservatoryEvent> events = [];
     private readonly TimeProvider timeProvider;
 
     private readonly long firstId;
 
     private long lastId;
+    private long lastDroppedId;
     private TaskCompletionSource published = NewSignal();
 
     public ObservatoryEventLog() : this(TimeProvider.System) {
@@ -85,10 +90,10 @@ public sealed class ObservatoryEventLog {
         lock (gate) {
             lastId++;
             entry = new ObservatoryEvent(lastId, timeProvider.GetLocalNow(), kind, severity, message, data);
-            events.Enqueue(entry);
+            events.Add(entry);
 
             while (events.Count > Capacity) {
-                events.Dequeue();
+                DropOne();
             }
 
             signal = published;
@@ -120,12 +125,11 @@ public sealed class ObservatoryEventLog {
 
             var page = matching.Take(Math.Max(1, max)).ToList();
             var more = matching.Count > page.Count;
-            var oldest = events.Count == 0 ? lastId + 1 : events.Peek().Id;
-            // since_id 0 means "from the start of this run": missed only when this run's first events were dropped.
+            // Missed when an event after the cursor was dropped (since_id 0 means "from the start of this run"), or when the
+            // cursor is from an earlier run.
             var missed = reset
-                || (sinceId == 0
-                    ? oldest > firstId + 1
-                    : sinceId < lastId && sinceId + 1 < oldest);
+                || (sinceId > 0 && sinceId < firstId)
+                || lastDroppedId > Math.Max(sinceId, firstId);
 
             // Without more matching events the cursor jumps to the newest event, past events the filter left out.
             var next = more ? page[^1].Id : Math.Max(sinceId, lastId);
@@ -186,6 +190,15 @@ public sealed class ObservatoryEventLog {
                 return Read(cursor, max, filter) with { Missed = missed };
             }
         }
+    }
+
+    /// <summary>Drops the oldest event of the lowest severity present. Caller holds the lock.</summary>
+    private void DropOne() {
+        var lowest = events.Min(entry => entry.Severity);
+        var index = events.FindIndex(entry => entry.Severity == lowest);
+
+        lastDroppedId = Math.Max(lastDroppedId, events[index].Id);
+        events.RemoveAt(index);
     }
 
     private static TaskCompletionSource NewSignal() {

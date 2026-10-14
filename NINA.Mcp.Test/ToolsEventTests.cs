@@ -92,6 +92,40 @@ public class ToolsEventTests {
     }
 
     [Test]
+    public void Log_AFloodOfInfoEvents_KeepsTheCriticalOne() {
+        var log = new ObservatoryEventLog();
+        var start = log.LatestId;
+
+        log.Publish("device", EventSeverity.Warning, "camera dropped its connection and reconnected.");
+        var unsafeEvent = log.Publish("safety", EventSeverity.Critical, "The safety monitor reports UNSAFE.");
+
+        for (var i = 0; i < ObservatoryEventLog.Capacity + 100; i++) {
+            log.Publish("image", EventSeverity.Info, $"saved {i}");
+        }
+
+        var important = log.Read(start, 10, entry => entry.Severity >= EventSeverity.Warning);
+
+        Assert.That(important.Events.Select(entry => entry.Id), Is.EqualTo(new[] { start + 1, unsafeEvent.Id }));
+        Assert.That(important.Missed, Is.True, "info events after the cursor were dropped");
+        Assert.That(log.Recent(ObservatoryEventLog.Capacity).Events, Has.Count.EqualTo(ObservatoryEventLog.Capacity));
+
+        // A cursor past every dropped event misses nothing.
+        Assert.That(log.Read(log.LatestId - 5, 10).Missed, Is.False);
+    }
+
+    [Test]
+    public void Log_CriticalEventsAreDroppedLast_OldestFirst() {
+        var log = new ObservatoryEventLog();
+        var start = log.LatestId;
+
+        for (var i = 0; i < ObservatoryEventLog.Capacity + 1; i++) {
+            log.Publish("safety", EventSeverity.Critical, $"unsafe {i}");
+        }
+
+        Assert.That(log.Read(start, 1).Events.Single().Id, Is.EqualTo(start + 2));
+    }
+
+    [Test]
     public void Log_CursorFromAnEarlierRunIsMissed() {
         var log = new ObservatoryEventLog();
         var start = log.LatestId;

@@ -26,11 +26,17 @@ public sealed class NinaEventBridge : IHostedService {
     /// <summary>How often the connection state of the devices is compared with the last one.</summary>
     private static readonly TimeSpan ConnectionPollInterval = TimeSpan.FromSeconds(3);
 
+    private static readonly TimeSpan IncidentSavedInterval = TimeSpan.FromMinutes(1);
+
     private readonly IServiceProvider services;
     private readonly ObservatoryEventLog log;
     private readonly List<Action> unsubscribers = [];
     private readonly List<DeviceWatch> devices = [];
     private readonly CancellationTokenSource stopping = new();
+
+    private readonly object incidentGate = new();
+    private DateTime lastIncidentSavedAt = DateTime.MinValue;
+    private int suppressedIncidentSaves;
 
     public NinaEventBridge(IServiceProvider services, ObservatoryEventLog log) {
         this.services = services ?? throw new ArgumentNullException(nameof(services));
@@ -359,15 +365,20 @@ public sealed class NinaEventBridge : IHostedService {
                                 EventSeverity.Warning,
                                 $"Guiding incident started ({incident.Summary?.Kind ?? "unknown"}); the flight recorder is recording.",
                                 new Dictionary<string, object?> { ["incidentId"] = incident.Id });
-                        } else if (incident.Action == "saved") {
+                        } else if (incident.Action == "saved" && TakeIncidentSavedSlot(out var suppressed)) {
+                            var more = suppressed > 0
+                                ? $" {suppressed} more incident(s) were saved in the minute before; list_guide_incidents has them all."
+                                : string.Empty;
+
                             Publish(
                                 "guider",
                                 EventSeverity.Info,
-                                $"Guiding incident saved ({incident.Summary?.Kind ?? "unknown"}, {incident.Summary?.FrameCount ?? 0} frames); get_guide_incident has the details.",
+                                $"Guiding incident saved ({incident.Summary?.Kind ?? "unknown"}, {incident.Summary?.FrameCount ?? 0} frames); get_guide_incident has the details.{more}",
                                 new Dictionary<string, object?> {
                                     ["incidentId"] = incident.Id,
                                     ["cause"] = incident.Summary?.Cause,
-                                    ["endReason"] = incident.Summary?.EndReason
+                                    ["endReason"] = incident.Summary?.EndReason,
+                                    ["suppressedBefore"] = suppressed > 0 ? suppressed : null
                                 });
                         }
 
@@ -380,6 +391,29 @@ public sealed class NinaEventBridge : IHostedService {
 
         guider.AdvancedGuiderEvent += handler;
         OnUnsubscribe(() => guider.AdvancedGuiderEvent -= handler);
+    }
+
+    /// <summary>
+    /// At most one "incident saved" event per <see cref="IncidentSavedInterval"/>: a trigger that fires every few frames
+    /// (the Spike flood) would otherwise fill the event log. <paramref name="suppressed"/> counts the ones left out before.
+    /// </summary>
+    private bool TakeIncidentSavedSlot(out int suppressed) {
+        lock (incidentGate) {
+            var now = DateTime.UtcNow;
+
+            if (now - lastIncidentSavedAt < IncidentSavedInterval) {
+                suppressedIncidentSaves++;
+                suppressed = 0;
+
+                return false;
+            }
+
+            suppressed = suppressedIncidentSaves;
+            suppressedIncidentSaves = 0;
+            lastIncidentSavedAt = now;
+
+            return true;
+        }
     }
 
     // ----- Helpers -----

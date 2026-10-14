@@ -25,7 +25,7 @@ internal sealed class GetEventsTool : ObservatoryTool {
         + "incidents. get_status only shows the state now; this shows what happened in between. Without since_id it "
         + "returns the newest events; pass nextSinceId from the previous result as since_id to get only newer ones, and "
         + "wait_seconds to long-poll for the next event (a cheap way to watch a night). missed is true when events were "
-        + "dropped because the buffer (the last 2000) moved on or pins restarted (each run starts with higher ids). Filter by "
+        + "dropped because the buffer (the last 2000; info events go first) moved on or pins restarted (each run starts with higher ids). Filter by "
         + "kinds and min_severity. Side-effect free.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Query;
