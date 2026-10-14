@@ -18,7 +18,10 @@ internal sealed class GetSessionSummaryTool : ObservatoryTool {
 
     private static readonly IReadOnlyList<string> Groupings = ["target_filter", "target", "filter"];
 
-    public GetSessionSummaryTool(IPinsObservatory observatory) : base(observatory) {
+    private readonly TimeProvider timeProvider;
+
+    public GetSessionSummaryTool(IPinsObservatory observatory, TimeProvider timeProvider) : base(observatory) {
+        this.timeProvider = timeProvider ?? throw new ArgumentNullException(nameof(timeProvider));
     }
 
     public override string Name => "get_session_summary";
@@ -48,7 +51,8 @@ internal sealed class GetSessionSummaryTool : ObservatoryTool {
         var sinceHours = arguments.GetDouble("since_hours");
 
         var images = Observatory.GetRecentImages(MaxImages);
-        var now = Observatory.GetStatus().Time;
+        // Not GetStatus().Time: that reads every device for a clock.
+        var now = timeProvider.GetLocalNow();
 
         var selected = images
             .Where(image => !lightsOnly || string.Equals(image.ImageType, "LIGHT", StringComparison.OrdinalIgnoreCase))

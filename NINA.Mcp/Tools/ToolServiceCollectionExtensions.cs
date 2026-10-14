@@ -35,7 +35,9 @@ public static class ToolServiceCollectionExtensions {
         Add(services, observatory => new ReadLogTool(observatory));
         Add(services, observatory => new PlanTargetsTool(observatory));
         Add(services, observatory => new FindTargetsTool(observatory));
-        Add(services, observatory => new GetSessionSummaryTool(observatory));
+        services.AddSingleton<McpTool>(provider => new GetSessionSummaryTool(
+            provider.GetRequiredService<IPinsObservatory>(),
+            provider.GetService<TimeProvider>() ?? TimeProvider.System));
         Add(services, observatory => new GetSystemHealthTool(observatory));
         services.AddSingleton<McpTool>(provider => new GetEventsTool(
             provider.GetRequiredService<IPinsObservatory>(),

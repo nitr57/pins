@@ -22,6 +22,7 @@ internal sealed class ToolsTestCatalog : IDisposable {
 
         var services = new ServiceCollection();
         services.AddSingleton<Observatory.IPinsObservatory>(Observatory);
+        services.AddSingleton<TimeProvider>(Clock);
         services.AddPinsMcpTools();
 
         provider = services.BuildServiceProvider();
@@ -31,6 +32,9 @@ internal sealed class ToolsTestCatalog : IDisposable {
     }
 
     public ToolsFakeObservatory Observatory { get; }
+
+    /// <summary>The tools' clock: 2026-10-11 21:00 UTC, the fake observatory's status time.</summary>
+    public ToolsFixedTimeProvider Clock { get; } = new(new DateTimeOffset(2026, 10, 11, 21, 0, 0, TimeSpan.Zero));
 
     public JobManager Jobs { get; }
 

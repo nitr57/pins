@@ -124,9 +124,11 @@ public class ToolsSessionAndSafetyTests {
         AddLight(1, "M 31", "L", 2.0, 400);
         catalog.Observatory.Images.Add(Image(2, "SNAPSHOT", null, null, 2.0, 400, Night.AddMinutes(55)));
 
-        // The fake's status time is 2026-10-11 21:00 UTC: frame 1 is 58 minutes old, frame 2 five minutes.
+        // The catalog's clock is 2026-10-11 21:00 UTC: frame 1 is 58 minutes old, frame 2 five minutes.
         var all = await catalog.CallAsync("get_session_summary", """{"image_type":"all","group_by":"target"}""");
         var recent = await catalog.CallAsync("get_session_summary", """{"image_type":"all","since_hours":0.5}""");
+
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("GetStatus"), "no device read just for the time");
 
         Assert.That(all.Structured!["frames"]!.GetValue<int>(), Is.EqualTo(2));
         Assert.That(all.Structured!["groups"]!.AsArray().Select(group => group!["target"]!.GetValue<string>()), Is.EquivalentTo(new[] { "M 31", "(no target)" }));
