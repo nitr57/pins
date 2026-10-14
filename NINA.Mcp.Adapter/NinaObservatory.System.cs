@@ -119,14 +119,16 @@ public sealed partial class NinaObservatory {
 
         var clockSynchronized = TryAsync(() => ReadClockSynchronizedAsync(budget.Token));
         var throttling = TryAsync(async () => ThrottleState.Parse(await RunCommandAsync("vcgencmd", "get_throttled", budget.Token)));
+        var imageDisk = ReadDiskAsync(imagePath, budget.Token);
+        var appDisk = ReadDiskAsync(CoreUtil.APPLICATIONTEMPPATH, budget.Token);
 
         return new SystemHealth(
             DateTimeOffset.Now,
             Environment.TickCount64 / 3_600_000.0,
             await clockSynchronized,
             Try(ReadMountUtc),
-            Try(() => ReadDisk(imagePath)),
-            Try(() => ReadDisk(CoreUtil.APPLICATIONTEMPPATH)),
+            await imageDisk,
+            await appDisk,
             Try(ReadCpuTemperature),
             await throttling,
             Try(() => ReadMeminfo("MemAvailable:")),
@@ -157,6 +159,22 @@ public sealed partial class NinaObservatory {
         }
 
         return new DateTimeOffset(DateTime.SpecifyKind(info.UTCDate, DateTimeKind.Utc));
+    }
+
+    /// <summary>
+    /// <see cref="ReadDisk"/> on the thread pool within the budget: the stat of a stale network share can hang, and the
+    /// health answer must not wait for it (the reading is then null; the blocked thread is left to finish).
+    /// </summary>
+    private static async Task<DiskSpace?> ReadDiskAsync(string? path, CancellationToken cancellationToken) {
+        try {
+            return await Task.Run(() => ReadDisk(path)).WaitAsync(cancellationToken);
+        } catch (OperationCanceledException) {
+            Logger.Debug($"MCP: reading the free space of {path} did not finish in time");
+            return null;
+        } catch (Exception ex) {
+            Logger.Debug($"MCP: a system health reading failed: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>The file system holding <paramref name="path"/>: the mounted drive with the longest matching root.</summary>
