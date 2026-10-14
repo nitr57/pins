@@ -28,7 +28,7 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         + "the mount, closes the dome shutter and the flat panel's dust cover, and optionally warms the camera. Steps for "
         + "devices that are not connected are skipped. The dome is only closed when the mount is parked (closing a roof on an "
         + "unparked telescope can damage it); a disconnected mount counts as not parked, because its position is unknown, "
-        + "unless close_dome_without_mount is set. Not refused while a sequence runs and not blocked by other jobs; until the camera "
+        + "unless close_dome_without_mount is set. The dome step only succeeds when the dome then reports its shutter closed. Not refused while a sequence runs and not blocked by other jobs; until the camera "
         + "warming starts it holds all devices, so nothing can unpark or open in between. Runs as a background job (parking and closing take "
         + "minutes): poll get_job; outcome.data lists every step. Moves the telescope and the dome.";
 
@@ -161,13 +161,33 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
                     "Skipped: the mount is not parked, and closing the dome on an unparked telescope can damage it. Check the "
                     + "mount, then close the dome with control_dome."));
             } else {
-                await StepAsync(steps, "close_dome", () => Observatory.ControlDomeAsync(DomeAction.CloseShutter, null, cancellationToken)).ConfigureAwait(false);
+                await StepAsync(steps, "close_dome", () => CloseDomeAsync(cancellationToken)).ConfigureAwait(false);
             }
         }
 
         if (closeCover && Connected(status, DeviceKind.FlatDevice) && Property(status, DeviceKind.FlatDevice, "coverState") is not null) {
             await StepAsync(steps, "close_cover", () => Observatory.ControlFlatDeviceAsync(FlatDeviceAction.CloseCover, null, cancellationToken)).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// control_dome reports a shutter that is still moving or has no state as it is; the shutdown only counts a dome that
+    /// reports closed, so that "Observatory secured." is never said over an open or jammed roof.
+    /// </summary>
+    private async Task<OperationResult> CloseDomeAsync(CancellationToken cancellationToken) {
+        var result = await Observatory.ControlDomeAsync(DomeAction.CloseShutter, null, cancellationToken).ConfigureAwait(false);
+
+        if (!result.Success) {
+            return result;
+        }
+
+        var shutter = Property(Observatory.GetStatus(), DeviceKind.Dome, "shutter") as string;
+
+        return shutter == "ShutterClosed"
+            ? result
+            : OperationResult.Fail(
+                $"The close command completed, but the dome reports {shutter ?? "no shutter state"} instead of ShutterClosed: it may "
+                + "still be moving or be stuck. Check the dome (get_status, a camera or a person) before relying on it.");
     }
 
     private static async Task WaitForJobsToEndAsync(IJobManager jobs, CancellationToken cancellationToken) {

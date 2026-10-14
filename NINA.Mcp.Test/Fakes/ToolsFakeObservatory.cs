@@ -74,6 +74,9 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         8064,
         0.8);
 
+    /// <summary>The dome's "shutter" status property after a successful close (null removes it).</summary>
+    public string? DomeShutterAfterClose { get; set; } = "ShutterClosed";
+
     /// <summary>The night returned by GetNightSky; defaults to <see cref="ToolsNightSky.Create"/>.</summary>
     public Func<NightSkyRequest, NightSky> NightSkyFactory { get; set; } = request => ToolsNightSky.Create(request.Targets);
 
@@ -455,10 +458,16 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         return OperateAsync("FlatDevice", cancellationToken);
     }
 
-    public Task<OperationResult> ControlDomeAsync(DomeAction action, double? azimuthDegrees, CancellationToken cancellationToken) {
+    public async Task<OperationResult> ControlDomeAsync(DomeAction action, double? azimuthDegrees, CancellationToken cancellationToken) {
         LastDome = (action, azimuthDegrees);
 
-        return OperateAsync("Dome", cancellationToken);
+        var result = await OperateAsync("Dome", cancellationToken);
+
+        if (result.Success && action == DomeAction.CloseShutter) {
+            SetDeviceProperty(DeviceKind.Dome, "shutter", DomeShutterAfterClose);
+        }
+
+        return result;
     }
 
     public Task<CatalogSearchResult> FindTargetsAsync(CatalogSearch search, CancellationToken cancellationToken) {
@@ -475,6 +484,26 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
     }
 
     // ----- Helpers -----
+
+    private void SetDeviceProperty(DeviceKind kind, string name, object? value) {
+        lock (gate) {
+            var index = Devices.FindIndex(device => device.Kind == kind);
+
+            if (index < 0) {
+                return;
+            }
+
+            var properties = new Dictionary<string, object?>(Devices[index].Properties);
+
+            if (value is null) {
+                properties.Remove(name);
+            } else {
+                properties[name] = value;
+            }
+
+            Devices[index] = Devices[index] with { Properties = properties };
+        }
+    }
 
     private void Record(string member) {
         lock (gate) {

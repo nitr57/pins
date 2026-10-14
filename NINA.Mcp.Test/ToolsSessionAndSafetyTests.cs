@@ -263,6 +263,22 @@ public class ToolsSessionAndSafetyTests {
         Assert.That(catalog.Observatory.LastDome, Is.EqualTo((DomeAction.CloseShutter, (double?)null)));
     }
 
+    [TestCase("ShutterClosing", "reports ShutterClosing")]
+    [TestCase("ShutterError", "reports ShutterError")]
+    [TestCase(null, "no shutter state")]
+    public async Task Secure_OnlyCountsAClosedShutter(string? shutterAfterClose, string expected) {
+        ConnectAll(atPark: true);
+        catalog.Observatory.DomeShutterAfterClose = shutterAfterClose;
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"park":false}"""));
+        var closeDome = job["outcome"]!["data"]!.AsArray().Single(step => step!["step"]!.GetValue<string>() == "close_dome")!;
+
+        Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("failed"));
+        Assert.That(job["outcome"]!["message"]!.GetValue<string>(), Does.Not.Contain("secured").And.Contain("close_dome"));
+        Assert.That(closeDome["success"]!.GetValue<bool>(), Is.False);
+        Assert.That(closeDome["message"]!.GetValue<string>(), Does.Contain(expected));
+    }
+
     [Test]
     public async Task Secure_SkipsDisconnectedDevicesAndOptOuts() {
         ConnectAll(atPark: true);
