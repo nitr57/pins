@@ -40,7 +40,7 @@ internal sealed class GetSystemHealthTool : ObservatoryTool {
             maxLength: 40);
     }
 
-    protected override Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
+    protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var clientText = arguments.GetString("client_time");
         DateTimeOffset? client = null;
 
@@ -52,7 +52,7 @@ internal sealed class GetSystemHealthTool : ObservatoryTool {
             client = parsed;
         }
 
-        var health = Observatory.GetSystemHealth();
+        var health = await Observatory.GetSystemHealthAsync(cancellationToken).ConfigureAwait(false);
         var warnings = new List<string>();
 
         double? clockOffset = client is null ? null : Math.Round((health.LocalTime - client.Value).TotalSeconds, 1);
@@ -115,6 +115,6 @@ internal sealed class GetSystemHealthTool : ObservatoryTool {
             warnings
         };
 
-        return Task.FromResult(ToolCallResult.Json(payload));
+        return ToolCallResult.Json(payload);
     }
 }

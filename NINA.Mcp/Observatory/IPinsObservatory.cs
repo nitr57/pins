@@ -186,8 +186,11 @@ public interface IPinsObservatory {
     /// <summary>Searches NINA's offline deep sky catalog (the same database as the sky atlas).</summary>
     Task<CatalogSearchResult> FindTargetsAsync(CatalogSearch search, CancellationToken cancellationToken);
 
-    /// <summary>Clock, disk, temperature, power and memory of the pins box. Fast: no hardware waits, external commands time out quickly.</summary>
-    SystemHealth GetSystemHealth();
+    /// <summary>
+    /// Clock, disk, temperature, power and memory of the pins box. Fast: no hardware waits; external commands run
+    /// concurrently within one short time budget and do not block a thread.
+    /// </summary>
+    Task<SystemHealth> GetSystemHealthAsync(CancellationToken cancellationToken);
 }
 
 public enum DeviceKind {

@@ -477,10 +477,10 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         return Task.FromResult(CatalogResult);
     }
 
-    public SystemHealth GetSystemHealth() {
+    public Task<SystemHealth> GetSystemHealthAsync(CancellationToken cancellationToken) {
         Record("GetSystemHealth");
 
-        return Health;
+        return Task.FromResult(Health);
     }
 
     // ----- Helpers -----

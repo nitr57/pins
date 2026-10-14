@@ -110,30 +110,37 @@ public sealed partial class NinaObservatory {
 
     // ----- System health -----
 
-    public SystemHealth GetSystemHealth() {
+    public async Task<SystemHealth> GetSystemHealthAsync(CancellationToken cancellationToken) {
         var imagePath = Try(() => profileService.ActiveProfile.ImageFileSettings.FilePath);
+
+        // One budget for every external command; they run at the same time and never block a request thread.
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        budget.CancelAfter(CommandTimeout);
+
+        var clockSynchronized = TryAsync(() => ReadClockSynchronizedAsync(budget.Token));
+        var throttling = TryAsync(async () => ThrottleState.Parse(await RunCommandAsync("vcgencmd", "get_throttled", budget.Token)));
 
         return new SystemHealth(
             DateTimeOffset.Now,
             Environment.TickCount64 / 3_600_000.0,
-            Try(ReadClockSynchronized),
+            await clockSynchronized,
             Try(ReadMountUtc),
             Try(() => ReadDisk(imagePath)),
             Try(() => ReadDisk(CoreUtil.APPLICATIONTEMPPATH)),
             Try(ReadCpuTemperature),
-            Try(() => ThrottleState.Parse(RunCommand("vcgencmd", "get_throttled"))),
+            await throttling,
             Try(() => ReadMeminfo("MemAvailable:")),
             Try(() => ReadMeminfo("MemTotal:")),
             Try(ReadLoadAverage));
     }
 
     /// <summary>systemd-timesyncd marks a synchronized clock with this file; otherwise ask timedatectl (also covers chrony).</summary>
-    private static bool? ReadClockSynchronized() {
+    private static async Task<bool?> ReadClockSynchronizedAsync(CancellationToken cancellationToken) {
         if (File.Exists("/run/systemd/timesync/synchronized")) {
             return true;
         }
 
-        var output = RunCommand("timedatectl", "show --property=NTPSynchronized --value")?.Trim();
+        var output = (await RunCommandAsync("timedatectl", "show --property=NTPSynchronized --value", cancellationToken))?.Trim();
 
         return output switch {
             "yes" => true,
@@ -228,8 +235,8 @@ public sealed partial class NinaObservatory {
         return double.TryParse(first, NumberStyles.Float, CultureInfo.InvariantCulture, out var load) ? load : null;
     }
 
-    /// <summary>Standard output of a short command, or null when it is missing, fails or does not finish in time.</summary>
-    private static string? RunCommand(string fileName, string arguments) {
+    /// <summary>Standard output of a short command, or null when it is missing, fails or does not finish before the token.</summary>
+    private static async Task<string?> RunCommandAsync(string fileName, string arguments, CancellationToken cancellationToken) {
         var start = new ProcessStartInfo(fileName, arguments) {
             RedirectStandardOutput = true,
             RedirectStandardError = false,
@@ -243,9 +250,13 @@ public sealed partial class NinaObservatory {
             return null;
         }
 
-        var output = process.StandardOutput.ReadToEndAsync();
+        try {
+            var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
 
-        if (!process.WaitForExit(CommandTimeout)) {
+            await process.WaitForExitAsync(cancellationToken);
+
+            return process.ExitCode == 0 ? await output : null;
+        } catch (OperationCanceledException) {
             try {
                 process.Kill(entireProcessTree: true);
             } catch (Exception) {
@@ -254,8 +265,16 @@ public sealed partial class NinaObservatory {
 
             return null;
         }
+    }
 
-        return process.ExitCode == 0 && output.Wait(CommandTimeout) ? output.Result : null;
+    /// <summary>Like <see cref="Try{T}"/> for the readings that run a command.</summary>
+    private static async Task<T?> TryAsync<T>(Func<Task<T?>> read) {
+        try {
+            return await read();
+        } catch (Exception ex) {
+            Logger.Debug($"MCP: a system health reading failed: {ex.Message}");
+            return default;
+        }
     }
 
     /// <summary>Each health reading is optional: a missing file or command must not hide the others.</summary>
