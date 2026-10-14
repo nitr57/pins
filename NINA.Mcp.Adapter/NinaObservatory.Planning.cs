@@ -17,7 +17,8 @@ public sealed partial class NinaObservatory {
 
     /// <summary>
     /// Samples one observing night (from the site's mean solar noon to the next one, see <see cref="NightWindow"/>, so the
-    /// night is right whatever time zone the pins box uses) at the profile's site. Target positions use the same SOFA transform as NINA (<see cref="Coordinates.Transform(Angle, Angle, double, DateTime)"/>,
+    /// night is right whatever time zone the pins box uses) at the profile's site. Target positions use the same SOFA
+    /// transform as NINA (<see cref="Coordinates.Transform(Angle, Angle, double, DateTime)"/>,
     /// no refraction); sun and moon come from NOVAS via <see cref="AstroUtil"/>.
     /// </summary>
     public NightSky GetNightSky(NightSkyRequest request) {

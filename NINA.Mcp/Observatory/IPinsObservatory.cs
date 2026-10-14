@@ -436,7 +436,8 @@ public enum DomeAction {
 
 /// <summary>
 /// Catalog query. <see cref="Name"/> matches designations and common names (substring, case-insensitive: "M 42", "NGC 7000",
-/// "Orion"); exact designation or alias matches come first (see <c>CatalogRanking</c>), before <see cref="Limit"/> applies. <see cref="Types"/> are NINA's type codes (GALXY, BRTNB, PLNNB, OPNCL, GLOCL, DRKNB, SNREM, ...).
+/// "Orion"); exact designation or alias matches come first (see <c>CatalogRanking</c>), before <see cref="Limit"/> applies.
+/// <see cref="Types"/> are NINA's type codes (GALXY, BRTNB, PLNNB, OPNCL, GLOCL, DRKNB, SNREM, ...).
 /// <see cref="Order"/>: "name", "magnitude" (brightest first, objects without magnitude left out) or "size" (largest first).
 /// </summary>
 public sealed record CatalogSearch(

@@ -53,8 +53,11 @@ public static class NightWindow {
             return null;
         }
 
-        return FormattableString.Invariant(
-            $"The pins box's time zone (UTC{(boxOffset < TimeSpan.Zero ? "-" : "+")}{boxOffset.Duration():hh\\:mm}) is about {Math.Abs(difference.TotalHours):0} h away from the site's solar time; all times carry the box's offset, so convert them for the user and consider setting the box's time zone.");
+        var sign = boxOffset < TimeSpan.Zero ? "-" : "+";
+
+        return FormattableString.Invariant($"The pins box's time zone (UTC{sign}{boxOffset.Duration():hh\\:mm}) is about ")
+            + FormattableString.Invariant($"{Math.Abs(difference.TotalHours):0} h away from the site's solar time; all times carry the ")
+            + "box's offset, so convert them for the user and consider setting the box's time zone.";
     }
 
     private static TimeSpan SolarOffset(double longitudeDegrees) {
