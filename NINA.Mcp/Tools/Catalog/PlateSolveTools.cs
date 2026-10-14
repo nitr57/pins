@@ -68,7 +68,16 @@ internal sealed class CenterTargetTool : ObservatoryTool {
     /// Held besides the mount for the whole job (a job claims one resource): no capture, filter change, focuser,
     /// rotator or flat device move and no guiding start can sneak in between the centering exposures.
     /// </summary>
-    internal static readonly string[] CenterReserves = ["camera", "guider", "filter_wheel"];
+    internal static readonly string[] CenterReserves = ["camera", "guider"];
+
+    /// <summary>Reserved besides <see cref="CenterReserves"/>, but kept after a cancel request (see <see cref="FilterRestoreGrace"/>).</summary>
+    internal static readonly string[] CenterReservesFilter = ["filter_wheel"];
+
+    /// <summary>
+    /// After a cancel, NINA's centering solver still restores the original filter on a fresh five-minute token: the filter
+    /// wheel stays reserved until the work returns, but at most this long, so that an abandoned job cannot keep it forever.
+    /// </summary>
+    internal static readonly TimeSpan FilterRestoreGrace = TimeSpan.FromMinutes(6);
 
     public CenterTargetTool(IPinsObservatory observatory) : base(observatory) {
     }
@@ -84,7 +93,7 @@ internal sealed class CenterTargetTool : ObservatoryTool {
         + "is stopped first and restarted afterwards when it was running (not when the slew to the target fails). The mount must be connected and unparked; the "
         + "camera connected. Moves the telescope: make sure the user expects it. outcome.data holds the last solution and its "
         + "remaining error from the target. Runs as a background job holding the mount, and also the camera, guider and filter "
-        + "wheel until it ends; refused while a capture, plate solve, autofocus, filter change, focuser, rotator, flat device or "
+        + "wheel until it ends (after a cancel the filter wheel until NINA has restored the filter); refused while a capture, plate solve, autofocus, filter change, focuser, rotator, flat device or "
         + "guiding start job runs. Takes one to several minutes: poll get_job. Stop it with cancel_job or stop_all.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
@@ -113,9 +122,15 @@ internal sealed class CenterTargetTool : ObservatoryTool {
             async token => {
                 // Checked idle atomically with the claim above; a job that grabbed one of them in between fails this one.
                 using var reservation = context.Jobs.Reserve(CenterReserves, description);
+                using var filterReservation = context.Jobs.Reserve(CenterReservesFilter, description);
 
                 // Released on the cancel request already: an abandoned job (hung driver) must not keep them forever.
                 using var releaseOnCancel = token.Register(reservation.Dispose);
+
+                // The filter wheel only once the solver restored the filter (the work returned), or after the grace.
+                using var releaseFilterLater = token.Register(() => _ = Task.Delay(FilterRestoreGrace).ContinueWith(
+                    _ => filterReservation.Dispose(),
+                    TaskScheduler.Default));
 
                 return PlateSolveTool.ToOutcome(await Observatory.CenterAsync(ra, dec, token).ConfigureAwait(false));
             },

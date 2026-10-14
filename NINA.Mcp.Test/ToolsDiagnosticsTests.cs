@@ -115,6 +115,29 @@ public class ToolsDiagnosticsTests {
         Assert.That((await catalog.CallAsync("move_focuser", """{"position":100}""")).IsError, Is.False, "the reservation ends with the job");
     }
 
+    [Test]
+    public async Task CenterTarget_Cancelled_KeepsTheFilterWheelUntilTheSolverReturns() {
+        // NINA's centering solver restores the original filter on a fresh token after a cancel.
+        catalog.Observatory.Block("Center", ignoreCancellation: true);
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("center_target", """{"ra":1,"dec":1,"wait_seconds":0}"""));
+
+        await catalog.Observatory.WaitForCallAsync("Center");
+
+        catalog.Jobs.Cancel(job["id"]!.GetValue<string>());
+
+        Assert.That(() => catalog.Jobs.Reserve(["camera", "guider"], "test").Dispose(), Throws.Nothing, "released on the cancel request");
+
+        var filter = Assert.ThrowsAsync<JobConflictException>(() => catalog.CallAsync("change_filter", """{"name":"L"}"""));
+
+        Assert.That(filter!.Resource, Is.EqualTo("filter_wheel"));
+
+        catalog.Observatory.Release("Center");
+        await WaitIdleAsync();
+
+        Assert.That(() => catalog.Jobs.Reserve(["filter_wheel"], "test").Dispose(), Throws.Nothing, "released when the work returned");
+    }
+
     // ----- Guider diagnostics -----
 
     [Test]
