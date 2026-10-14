@@ -23,15 +23,21 @@ internal sealed class GetEventsTool : ObservatoryTool {
         + "sequence start and end, images saved or failing to save (disk full), camera download timeouts, guiding started "
         + "or stopped, meridian flips, mount park and unpark, internal guider alerts, star losses and flight recorder "
         + "incidents. get_status only shows the state now; this shows what happened in between. Without since_id it "
-        + "returns the newest events; pass nextSinceId from the previous result as since_id to get only newer ones, and "
-        + "wait_seconds to long-poll for the next event (a cheap way to watch a night). missed is true when events were "
-        + "dropped because the buffer (the last 2000; info events go first) moved on or pins restarted (each run starts with higher ids). Filter by "
+        + "returns the newest events; pass nextSinceId and runId from the previous result as since_id and run_id to get "
+        + "only newer ones, and wait_seconds to long-poll for the next event (a cheap way to watch a night). missed is true "
+        + "when events were dropped because the buffer (the last 2000; info events go first) moved on or pins restarted "
+        + "(each run starts with higher ids and a new runId). Filter by "
         + "kinds and min_severity. Side-effect free.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Query;
 
     protected override void DefineArguments(ToolSchema arguments) {
         arguments.Integer("since_id", "Return only events after this id (nextSinceId of the previous call). Omit for the newest events.", minimum: 0, maximum: int.MaxValue);
+        arguments.String(
+            "run_id",
+            "runId of the previous call: with since_id, a cursor from an earlier pins run is recognized even if the clock went back.",
+            maxLength: 16,
+            pattern: "^[0-9A-Fa-f]+$");
         arguments.String("kinds", "Comma-separated kinds: safety, device, sequence, image, camera, guider, mount. Omit for all.", maxLength: 100, pattern: "^[A-Za-z, ]+$");
         arguments.Enum("min_severity", "Lowest severity: info (default), warning, error or critical.", Severities);
         arguments.Integer("limit", "Maximum number of events (1-200). Default 50.", minimum: 1, maximum: 200, defaultValue: 50);
@@ -42,6 +48,7 @@ internal sealed class GetEventsTool : ObservatoryTool {
 
     protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var sinceId = arguments.GetInt("since_id");
+        var runId = arguments.GetString("run_id");
         var limit = arguments.GetInt("limit") ?? 50;
         var wait = JobPayload.ReadWait(arguments, 0);
 
@@ -66,7 +73,7 @@ internal sealed class GetEventsTool : ObservatoryTool {
 
         var page = sinceId is null
             ? events.Recent(limit, Matches)
-            : await events.WaitAsync(sinceId.Value, limit, Matches, wait, cancellationToken).ConfigureAwait(false);
+            : await events.WaitAsync(sinceId.Value, limit, Matches, wait, cancellationToken, runId).ConfigureAwait(false);
 
         var payload = new {
             count = page.Events.Count,
@@ -80,11 +87,12 @@ internal sealed class GetEventsTool : ObservatoryTool {
             }).ToList(),
             latestId = page.LatestId,
             nextSinceId = page.NextSinceId,
+            runId = page.RunId,
             more = page.More ? true : (bool?)null,
             missed = page.Missed ? true : (bool?)null,
             next = page.More
-                ? "More events are waiting: call again with since_id = nextSinceId."
-                : "Call again with since_id = nextSinceId (and wait_seconds to long-poll) for newer events."
+                ? "More events are waiting: call again with since_id = nextSinceId and run_id = runId."
+                : "Call again with since_id = nextSinceId and run_id = runId (and wait_seconds to long-poll) for newer events."
         };
 
         return ToolCallResult.Json(payload);

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+using System.Security.Cryptography;
+
 namespace NINA.Mcp.Observatory;
 
 public enum EventSeverity {
@@ -25,9 +27,10 @@ public sealed record ObservatoryEvent(
 /// <summary>
 /// One read of the event log. <see cref="NextSinceId"/> is the cursor for the next call; <see cref="More"/> is true
 /// when more matching events are waiting; <see cref="Missed"/> is true when events after the cursor were already dropped
-/// from the buffer (the client polled too rarely; less severe events are dropped first).
+/// from the buffer (the client polled too rarely; less severe events are dropped first). <see cref="RunId"/> identifies
+/// the pins run the ids belong to.
 /// </summary>
-public sealed record EventPage(IReadOnlyList<ObservatoryEvent> Events, long LatestId, long NextSinceId, bool More, bool Missed);
+public sealed record EventPage(IReadOnlyList<ObservatoryEvent> Events, long LatestId, long NextSinceId, bool More, bool Missed, string? RunId = null);
 
 /// <summary>
 /// The last <see cref="Capacity"/> events, so that an agent sees what happened between two polls (or while it was away)
@@ -72,6 +75,12 @@ public sealed class ObservatoryEventLog {
         return Math.Max(0, seconds) * 4;
     }
 
+    /// <summary>
+    /// Random per run. Ids alone come from the wall clock, which can go back across a restart (a Pi without network time
+    /// or RTC battery); a cursor passed with another run's id is reported as missed and reads from this run's start.
+    /// </summary>
+    public string RunId { get; } = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(4));
+
     public long LatestId {
         get {
             lock (gate) {
@@ -108,12 +117,13 @@ public sealed class ObservatoryEventLog {
 
     /// <summary>
     /// Events after <paramref name="sinceId"/> that match <paramref name="filter"/>, oldest first, at most
-    /// <paramref name="max"/>. A cursor beyond the newest id (the clock went back across a restart) reads from the
-    /// beginning and reports <see cref="EventPage.Missed"/>, like a cursor older than the oldest event.
+    /// <paramref name="max"/>. A cursor beyond the newest id (the clock went back across a restart) or from another run
+    /// (<paramref name="runId"/> given and not <see cref="RunId"/>) reads from the beginning and reports
+    /// <see cref="EventPage.Missed"/>, like a cursor older than the oldest event.
     /// </summary>
-    public EventPage Read(long sinceId, int max, Func<ObservatoryEvent, bool>? filter = null) {
+    public EventPage Read(long sinceId, int max, Func<ObservatoryEvent, bool>? filter = null, string? runId = null) {
         lock (gate) {
-            var reset = sinceId > lastId;
+            var reset = sinceId > lastId || (runId is not null && !string.Equals(runId, RunId, StringComparison.OrdinalIgnoreCase));
 
             if (reset) {
                 sinceId = 0;
@@ -134,7 +144,7 @@ public sealed class ObservatoryEventLog {
             // Without more matching events the cursor jumps to the newest event, past events the filter left out.
             var next = more ? page[^1].Id : Math.Max(sinceId, lastId);
 
-            return new EventPage(page, lastId, next, more, missed);
+            return new EventPage(page, lastId, next, more, missed, RunId);
         }
     }
 
@@ -144,7 +154,7 @@ public sealed class ObservatoryEventLog {
             var matching = events.Where(entry => filter?.Invoke(entry) ?? true).ToList();
             var page = matching.Skip(Math.Max(0, matching.Count - Math.Max(1, max))).ToList();
 
-            return new EventPage(page, lastId, lastId, false, false);
+            return new EventPage(page, lastId, lastId, false, false, RunId);
         }
     }
 
@@ -157,9 +167,11 @@ public sealed class ObservatoryEventLog {
         int max,
         Func<ObservatoryEvent, bool>? filter,
         TimeSpan wait,
-        CancellationToken cancellationToken) {
+        CancellationToken cancellationToken,
+        string? runId = null) {
         var deadline = timeProvider.GetUtcNow() + wait;
         var cursor = sinceId;
+        var cursorRun = runId;
         var missed = false;
 
         while (true) {
@@ -167,7 +179,7 @@ public sealed class ObservatoryEventLog {
             Task signal;
 
             lock (gate) {
-                page = Read(cursor, max, filter);
+                page = Read(cursor, max, filter, cursorRun);
                 signal = published.Task;
             }
 
@@ -181,6 +193,7 @@ public sealed class ObservatoryEventLog {
 
             // Events the filter left out are skipped, so that the next round only wakes for new ones.
             cursor = page.NextSinceId;
+            cursorRun = null;
 
             try {
                 await signal.WaitAsync(remaining, timeProvider, cancellationToken).ConfigureAwait(false);

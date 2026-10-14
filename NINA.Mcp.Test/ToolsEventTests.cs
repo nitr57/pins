@@ -224,6 +224,50 @@ public class ToolsEventTests {
     }
 
     [Test]
+    public void Log_CursorWithAnotherRunsId_IsMissedEvenWhenTheIdsOverlap() {
+        // The clock went back across a restart: this run's ids already passed the old run's cursor.
+        var log = new ObservatoryEventLog();
+        var start = log.LatestId;
+
+        log.Publish("device", EventSeverity.Info, "camera connected.");
+        log.Publish("safety", EventSeverity.Critical, "unsafe");
+        log.Publish("device", EventSeverity.Info, "mount connected.");
+
+        var oldCursor = start + 1;
+        var withoutRun = log.Read(oldCursor, 10);
+        var otherRun = log.Read(oldCursor, 10, runId: "0badc0de");
+        var sameRun = log.Read(oldCursor, 10, runId: log.RunId.ToUpperInvariant());
+
+        Assert.That(withoutRun.Events, Has.Count.EqualTo(2), "without a run id the unsafe event would be skipped silently");
+        Assert.That(otherRun.Missed, Is.True);
+        Assert.That(otherRun.Events.Select(entry => entry.Id), Is.EqualTo(new[] { start + 1, start + 2, start + 3 }));
+        Assert.That(otherRun.RunId, Is.EqualTo(log.RunId));
+        Assert.That(sameRun.Missed, Is.False);
+        Assert.That(sameRun.Events, Has.Count.EqualTo(2));
+        Assert.That(log.RunId, Does.Match("^[0-9a-f]{8}$"));
+        Assert.That(new ObservatoryEventLog().RunId, Is.Not.EqualTo(log.RunId));
+    }
+
+    [Test]
+    public async Task GetEvents_ReturnsAndAcceptsTheRunId() {
+        var start = catalog.Events.LatestId;
+
+        catalog.Events.Publish("safety", EventSeverity.Critical, "The safety monitor reports UNSAFE.");
+
+        var first = await catalog.CallAsync("get_events");
+        var runId = first.Structured!["runId"]!.GetValue<string>();
+        var stale = await catalog.CallAsync("get_events", $$"""{"since_id":{{start + 1}},"run_id":"0badc0de"}""");
+        var current = await catalog.CallAsync("get_events", $$"""{"since_id":{{start + 1}},"run_id":"{{runId}}"}""");
+
+        Assert.That(runId, Is.EqualTo(catalog.Events.RunId));
+        Assert.That(stale.Structured!["missed"]!.GetValue<bool>(), Is.True);
+        Assert.That(stale.Structured!["events"]!.AsArray(), Has.Count.EqualTo(1));
+        Assert.That(current.Structured!["missed"], Is.Null);
+        Assert.That(current.Structured!["events"]!.AsArray(), Is.Empty);
+        Assert.That(catalog.ArgumentError("get_events", """{"since_id":1,"run_id":"not-hex"}"""), Does.Contain("'run_id'"));
+    }
+
+    [Test]
     public void GetEvents_WaitNeedsCursor() {
         Assert.That(catalog.ArgumentError("get_events", """{"wait_seconds":5}"""), Does.Contain("since_id"));
         Assert.That(catalog.ArgumentError("get_events", """{"kinds":"Device!"}"""), Does.Contain("'kinds'"));
