@@ -46,6 +46,46 @@ namespace NINA.Test.Mcp {
         }
 
         [Test]
+        public void CancellingAnotherDomeJob_WhileNinaClosesTheShutter_DoesNotStopTheDome() {
+            var harness = new NinaObservatoryHarness();
+            harness.ConnectDome(ShutterState.ShutterClosing);
+            var device = new Mock<IDome>();
+            device.SetupGet(dome => dome.ShutterStatus).Returns(ShutterState.ShutterClosing);
+            harness.Dome.Setup(mediator => mediator.GetDevice()).Returns(device.Object);
+            harness.Dome.Setup(mediator => mediator.FindHome(It.IsAny<CancellationToken>())).Returns(new TaskCompletionSource<bool>().Task);
+
+            using var job = new CancellationTokenSource();
+            _ = harness.Observatory.ControlDomeAsync(DomeAction.FindHome, null, job.Token);
+
+            job.Cancel();
+
+            device.Verify(dome => dome.StopAll(), Times.Never);
+            harness.DomeFollower.Verify(follower => follower.Stop(), Times.Never);
+        }
+
+        [Test]
+        public void CancellingADomeJob_StopsFollowingAndTheDome() {
+            var harness = new NinaObservatoryHarness();
+            harness.ConnectDome(ShutterState.ShutterOpen);
+            var device = new Mock<IDome>();
+            device.SetupGet(dome => dome.ShutterStatus).Returns(ShutterState.ShutterOpen);
+            device.Setup(dome => dome.StopAll()).Returns(Task.CompletedTask);
+            harness.Dome.Setup(mediator => mediator.GetDevice()).Returns(device.Object);
+            harness.Dome.Setup(mediator => mediator.FindHome(It.IsAny<CancellationToken>())).Returns(new TaskCompletionSource<bool>().Task);
+            harness.Dome.Setup(mediator => mediator.DisableFollowing(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+            harness.DomeFollower.Setup(follower => follower.Stop()).Returns(Task.CompletedTask);
+
+            using var job = new CancellationTokenSource();
+            _ = harness.Observatory.ControlDomeAsync(DomeAction.FindHome, null, job.Token);
+
+            job.Cancel();
+
+            harness.DomeFollower.Verify(follower => follower.Stop(), Times.Once);
+            harness.Dome.Verify(mediator => mediator.DisableFollowing(CancellationToken.None), Times.Once);
+            device.Verify(dome => dome.StopAll(), Times.Once);
+        }
+
+        [Test]
         public async Task CloseShutter_ReportsClosedWhenTheDomeIsClosed() {
             var harness = new NinaObservatoryHarness();
             harness.ConnectDome(ShutterState.ShutterClosed);

@@ -351,16 +351,40 @@ public sealed partial class NinaObservatory {
         return difference > 180 ? 360 - difference : difference;
     }
 
-    /// <summary>Stops shutter and rotation (cancel_job, stop_all). Never throws: it runs from a token callback.</summary>
+    /// <summary>
+    /// Stops shutter and rotation (cancel_job, stop_all) like DomeVM's stop command, which the mediator does not offer:
+    /// dome follower, following and the device. A shutter that is closing is left alone: that is a close NINA started
+    /// (close on unsafe, the sequence; an MCP close never registers this stop), and a stop meant for an MCP job must not
+    /// abort it. Never throws: it runs from a token callback.
+    /// </summary>
     private void StopDome() {
         try {
-            if (domeMediator.GetDevice() is IDome dome) {
-                dome.StopAll().ContinueWith(
-                    task => Logger.Error("MCP: stopping the dome failed", task.Exception!),
-                    TaskContinuationOptions.OnlyOnFaulted);
+            if (domeMediator.GetDevice() is not IDome dome) {
+                return;
             }
+
+            if (dome.ShutterStatus == ShutterState.ShutterClosing || domeMediator.GetInfo()?.ShutterStatus == ShutterState.ShutterClosing) {
+                Logger.Info("MCP: a dome job was cancelled while the shutter is closing; the dome is not stopped");
+                return;
+            }
+
+            // Following first, or the follower turns the dome right back.
+            StartLogged(() => domeFollower.Stop(), "stopping the dome follower");
+            StartLogged(() => domeMediator.DisableFollowing(CancellationToken.None), "disabling dome following");
+            StartLogged(() => dome.StopAll(), "stopping the dome");
         } catch (Exception ex) {
             Logger.Error("MCP: stopping the dome failed", ex);
+        }
+    }
+
+    /// <summary>Starts <paramref name="start"/> without waiting; a failure is logged and does not stop the next step.</summary>
+    private static void StartLogged(Func<Task> start, string what) {
+        try {
+            start()?.ContinueWith(
+                failed => Logger.Error($"MCP: {what} failed", failed.Exception!),
+                TaskContinuationOptions.OnlyOnFaulted);
+        } catch (Exception ex) {
+            Logger.Error($"MCP: {what} failed", ex);
         }
     }
 }
