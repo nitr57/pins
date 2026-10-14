@@ -8,8 +8,15 @@ public sealed record PinsLogFile(string Path, DateTime LastWriteTimeUtc) {
     public string Name => System.IO.Path.GetFileName(Path);
 }
 
-/// <summary>The log file chosen for read_log; <see cref="File"/> is null when there is none.</summary>
-public sealed record PinsLogSelection(PinsLogFile? File);
+/// <summary>
+/// The log file chosen for read_log; <see cref="File"/> is null when there is none. <see cref="EarlierSegments"/> are the
+/// older files of the same run (monthly or size roll), newest first.
+/// </summary>
+public sealed record PinsLogSelection(PinsLogFile? File, IReadOnlyList<PinsLogFile> EarlierSegments) {
+
+    public PinsLogSelection(PinsLogFile? file) : this(file, []) {
+    }
+}
 
 /// <summary>
 /// Chooses the log file of this pins run or of the previous one. Log files are named
@@ -42,7 +49,34 @@ public static class PinsLogFiles {
             ? newestFirst.FirstOrDefault(file => !IsCurrentRun(file))
             : newestFirst.FirstOrDefault(IsCurrentRun);
 
-        return new PinsLogSelection(selected);
+        if (selected == null) {
+            return new PinsLogSelection(null);
+        }
+
+        var segmentPrefix = SegmentPrefix(selected.Name);
+        var earlier = segmentPrefix == null
+            ? []
+            : newestFirst
+                .Where(file => file != selected
+                    && file.LastWriteTimeUtc <= selected.LastWriteTimeUtc
+                    && file.Name.StartsWith(segmentPrefix, StringComparison.Ordinal))
+                .ToList();
+
+        return new PinsLogSelection(selected, earlier);
+    }
+
+    /// <summary>"{start}-{version}.{pid}-": what the segments of one run share; null for a name without a process id.</summary>
+    private static string? SegmentPrefix(string name) {
+        var dash = name.LastIndexOf('-');
+
+        if (dash < 0) {
+            return null;
+        }
+
+        var dot = name.LastIndexOf('.', dash);
+        var pid = dot < 0 ? string.Empty : name[(dot + 1)..dash];
+
+        return pid.Length > 0 && pid.All(char.IsAsciiDigit) ? name[..(dash + 1)] : null;
     }
 
     /// <summary>"{start}-{version}.{pid}-" of the open file; the whole name when it has no process id marker.</summary>

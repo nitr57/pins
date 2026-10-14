@@ -29,7 +29,8 @@ internal sealed class ReadLogTool : ObservatoryTool {
         + "(contains, case-insensitive, matched against message, source, member and exception) and by age (since_minutes). "
         + "Use it to find out why a sequence item, slew, plate solve, autofocus or connection failed: start with the default, "
         + "then widen to info around the time of the failure. previous_run reads the log of the run before this one (after a "
-        + "crash or restart). Trace and debug entries only exist when the log level in the pins settings is set that low. "
+        + "crash or restart); when a run's log was split (monthly or size roll), its earlier parts are read too. Trace and "
+        + "debug entries only exist when the log level in the pins settings is set that low. "
         + "The result says how much of the file was scanned. Side-effect free.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Query;
@@ -64,10 +65,12 @@ internal sealed class ReadLogTool : ObservatoryTool {
 
         PinsLogReadResult result;
 
+        var segmentsRead = new List<string>();
+
         await ScanGate.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         try {
-            result = await Task.Run(() => PinsLogReader.ReadTail(source.FilePath, query, cancellationToken), cancellationToken).ConfigureAwait(false);
+            result = await Task.Run(() => ReadSegments(source, query, segmentsRead, cancellationToken), cancellationToken).ConfigureAwait(false);
         } catch (IOException ex) {
             return ToolCallResult.Error($"The log file {Path.GetFileName(source.FilePath)} could not be read: {ex.Message}");
         } catch (UnauthorizedAccessException ex) {
@@ -110,6 +113,7 @@ internal sealed class ReadLogTool : ObservatoryTool {
 
         var payload = new {
             file = Path.GetFileName(source.FilePath),
+            earlierSegmentsRead = segmentsRead.Count > 0 ? segmentsRead : null,
             count = entries.Count,
             entries,
             coverage = new {
@@ -126,6 +130,36 @@ internal sealed class ReadLogTool : ObservatoryTool {
         };
 
         return ToolCallResult.Json(payload);
+    }
+
+    /// <summary>
+    /// Reads the newest file and, while it was read to its start without reaching <c>since</c> and more entries are
+    /// wanted, the earlier segments of the same run, all within the query's scan budget. Entries oldest first.
+    /// </summary>
+    private static PinsLogReadResult ReadSegments(LogSource source, PinsLogQuery query, List<string> segmentsRead, CancellationToken cancellationToken) {
+        var result = PinsLogReader.ReadTail(source.FilePath!, query, cancellationToken);
+
+        foreach (var segment in source.EarlierSegments ?? []) {
+            var wanted = query.MaxEntries - result.Entries.Count;
+            var budget = query.MaxScanBytes - result.ScannedBytes;
+
+            if (!result.ReachedStart || result.ReachedSince || wanted <= 0 || budget <= 0) {
+                break;
+            }
+
+            var older = PinsLogReader.ReadTail(segment, query with { MaxEntries = wanted, MaxScanBytes = budget }, cancellationToken);
+
+            segmentsRead.Add(Path.GetFileName(segment));
+            result = new PinsLogReadResult(
+                older.Entries.Concat(result.Entries).ToList(),
+                older.ReachedStart,
+                older.ReachedSince,
+                older.OldestScannedTime ?? result.OldestScannedTime,
+                result.ScannedBytes + older.ScannedBytes,
+                result.FileBytes + older.FileBytes);
+        }
+
+        return result;
     }
 
     private static string Next(PinsLogReadResult result, int count, int lines) {

@@ -50,6 +50,20 @@ public class PinsLogFilesTests {
     }
 
     [Test]
+    public void EarlierSegmentsOfTheRun_NewestFirst() {
+        var third = File("20261013-180000-3.3.0.1.812-002.log", Noon.AddHours(9));
+        var files = Files.Append(third).ToArray();
+
+        var current = PinsLogFiles.Select(files, third.Name, 812, previousRun: false);
+        var previous = PinsLogFiles.Select(files, third.Name, 812, previousRun: true);
+
+        Assert.That(current.File, Is.EqualTo(third));
+        Assert.That(current.EarlierSegments, Is.EqualTo(new[] { ThisRunSecondSegment, ThisRunFirstSegment }));
+        Assert.That(previous.File, Is.EqualTo(PreviousRun));
+        Assert.That(previous.EarlierSegments, Is.Empty, "the previous run has one file; this run's files share the pid but not the start");
+    }
+
+    [Test]
     public void NoMatch_IsNull() {
         Assert.That(PinsLogFiles.Select([PreviousRun], null, 999, previousRun: false).File, Is.Null);
         Assert.That(PinsLogFiles.Select([], null, 812, previousRun: true).File, Is.Null);

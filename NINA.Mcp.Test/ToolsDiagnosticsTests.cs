@@ -384,6 +384,30 @@ public class ToolsDiagnosticsTests {
     }
 
     [Test]
+    public async Task ReadLog_ContinuesIntoEarlierSegmentsOfTheRun() {
+        UseLogFile("2026-10-13T21:02:00.0000|ERROR|B.cs|N|3|sequence aborted\n");
+
+        var newest = tempFile!;
+        var older = Path.Combine(Path.GetTempPath(), $"pins-mcp-test-{Guid.NewGuid():N}.log");
+
+        File.WriteAllText(older, "2026-10-13T20:00:00.0000|WARNING|A.cs|M|2|guide star lost\n");
+
+        try {
+            catalog.Observatory.LogSource = new LogSource(newest, Path.GetFileName(newest), [older]);
+
+            var all = await catalog.CallAsync("read_log");
+            var newestOnly = await catalog.CallAsync("read_log", """{"lines":1}""");
+
+            Assert.That(all.Structured!["entries"]!.AsArray().Select(entry => entry!["message"]!.GetValue<string>()), Is.EqualTo(new[] { "guide star lost", "sequence aborted" }));
+            Assert.That(all.Structured!["earlierSegmentsRead"]![0]!.GetValue<string>(), Is.EqualTo(Path.GetFileName(older)));
+            Assert.That(newestOnly.Structured!["count"]!.GetValue<int>(), Is.EqualTo(1));
+            Assert.That(newestOnly.Structured!["earlierSegmentsRead"], Is.Null, "enough entries in the newest segment");
+        } finally {
+            File.Delete(older);
+        }
+    }
+
+    [Test]
     public async Task ReadLog_ScansOneAtATime() {
         UseLogFile("2026-10-13T21:01:00.0000|WARNING|A.cs|M|2|guide star lost\n");
 

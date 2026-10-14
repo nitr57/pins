@@ -32,7 +32,8 @@ public sealed partial class NinaObservatory {
                 .GetFiles("*.log")
                 .Select(file => new PinsLogFile(file.FullName, file.LastWriteTimeUtc));
 
-            var selected = PinsLogFiles.Select(files, FindOpenLogFile(directory), Environment.ProcessId, previousRun).File;
+            var selection = PinsLogFiles.Select(files, FindOpenLogFile(directory), Environment.ProcessId, previousRun);
+            var selected = selection.File;
 
             if (selected == null) {
                 return new LogSource(
@@ -42,7 +43,7 @@ public sealed partial class NinaObservatory {
                         : "The log file of this pins run was not found.");
             }
 
-            return new LogSource(selected.Path, selected.Name);
+            return new LogSource(selected.Path, selected.Name, selection.EarlierSegments.Select(file => file.Path).ToList());
         } catch (Exception ex) {
             Logger.Error("MCP: locating the log file failed", ex);
 

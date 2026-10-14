@@ -361,8 +361,11 @@ public sealed record GuiderData(bool Available, string Message, IReadOnlyDiction
     }
 }
 
-/// <summary>A log file to read; <see cref="FilePath"/> is null (with the reason in <see cref="Message"/>) when there is none.</summary>
-public sealed record LogSource(string? FilePath, string Message);
+/// <summary>
+/// A log file to read; <see cref="FilePath"/> is null (with the reason in <see cref="Message"/>) when there is none.
+/// <see cref="EarlierSegments"/> are older files of the same run (monthly or size roll), newest first.
+/// </summary>
+public sealed record LogSource(string? FilePath, string Message, IReadOnlyList<string>? EarlierSegments = null);
 
 public sealed record NightSkyRequest(
     DateOnly? Night,
