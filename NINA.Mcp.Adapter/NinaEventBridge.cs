@@ -64,8 +64,7 @@ public sealed class NinaEventBridge : IHostedService {
         Subscribe<ISwitchMediator>(mediator => WatchDevice(mediator, "switch"));
         Subscribe<IWeatherDataMediator>(mediator => WatchDevice(mediator, "weather"));
         Subscribe<ISafetyMonitorMediator>(mediator => {
-            WatchDevice(mediator, "safety_monitor");
-            WatchSafety(mediator);
+            WatchSafety(mediator, WatchDevice(mediator, "safety_monitor"));
         });
         Subscribe<ICameraMediator>(WatchCamera);
         Subscribe<IImageSaveMediator>(WatchImageSaving);
@@ -167,6 +166,11 @@ public sealed class NinaEventBridge : IHostedService {
 
         foreach (var watch in watches) {
             watch.Tracker = new DeviceConnectionTracker(watch.Device, IsConnected(watch, false));
+
+            // A device connected before the bridge started (an unsafe monitor) gets its connect handling too.
+            if (watch.Tracker.WasConnected) {
+                RunOnConnected(watch);
+            }
         }
 
         try {
@@ -187,8 +191,22 @@ public sealed class NinaEventBridge : IHostedService {
     private async Task CheckConnectionAsync(DeviceWatch watch) {
         var tracker = watch.Tracker!;
 
-        foreach (var change in tracker.Poll(IsConnected(watch, tracker.WasConnected), DateTime.UtcNow)) {
+        var changes = tracker.Poll(IsConnected(watch, tracker.WasConnected), DateTime.UtcNow);
+
+        foreach (var change in changes) {
             await Publish("device", change.Severity, change.Message, Data("device", watch.Device));
+        }
+
+        if (changes.Any(change => change.Connected)) {
+            RunOnConnected(watch);
+        }
+    }
+
+    private static void RunOnConnected(DeviceWatch watch) {
+        try {
+            watch.OnConnected?.Invoke();
+        } catch (Exception ex) {
+            Logger.Debug($"MCP: handling the connection of the {watch.Device} failed: {ex.Message}");
         }
     }
 
@@ -202,19 +220,49 @@ public sealed class NinaEventBridge : IHostedService {
 
     /// <summary>
     /// The safety monitor VM raises "unsafe" when it is disconnected or its poll stops (its last values are reset), and
-    /// "safe" right after connecting: only changes of a connected monitor are real.
+    /// "safe" right after connecting: only changes of a connected monitor are real. A monitor that is already unsafe when
+    /// it connects raises nothing, so its state is published on the poll that sees it connected; the same state is never
+    /// published twice in a row within one connection.
     /// </summary>
-    private void WatchSafety(ISafetyMonitorMediator mediator) {
+    private void WatchSafety(ISafetyMonitorMediator mediator, DeviceWatch watch) {
+        var gate = new object();
+        bool? published = null;
+
+        void PublishSafety(bool isSafe) {
+            lock (gate) {
+                if (published == isSafe) {
+                    return;
+                }
+
+                published = isSafe;
+            }
+
+            Publish(
+                "safety",
+                isSafe ? EventSeverity.Info : EventSeverity.Critical,
+                isSafe ? "The safety monitor reports safe." : "The safety monitor reports UNSAFE.",
+                Data("isSafe", isSafe));
+        }
+
         EventHandler<IsSafeEventArgs> changed = (_, args) => {
             if (mediator.GetInfo()?.Connected != true) {
                 return;
             }
 
-            Publish(
-                "safety",
-                args.IsSafe ? EventSeverity.Info : EventSeverity.Critical,
-                args.IsSafe ? "The safety monitor reports safe." : "The safety monitor reports UNSAFE.",
-                Data("isSafe", args.IsSafe));
+            PublishSafety(args.IsSafe);
+        };
+
+        // The VM takes the state of a monitor that is unsafe when it connects without raising IsSafeChanged.
+        watch.OnConnected = () => {
+            lock (gate) {
+                published = null;
+            }
+
+            var info = mediator.GetInfo();
+
+            if (info?.Connected == true && !info.IsSafe) {
+                PublishSafety(false);
+            }
         };
 
         mediator.IsSafeChanged += changed;
@@ -450,6 +498,9 @@ public sealed class NinaEventBridge : IHostedService {
 
         /// <summary>Created with the first poll; events before it have nothing to compare with.</summary>
         public DeviceConnectionTracker? Tracker { get; set; }
+
+        /// <summary>Runs on the poll that sees the device connected.</summary>
+        public Action? OnConnected { get; set; }
     }
 
     private sealed class GuiderDropConsumer : IGuiderConsumer {
