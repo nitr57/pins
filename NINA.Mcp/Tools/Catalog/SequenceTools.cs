@@ -18,7 +18,8 @@ internal sealed class GetSequenceTool : ObservatoryTool {
         "The sequence currently loaded in the advanced sequencer as a tree: each node has path (index path such as "
         + "\"1/0/2\"), name, type, status (Created, Running, Finished, Failed, Skipped, Disabled), details (e.g. target "
         + "coordinates, exposure time, filter, progress) and children. Also tells whether it is running. Use it to inspect "
-        + "a loaded sequence before start_sequence and to follow progress (which target and exposure block is active).";
+        + "a loaded sequence before start_sequence and to follow progress (which target and exposure block is active). notes "
+        + "flags targets that no meridian flip trigger covers.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Query;
 
@@ -28,8 +29,18 @@ internal sealed class GetSequenceTool : ObservatoryTool {
 
     protected override Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var depth = arguments.GetInt("max_depth") ?? 4;
+        var note = SequenceChecks.MeridianFlipNote(Observatory.GetSequence(SequenceChecks.Depth));
+        var snapshot = Observatory.GetSequence(depth);
 
-        return Task.FromResult(ToolCallResult.Json(Observatory.GetSequence(depth)));
+        var payload = new {
+            snapshot.Initialized,
+            snapshot.Running,
+            snapshot.Name,
+            snapshot.Nodes,
+            notes = note is null ? null : new[] { note }
+        };
+
+        return Task.FromResult(ToolCallResult.Json(payload));
     }
 }
 
@@ -386,7 +397,8 @@ internal sealed class StartSequenceTool : ObservatoryTool {
         + "with get_status, get_sequence and get_recent_images; stop with stop_sequence (or stop_all). Finished items are "
         + "skipped on a new start: reset_sequence first to run everything again. Refused while a job started over MCP "
         + "(slew, capture, autofocus, focuser move, filter change, guiding start, switch, device connection) still runs: "
-        + "wait for it with get_job or stop it with cancel_job. A running camera cooling job does not block the start.";
+        + "wait for it with get_job or stop it with cancel_job. A running camera cooling job does not block the start. The "
+        + "result notes targets that no meridian flip trigger covers.";
 
     /// <summary>
     /// Job resources the sequence would fight over: every device slot. Cooling (camera_cooler) is deliberately not listed.
@@ -421,9 +433,15 @@ internal sealed class StartSequenceTool : ObservatoryTool {
                 $"Refused: MCP jobs still use the hardware the sequence needs: {jobs}. Wait for them with get_job or stop them with cancel_job, then retry.");
         }
 
+        // A target without a flip trigger passes NINA's validation; the model hears about it with the start.
+        var note = SequenceChecks.MeridianFlipNote(Observatory.GetSequence(SequenceChecks.Depth));
+        OperationResult result;
+
         using (reservation) {
-            return FromOperation(await Observatory.StartSequenceAsync(skipValidation, cancellationToken).ConfigureAwait(false));
+            result = await Observatory.StartSequenceAsync(skipValidation, cancellationToken).ConfigureAwait(false);
         }
+
+        return FromOperation(result.Success && note is not null ? OperationResult.Ok($"{result.Message} {note}") : result);
     }
 }
 
