@@ -175,6 +175,7 @@ public sealed partial class NinaSequenceService {
         if (request.MeridianFlip) {
             // Like NINA's target templates: the flip is checked between the target's items, with the profile's settings.
             MeridianFlipTrigger? meridianFlip = factory.GetTrigger<MeridianFlipTrigger>();
+
             if (meridianFlip == null) {
                 return OperationResult.Fail("The sequencer factory provides no Meridian Flip trigger.");
             }
