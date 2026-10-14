@@ -7,7 +7,7 @@ namespace NINA.Mcp.Tools.Catalog;
 
 internal sealed class PlanTargetsTool : ObservatoryTool {
 
-    /// <summary>Sampling step of the night: 289 samples from noon to noon.</summary>
+    /// <summary>Sampling step of the night: 289 samples from the site's solar noon to the next.</summary>
     internal static readonly TimeSpan Step = TimeSpan.FromMinutes(5);
 
     public const int MaxTargets = 10;
@@ -21,7 +21,7 @@ internal sealed class PlanTargetsTool : ObservatoryTool {
 
     public override string Description =>
         "Night planning at the site in the pins profile (latitude, longitude, elevation, custom horizon), computed with "
-        + "NINA's astrometry (SOFA/NOVAS) for one observing night from local noon to noon: sunset, civil/nautical/astronomical "
+        + "NINA's astrometry (SOFA/NOVAS) for one observing night from the site's solar noon to the next: sunset, civil/nautical/astronomical "
         + "dusk and dawn, sunrise and the dark hours; moon illumination, phase, rise and set; and for each target (J2000) its "
         + "altitude and azimuth now, transit time and altitude, when it rises above and sets below the altitude limit (the "
         + "higher of min_altitude and the custom horizon at its azimuth), usable hours in the dark, the longest usable window "
@@ -46,8 +46,8 @@ internal sealed class PlanTargetsTool : ObservatoryTool {
             required: true);
         arguments.String(
             "date",
-            "Local date (yyyy-MM-dd) of the evening the night starts. Omit for the current night (the one that contains now; "
-            + "before noon that is the night that began the previous evening).",
+            "Date (yyyy-MM-dd) of the evening the night starts, at the site. Omit for the current night (the one that contains "
+            + "now; before the site's noon that is the night that began the previous evening).",
             maxLength: 10,
             pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
         arguments.Number("min_altitude", "Altitude limit in degrees (0-89). Default 30.", minimum: 0, maximum: 89, defaultValue: 30);

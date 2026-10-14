@@ -160,8 +160,9 @@ public interface IPinsObservatory {
     // ----- Planning -----
 
     /// <summary>
-    /// Sun, moon and target altitudes sampled over one observing night (local noon to noon) at the profile's site.
-    /// <see cref="NightSkyRequest.Night"/> null means the current night: the one that contains now.
+    /// Sun, moon and target altitudes sampled over one observing night (the site's solar noon to the next, see
+    /// <c>NightWindow</c>) at the profile's site. <see cref="NightSkyRequest.Night"/> is the date of the evening at the
+    /// site; null means the current night: the one that contains now.
     /// </summary>
     NightSky GetNightSky(NightSkyRequest request);
 
@@ -370,6 +371,7 @@ public sealed record SkyTargetRequest(string Name, double RaHours, double DecDeg
 /// <summary>
 /// Sampled sky over one night. Every series has one value per <see cref="Times"/> entry. Times carry the pins box's
 /// local UTC offset. Altitudes and azimuths in degrees (azimuth from north through east), illumination 0..1.
+/// <see cref="Notes"/> are remarks for the model (e.g. a box time zone far from the site's), null without any.
 /// </summary>
 public sealed record NightSky(
     bool Success,
@@ -381,7 +383,8 @@ public sealed record NightSky(
     IReadOnlyList<double> MoonAltitude,
     double? MoonIllumination,
     string? MoonPhase,
-    IReadOnlyList<TargetSky> Targets) {
+    IReadOnlyList<TargetSky> Targets,
+    IReadOnlyList<string>? Notes = null) {
 
     public static NightSky Fail(string message, DateTimeOffset now) {
         return new NightSky(false, message, null, now, [], [], [], null, null, []);

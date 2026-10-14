@@ -74,7 +74,7 @@ internal static class NightPlanner {
             .Select(target => SummarizeTarget(sky, target, minAltitude, dark, stepHours))
             .ToList();
 
-        var notes = new List<string>();
+        var notes = new List<string>(sky.Notes ?? []);
 
         if (darkHours <= 0) {
             notes.Add(darkness == Darkness.Astronomical

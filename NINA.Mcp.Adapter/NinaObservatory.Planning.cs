@@ -3,6 +3,7 @@
 using NINA.Astrometry;
 using NINA.Core.Utility;
 using NINA.Mcp.Observatory;
+using NINA.Mcp.Tools;
 using static System.FormattableString;
 
 namespace NINA.Mcp.Adapter;
@@ -15,8 +16,8 @@ public sealed partial class NinaObservatory {
     // ----- Planning -----
 
     /// <summary>
-    /// Samples one observing night (local noon to the next local noon, in UTC steps, so DST nights have 23 or 25 hours)
-    /// at the profile's site. Target positions use the same SOFA transform as NINA (<see cref="Coordinates.Transform(Angle, Angle, double, DateTime)"/>,
+    /// Samples one observing night (from the site's mean solar noon to the next one, see <see cref="NightWindow"/>, so the
+    /// night is right whatever time zone the pins box uses) at the profile's site. Target positions use the same SOFA transform as NINA (<see cref="Coordinates.Transform(Angle, Angle, double, DateTime)"/>,
     /// no refraction); sun and moon come from NOVAS via <see cref="AstroUtil"/>.
     /// </summary>
     public NightSky GetNightSky(NightSkyRequest request) {
@@ -34,10 +35,8 @@ public sealed partial class NinaObservatory {
                     now);
             }
 
-            var night = request.Night ?? DateOnly.FromDateTime(now.Hour < 12 ? now.Date.AddDays(-1) : now.Date);
-            var startLocal = night.ToDateTime(new TimeOnly(12, 0), DateTimeKind.Unspecified);
-            var startUtc = TimeZoneInfo.ConvertTimeToUtc(startLocal, TimeZoneInfo.Local);
-            var endUtc = TimeZoneInfo.ConvertTimeToUtc(startLocal.AddDays(1), TimeZoneInfo.Local);
+            var night = request.Night ?? NightWindow.Current(now.UtcDateTime, longitude);
+            var (startUtc, endUtc) = NightWindow.Span(night, longitude, TimeZoneInfo.Local);
             var step = request.Step > TimeSpan.Zero ? request.Step : TimeSpan.FromMinutes(5);
 
             if ((endUtc - startUtc) / step > MaxNightSamples) {
@@ -105,8 +104,9 @@ public sealed partial class NinaObservatory {
                     separation));
             }
 
-            // Illumination and phase at the middle of the night (local midnight).
+            // Illumination and phase at the middle of the night (about solar midnight).
             var middle = startUtc + (endUtc - startUtc) / 2;
+            var offsetNote = NightWindow.OffsetNote(longitude, TimeZoneInfo.Local.GetUtcOffset(middle));
 
             return new NightSky(
                 true,
@@ -118,7 +118,8 @@ public sealed partial class NinaObservatory {
                 moon,
                 AstroUtil.GetMoonIllumination(middle, observer),
                 AstroUtil.GetMoonPhase(middle, observer).ToString(),
-                targets);
+                targets,
+                offsetNote == null ? null : [offsetNote]);
         } catch (Exception ex) {
             Logger.Error("MCP: night planning failed", ex);
 

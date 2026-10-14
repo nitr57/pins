@@ -452,6 +452,17 @@ public class ToolsDiagnosticsTests {
     }
 
     [Test]
+    public async Task PlanTargets_PassesTheObservatorysNotesOn() {
+        catalog.Observatory.NightSkyFactory = request => ToolsNightSky.Create(request.Targets) with {
+            Notes = ["The pins box's time zone (UTC+00:00) is about 10 h away from the site's solar time."]
+        };
+
+        var result = await catalog.CallAsync("plan_targets", """{"targets":[{"name":"T","ra":1,"dec":1}]}""");
+
+        Assert.That(result.Structured!["notes"]!.AsArray().Select(note => note!.GetValue<string>()), Has.Some.Contains("10 h away"));
+    }
+
+    [Test]
     public async Task PlanTargets_ObservatoryFailureAndInconsistentDataAreErrors() {
         catalog.Observatory.NightSkyFactory = _ => NightSky.Fail("The site location is not set.", DateTimeOffset.UnixEpoch);
 
