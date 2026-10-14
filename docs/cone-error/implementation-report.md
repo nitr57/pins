@@ -20,8 +20,8 @@ All commits are local. Nothing was pushed, rebased or amended.
 | Repository | Branch (base) | Commits |
 |---|---|---|
 | pins | `feat/cone-error` (`unstable` eeb81e4f0) | 8a16def4a `docs: cone error measurement design`, 28b836692 `docs: cone error implementation report`, plus the override docs update |
-| NINA.Plugins/Touch-N-Stars | `feat/cone-error` (`unstable` 2a2a942) | 49a0612 `cone error: domain math` → 5eb145e `cone error: measurement sessions` → 4c32a1c `cone error: API` → 9662b28 `cone error: per-move override of the sun path check` → 64083ad `cone error: fixes from the four-reviewer review` → b520081 `cone error: fixes from the second review pass` |
-| Touch-N-Stars (app) | `feat/cone-error` (`develop` 6689531a7) | 6571f0e22 `feat(cone-error): cone error measurement panel (PINS)` → 130ac943b `feat(cone-error): override the sun path check for one daytime move` → eb1dc436c `fix(cone-error): review fixes in the panel` → 2ae52e106 `fix(cone-error): counterweight check answered once, shown when refused` |
+| NINA.Plugins/Touch-N-Stars | `feat/cone-error` (`unstable` 2a2a942) | 49a0612 `cone error: domain math` → 5eb145e `cone error: measurement sessions` → 4c32a1c `cone error: API` → 9662b28 `cone error: per-move override of the sun path check` → 64083ad `cone error: fixes from the four-reviewer review` → b520081 `cone error: fixes from the second review pass` → 00ab046 `cone error: fixes from the third review pass` |
+| Touch-N-Stars (app) | `feat/cone-error` (`develop` 6689531a7) | 6571f0e22 `feat(cone-error): cone error measurement panel (PINS)` → 130ac943b `feat(cone-error): override the sun path check for one daytime move` → eb1dc436c `fix(cone-error): review fixes in the panel` → 2ae52e106 `fix(cone-error): counterweight check answered once, shown when refused` → 324107460 `fix(cone-error): counterweight check only within 4 h of the meridian` |
 
 No NINA core file was changed. `package-lock.json` in the app stays uncommitted, from your `npm install`. No version or CHANGELOG changes were made.
 
@@ -110,7 +110,7 @@ How the convention is backed up:
 
 **Plugin build** (`dotnet build Touch-N-Stars.sln --no-incremental`). Builds ran with a scratch HOME, so the post-build copy did not touch the deployed plugin in `~/.local/share/NINA/Plugins`.
 
-| | Baseline (`unstable` 2a2a942) | Final (`feat/cone-error` b520081) |
+| | Baseline (`unstable` 2a2a942) | Final (`feat/cone-error` 00ab046) |
 |---|---|---|
 | Errors | 0 | 0 |
 | Warnings (total) | 362 | 362 |
@@ -120,8 +120,8 @@ How the convention is backed up:
 
 | | Baseline | Final |
 |---|---|---|
-| Passed / total | 306 / 306 | 548 / 548 |
-| New cone error tests | — | 242 |
+| Passed / total | 306 / 306 | 551 / 551 |
+| New cone error tests | — | 245 |
 
 The new tests by area:
 
@@ -134,7 +134,7 @@ The new tests by area:
 | Flip path (incl. southern hemisphere, via home, waypoints, dipped horizon) and sun window | 26 |
 | Planner | 14 |
 | Automated session | 28 |
-| Daytime session (incl. sun override) | 46 |
+| Daytime session (incl. sun override) | 49 |
 | Adapters and store | 22 |
 | API end-to-end | 22 |
 
@@ -159,7 +159,7 @@ So the end-to-end test is `ConeErrorApiTests`. It runs the real controller on Em
 **TNS app.**
 - `npm run lint` and `npm run format:check`: clean.
 - Every new `.vue` file compiles with `@vue/compiler-sfc`.
-- `npm run test:run`: 877/877 after all four app commits. No separate pre-change run was taken; the panel adds no app tests (convention) and changes no existing module.
+- `npm run test:run`: 877/877 after all five app commits. No separate pre-change run was taken; the panel adds no app tests (convention) and changes no existing module.
 - `npm run i18n:check` reports only the expected `missing (156)` keys in the 13 other locales; you keep TNS strings in `en.json` only.
 - No `vite`/`npm run build` was run.
 
@@ -235,6 +235,20 @@ They found one medium regression and one medium gap, both fixed in b520081 (plug
 - An abort during the daytime start was lost.
 - OnStepX's 60°/120° waypoint was not sampled.
 
+## Third review pass
+
+Three reviewers were fully satisfied. The fourth found one medium issue, confirmed in the OnStepX source and fixed in 00ab046 (plugin) and 324107460 (app):
+
+- **STOP coast:** OnStepX's emergency stop coasts up to 2° per axis (`SLEW_RAPID_STOP_DIST`, Config.defaults.h). The position recorded right after a STOP could therefore look like a move from elsewhere and drop the capture.
+  - The new reference is now taken only once the mount is at rest: not slewing, and two background checks within 1′ of each other.
+  - External-move detection is held until then.
+
+Small fixes in the same commits:
+- tracking is asked on again when the start is refused because it read back on
+- one 30 s teardown budget
+- the counterweight buttons are enabled only on the east side within 4 h of the meridian, and the question says so
+- field-test step 1 now says that starting from home is fine on native OnStepX only
+
 ## Limitations and open issues
 
 - **The NINA adapters have not been run against real hardware or drivers.** This covers the OnStepX `:SX96` path, the INDI "Preferred Pier Side" path, the model probe, the capture and solve, and the J2000→JNow conversion. Their contracts were checked against the OnStepX 10.20a and INDI `lx200_OnStep` sources, but the first night is the real check.
@@ -256,6 +270,10 @@ They found one medium regression and one medium gap, both fixed in b520081 (plug
 - **INDI refusal looks confirmed:** when OnStepX refuses `:SX96` (replies `0`), the stock driver shows the requested side as Ok. The check of the reported side after the slew still stops the run.
 - **INDI limits right after connect:** before the driver's first poll the INDI limit properties hold its built-in defaults (east 20, west −20 minutes). These are stricter than usual, so they can refuse plans with a confusing reason, but never allow too much.
 - **False external slews on INDI:** pins' INDI slewing flag partly comes from a coordinate-motion heuristic. A late report could, rarely, be taken for a goto from elsewhere and stop a run. Not observed.
+- **A sync during our own move:** a sync made while one of our daytime moves runs (or while the mount comes to rest after it) is absorbed into the new reference, so it goes unnoticed. Syncs during a goto are unusual.
+- **An abort while the daytime check starts:** if it lands just as the start completes, the reply can say "tracking was restored" while the restore is still running. The end state is correct.
+- **A mis-tapped counterweight answer:** it needs a restart of the daytime check, because the answer is taken once per session.
+- **Jogging toward a set Sun:** jog-pad moves go through no limit checks. From a raised site, a jog toward a Sun between the cut-off and the horizon is not stopped.
 - **Gotos from elsewhere during the daytime check:** they are detected (more than 2° of movement drops the capture) but not prevented, and they get no endpoint or path Sun check of ours. The watchdog still alerts inside the radius.
 - **Other INDI OnStep forks:** the INDI "Preferred Pier Side" confirmation relies on the stock driver reading `:GX96#` back on its status poll. A driver that never reads it back times out ("not confirmed") and refuses safely.
 - **The panel has not been rendered in a browser or app** (no build). Nico builds and should look at it on a phone in the dark, especially the stop bar against the bottom navigation.
@@ -270,7 +288,7 @@ They found one medium regression and one medium gap, both fixed in b520081 (plug
 - Pointing model cleared.
 - No sequence, no guiding.
 
-1. **Preconditions.** Open Cone Error → Measure. All rows should be green. Starting from the home position is fine: the first slew then goes to the West side, where OnStepX puts it at home.
+1. **Preconditions.** Open Cone Error → Measure. All rows should be green. Starting from the home position is fine with the native OnStepX driver: the first slew then goes to the West side, where OnStepX puts it at home. With INDI OnStep, move the mount off home first (see Limitations).
    - "Pier side control" names the OnStepX or INDI OnStep control.
    - "Mount limits" shows the mount as the source. Compare its meridian limits with the mount's own settings page.
    - "Pointing model" is None.
