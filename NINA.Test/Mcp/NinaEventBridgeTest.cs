@@ -2,7 +2,9 @@
 
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
+using NINA.Equipment.Equipment.MyGuider;
 using NINA.Equipment.Equipment.MySafetyMonitor;
+using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Mcp.Adapter;
@@ -71,6 +73,47 @@ namespace NINA.Test.Mcp {
                 var unsafeEvent = await WaitForAsync(log, entry => entry.Kind == "safety");
 
                 Assert.That(unsafeEvent.Severity, Is.EqualTo(EventSeverity.Critical));
+            } finally {
+                await bridge.StopAsync(CancellationToken.None);
+            }
+        }
+
+        [TestCase(true, EventSeverity.Error, "guider lost its connection (not disconnected by request): check cable, power and driver.")]
+        [TestCase(false, EventSeverity.Info, "guider disconnected.")]
+        public async Task GuiderDisconnect_DropIsLost_RequestIsInfo(bool dropped, EventSeverity severity, string message) {
+            var info = new GuiderInfo { Connected = true };
+            IDevice? device = new Mock<IGuider>().Object;
+            IGuiderConsumer? consumer = null;
+            var guider = new Mock<IGuiderMediator>();
+            guider.Setup(mediator => mediator.GetInfo()).Returns(() => info);
+            guider.Setup(mediator => mediator.GetDevice()).Returns(() => device!);
+            guider.Setup(mediator => mediator.RegisterConsumer(It.IsAny<IGuiderConsumer>())).Callback<IGuiderConsumer>(registered => consumer = registered);
+
+            var log = new ObservatoryEventLog();
+            var bridge = Start(log, services => services.AddSingleton(guider.Object));
+
+            try {
+                consumer!.UpdateDeviceInfo(info);
+                await Task.Delay(500);
+
+                if (dropped) {
+                    // GuiderVM.Guider_PropertyChanged: broadcast while it still holds the device, then its own Disconnect.
+                    info = new GuiderInfo { Connected = false };
+                    consumer.UpdateDeviceInfo(info);
+                    device = null;
+                } else {
+                    // GuiderVM.Disconnect: the device is dropped before the reset info is broadcast.
+                    device = null;
+                    info = new GuiderInfo { Connected = false };
+                    consumer.UpdateDeviceInfo(info);
+                }
+
+                await guider.RaiseAsync(mediator => mediator.Disconnected += null, guider.Object, EventArgs.Empty);
+
+                var disconnect = await WaitForAsync(log, entry => entry.Kind == "device");
+
+                Assert.That(disconnect.Severity, Is.EqualTo(severity));
+                Assert.That(disconnect.Message, Is.EqualTo(message));
             } finally {
                 await bridge.StopAsync(CancellationToken.None);
             }
