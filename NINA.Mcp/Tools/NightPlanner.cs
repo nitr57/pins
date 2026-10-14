@@ -122,8 +122,13 @@ internal static class NightPlanner {
         var transitIndex = IndexOfMax(target.Altitude);
         var lowestIndex = IndexOfMin(target.Altitude);
 
-        var rises = Crossings(sky, i => target.Altitude[i] - limit[i]).FirstOrDefault(crossing => crossing.Rising);
-        var sets = Crossings(sky, i => target.Altitude[i] - limit[i]).FirstOrDefault(crossing => !crossing.Rising);
+        // The crossings around the time above the limit that holds the best window (or the first such time): the first
+        // crossings of the whole night could otherwise put "sets" before "rises".
+        double Margin(int i) => target.Altitude[i] - limit[i];
+
+        var aboveRun = best is null ? FirstRun(above) : RunAt(above, best.Value.Start);
+        var rises = aboveRun is { Start: > 0 } start ? CrossingBefore(sky, Margin, start.Start) : null;
+        var sets = aboveRun is { } end && end.End < count - 1 ? CrossingBefore(sky, Margin, end.End + 1) : null;
 
         var minSeparation = best is null
             ? null
@@ -162,8 +167,8 @@ internal static class NightPlanner {
                     moonSeparation = Round(target.MoonSeparation[transitIndex], 1)
                 },
             lowestAltitude = count == 0 ? (double?)null : Round(target.Altitude[lowestIndex], 1),
-            risesAboveLimit = Format(rises.Time),
-            setsBelowLimit = Format(sets.Time),
+            risesAboveLimit = Format(rises),
+            setsBelowLimit = Format(sets),
             usableDarkHours = Round(Hours(usable, stepHours), 2),
             bestWindow = best is null
                 ? null
@@ -254,6 +259,47 @@ internal static class NightPlanner {
         var steps = run.End - run.Start + (run.Start > 0 ? 0.5 : 0) + (run.End < count - 1 ? 0.5 : 0);
 
         return steps * stepHours;
+    }
+
+    /// <summary>The time between samples <paramref name="index"/> - 1 and <paramref name="index"/> where <paramref name="value"/> crosses 0.</summary>
+    private static DateTimeOffset? CrossingBefore(NightSky sky, Func<int, double> value, int index) {
+        var before = value(index - 1);
+        var after = value(index);
+
+        if (!double.IsFinite(before) || !double.IsFinite(after)) {
+            return null;
+        }
+
+        var fraction = before == after ? 0 : Math.Clamp(before / (before - after), 0, 1);
+
+        return sky.Times[index - 1] + (sky.Times[index] - sky.Times[index - 1]) * fraction;
+    }
+
+    /// <summary>The run of true values that contains <paramref name="index"/>; null when the value there is false.</summary>
+    private static (int Start, int End)? RunAt(bool[] values, int index) {
+        if (index < 0 || index >= values.Length || !values[index]) {
+            return null;
+        }
+
+        var start = index;
+        var end = index;
+
+        while (start > 0 && values[start - 1]) {
+            start--;
+        }
+
+        while (end < values.Length - 1 && values[end + 1]) {
+            end++;
+        }
+
+        return (start, end);
+    }
+
+    /// <summary>The first run of true values; null when there is none.</summary>
+    private static (int Start, int End)? FirstRun(bool[] values) {
+        var first = Array.IndexOf(values, true);
+
+        return first < 0 ? null : RunAt(values, first);
     }
 
     /// <summary>First and last index of the longest run of true values; null when there is none.</summary>

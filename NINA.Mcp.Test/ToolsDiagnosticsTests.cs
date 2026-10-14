@@ -502,6 +502,27 @@ public class ToolsDiagnosticsTests {
     }
 
     [Test]
+    public async Task PlanTargets_RiseAndSetBoundTheBestWindow() {
+        // Transit at 16:00 (h = 4): above 30° from the start of the night until 23:18 (h = 11.3), and again from 08:42 the
+        // next morning (h = 20.7), after the dark. The first crossings of the whole night would put "sets" (23:18) before
+        // "rises" (08:42).
+        catalog.Observatory.NightSkyFactory = request => {
+            var sky = ToolsNightSky.Create(request.Targets);
+            var altitude = Enumerable.Range(0, ToolsNightSky.Samples).Select(i => 30 * Math.Cos(2 * Math.PI * (i * 5 / 60.0 - 4) / 24) + 40).ToList();
+
+            return sky with { Targets = sky.Targets.Select(target => target with { Altitude = altitude }).ToList() };
+        };
+
+        var result = await catalog.CallAsync("plan_targets", """{"targets":[{"name":"T","ra":1,"dec":1}],"min_altitude":30}""");
+        var target = result.Structured!["targets"]![0]!;
+
+        Assert.That(target["risesAboveLimit"], Is.Null, "already above the limit when the night starts");
+        AssertTime(target["setsBelowLimit"], 23, 18);
+        AssertTime(target["bestWindow"]!["from"], 18, 46);
+        AssertTime(target["bestWindow"]!["to"], 23, 15);
+    }
+
+    [Test]
     public async Task PlanTargets_AllDarkNight_Is24Hours() {
         // Polar night with a circumpolar target: every one of the 289 samples is dark and usable.
         catalog.Observatory.NightSkyFactory = request => {
