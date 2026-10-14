@@ -130,6 +130,10 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         var status = Observatory.GetStatus();
 
         using (hold) {
+            // Released on the cancel request already: an abandoned shutdown (a hung park or close) must not keep every
+            // device, which would refuse all MCP hardware jobs and start_sequence until pins restarts.
+            using var releaseOnCancel = cancellationToken.Register(() => hold?.Dispose());
+
             await ShutDownDevicesAsync(status, steps, park, closeDome, closeDomeWithoutMount, closeCover, cancellationToken).ConfigureAwait(false);
         }
 

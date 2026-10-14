@@ -3,6 +3,7 @@
 using NINA.Mcp.Jobs;
 using NINA.Mcp.Observatory;
 using NINA.Mcp.Test.Fakes;
+using NINA.Mcp.Tools.Catalog;
 using NUnit.Framework;
 
 namespace NINA.Mcp.Test;
@@ -328,6 +329,24 @@ public class ToolsSessionAndSafetyTests {
 
         Assert.That(done!.State, Is.EqualTo(JobState.Succeeded), done.Outcome?.Message);
         Assert.That(catalog.Observatory.Calls.Count(call => call == "Park"), Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task Secure_AbandonedShutdown_ReleasesTheDevices() {
+        ConnectAll(atPark: false);
+        catalog.Observatory.Block("Park", ignoreCancellation: true);
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"wait_seconds":0}"""));
+
+        await catalog.Observatory.WaitForCallAsync("Park");
+
+        Assert.That(() => catalog.Jobs.Reserve(["mount"], "test"), Throws.TypeOf<JobConflictException>(), "held while the shutdown runs");
+
+        catalog.Jobs.Abandon(job["id"]!.GetValue<string>());
+
+        Assert.That(() => catalog.Jobs.Reserve(StartSequenceTool.HardwareResources, "test").Dispose(), Throws.Nothing);
+
+        catalog.Observatory.Release("Park");
     }
 
     // ----- Helpers -----
