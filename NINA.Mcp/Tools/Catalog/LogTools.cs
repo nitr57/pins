@@ -13,6 +13,9 @@ internal sealed class ReadLogTool : ObservatoryTool {
     /// <summary>Characters of message and detail text in one result: keeps a 500-entry answer within a model's reach.</summary>
     internal const int MaxResultCharacters = 120_000;
 
+    /// <summary>One scan at a time (each may read 32 MB on the Pi's SD card), also within a batch request.</summary>
+    internal static readonly SemaphoreSlim ScanGate = new(1, 1);
+
     public ReadLogTool(IPinsObservatory observatory) : base(observatory) {
     }
 
@@ -61,12 +64,16 @@ internal sealed class ReadLogTool : ObservatoryTool {
 
         PinsLogReadResult result;
 
+        await ScanGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+
         try {
             result = await Task.Run(() => PinsLogReader.ReadTail(source.FilePath, query, cancellationToken), cancellationToken).ConfigureAwait(false);
         } catch (IOException ex) {
             return ToolCallResult.Error($"The log file {Path.GetFileName(source.FilePath)} could not be read: {ex.Message}");
         } catch (UnauthorizedAccessException ex) {
             return ToolCallResult.Error($"The log file {Path.GetFileName(source.FilePath)} could not be read: {ex.Message}");
+        } finally {
+            ScanGate.Release();
         }
 
         // Newest entries win when the text budget runs out.

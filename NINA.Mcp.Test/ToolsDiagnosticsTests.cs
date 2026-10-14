@@ -4,6 +4,8 @@ using NINA.Mcp.Jobs;
 using NINA.Mcp.Logs;
 using NINA.Mcp.Observatory;
 using NINA.Mcp.Test.Fakes;
+using NINA.Mcp.Tools;
+using NINA.Mcp.Tools.Catalog;
 using NUnit.Framework;
 using System.Globalization;
 using System.Text;
@@ -356,6 +358,31 @@ public class ToolsDiagnosticsTests {
 
         Assert.That(result.Structured!["count"]!.GetValue<int>(), Is.EqualTo(1));
         Assert.That(catalog.Observatory.LastLogPreviousRun, Is.True);
+    }
+
+    [Test]
+    public async Task ReadLog_ScansOneAtATime() {
+        UseLogFile("2026-10-13T21:01:00.0000|WARNING|A.cs|M|2|guide star lost\n");
+
+        await ReadLogTool.ScanGate.WaitAsync();
+
+        Task<ToolCallResult> waiting;
+
+        try {
+            // A scan is running (the gate is held): the next one waits for it instead of reading in parallel.
+            waiting = catalog.CallAsync("read_log");
+
+            await Task.Delay(200);
+
+            Assert.That(waiting.IsCompleted, Is.False);
+        } finally {
+            ReadLogTool.ScanGate.Release();
+        }
+
+        var result = await waiting.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.That(result.Structured!["count"]!.GetValue<int>(), Is.EqualTo(1));
+        Assert.That(ReadLogTool.ScanGate.CurrentCount, Is.EqualTo(1), "the gate is released after the scan");
     }
 
     [Test]
