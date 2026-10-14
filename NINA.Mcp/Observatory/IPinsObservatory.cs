@@ -131,7 +131,8 @@ public interface IPinsObservatory {
 
     /// <summary>
     /// Slews to J2000 coordinates and centers them with NINA's centering solver (solve, sync or offset, re-slew until
-    /// within the profile's threshold). Guiding is stopped first and restarted afterwards when it was running.
+    /// within the profile's threshold). Guiding is stopped first and restarted afterwards when it was running, unless the
+    /// slew to the target fails (the message then says so).
     /// </summary>
     Task<PlateSolveOutcome> CenterAsync(double raHours, double decDegrees, CancellationToken cancellationToken);
 

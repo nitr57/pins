@@ -143,7 +143,10 @@ public sealed partial class NinaObservatory {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!slewed) {
-                return new PlateSolveOutcome(false, "The mount did not complete the slew to the target (rejected by the driver, below the horizon limit or parked); the pins log has details.", null);
+                // As in NINA's Center instruction, guiding is only restarted after a successful slew.
+                var guiding = stoppedGuiding ? " Guiding was stopped for centering and was not restarted." : string.Empty;
+
+                return new PlateSolveOutcome(false, $"The mount did not complete the slew to the target (rejected by the driver, below the horizon limit or parked); the pins log has details.{guiding}", null);
             }
 
             restartGuiding = stoppedGuiding;

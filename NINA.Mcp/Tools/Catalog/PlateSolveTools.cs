@@ -81,7 +81,7 @@ internal sealed class CenterTargetTool : ObservatoryTool {
         "Slews to J2000 coordinates and centers them with plate solving, like NINA's Center instruction: expose, solve, "
         + "sync the mount (or apply the measured offset when syncing is disabled in the profile) and re-slew until the target "
         + "is within the profile's centering threshold (at most 10 rounds). Uses the profile's plate solve settings. Guiding "
-        + "is stopped first and restarted afterwards when it was running. The mount must be connected and unparked; the "
+        + "is stopped first and restarted afterwards when it was running (not when the slew to the target fails). The mount must be connected and unparked; the "
         + "camera connected. Moves the telescope: make sure the user expects it. outcome.data holds the last solution and its "
         + "remaining error from the target. Runs as a background job holding the mount, and also the camera, guider and filter "
         + "wheel until it ends; refused while a capture, plate solve, autofocus, filter change, focuser, rotator, flat device or "
