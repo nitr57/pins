@@ -312,10 +312,13 @@ public class InternalGuiderOptionsTests
         var described = Create().Options.Describe();
         var algorithm = described.Single(x => x.Name == axis + "Algorithm");
         algorithm.Basic.Should().BeTrue("the algorithm explains why its parameters come and go");
+        // a setting depends on an enum (one of its options) or a switch (the Dec backlash model on the compensation being on);
+        // Touch-N-Stars compares the dependency's value as text
         foreach (var d in described.Where(x => !string.IsNullOrEmpty(x.DependsOn)))
         {
-            described.Should().Contain(x => x.Name == d.DependsOn && x.Type == "enum");
-            d.AppliesTo.Should().NotBeEmpty().And.BeSubsetOf(described.Single(x => x.Name == d.DependsOn).Options);
+            described.Should().Contain(x => x.Name == d.DependsOn && (x.Type == "enum" || x.Type == "bool"));
+            var dependency = described.Single(x => x.Name == d.DependsOn);
+            d.AppliesTo.Should().NotBeEmpty().And.BeSubsetOf(dependency.Type == "bool" ? ["true", "false"] : dependency.Options);
         }
 
         foreach (string name in algorithm.Options!)
@@ -408,6 +411,20 @@ public class InternalGuiderOptionsTests
 
         o.TrySet("PulseModel", "false", out _).Should().BeTrue();
         o.ToEngineSettings().PulseModel.Should().BeFalse();
+    }
+
+    [Test]
+    public void Backlash_model_is_fixed_by_default_and_the_play_model_reaches_the_engine()
+    {
+        var (o, _) = Create();
+        o.ToEngineSettings().Backlash.Model.Should().Be(BacklashModel.Fixed, "the default stays PHD2's fixed pulse");
+        var d = o.Describe().Single(x => x.Name == "BacklashModel");
+        d.Options.Should().Equal("Fixed", "PlayModel");
+        d.DependsOn.Should().Be("BacklashCompensation");
+        d.Description.Should().Contain("Predictive");
+
+        o.TrySet("BacklashModel", "PlayModel", out _).Should().BeTrue();
+        o.ToEngineSettings().Backlash.Model.Should().Be(BacklashModel.PlayModel);
     }
 
     [Test]

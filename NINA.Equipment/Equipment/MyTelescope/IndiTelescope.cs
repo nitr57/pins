@@ -551,6 +551,19 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
+        /// <summary>
+        /// Why the driver rejected the last pulse on this direction's axis, or null; taken once. The internal guider asks
+        /// after each pulse, so that a pulse the mount did not carry out is not counted as a move.
+        /// </summary>
+        internal string TakeRejectedPulse(GuideDirections direction) {
+            try {
+                return device?.TakeRejectedPulse(direction);
+            } catch (Exception e) {
+                Logger.Debug($"Could not read the outcome of the last guide pulse: {e.Message}");
+                return null;
+            }
+        }
+
         public async Task Park(CancellationToken token) {
             try {
                 if (CanPark) {

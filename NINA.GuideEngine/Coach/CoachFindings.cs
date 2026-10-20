@@ -74,6 +74,13 @@ public static class CoachFindings
             CoachCodes.DriftPolarAlignment => $"Polar alignment error about {V("arcmin", "0.0")}′ (Dec drift {V("driftArcsecPerMin")}″/min).",
             CoachCodes.DriftWind => $"{V("gustPercent", "0.#")} % of the frames show sudden jumps (wind, vibration).",
             CoachCodes.DriftDecGuideMode => $"Dec drifts steadily ({V("driftArcsecPerMin")}″/min) and backlash is large ({V("backlashMs", "0")} ms): guide Dec in one direction only, following the drift (Dec guide mode {V("mode")}).",
+            CoachCodes.ResponseDecBacklash when p.TryGetValue("playModel", out var playModel) && playModel is true =>
+                (p.TryGetValue("playReason", out var reason) && reason is "soft"
+                    ? $"Dec backlash varies with the preceding move (about {V("ms", "0")} ms after small corrections, {V("largeMoveMs", "0")} ms after a long move)"
+                    : $"Dec backlash is large (about {V("ms", "0")} ms at guiding reversals, {V("largeMoveMs", "0")} ms after a long move)")
+                + ": the play model tracks the gear inside its play and compensates what is left.",
+            CoachCodes.ResponseDecBacklash when p.TryGetValue("playModelNeedsPredictive", out var needsPredictive) && needsPredictive is true =>
+                $"Dec backlash at guiding reversals about {V("ms", "0")} ms ({V("arcsec", "0.0")}″); after a long move {V("largeMoveMs", "0")} ms. The play model would fit this backlash but needs the Predictive Dec algorithm.",
             CoachCodes.ResponseDecBacklash => $"Dec backlash at guiding reversals about {V("ms", "0")} ms ({V("arcsec", "0.0")}″); after a long move {V("largeMoveMs", "0")} ms.",
             CoachCodes.ResponseMinPulse => $"{V("axis")} pulses shorter than {V("ms", "0")} ms hardly move the mount (stiction).",
             CoachCodes.ResponseAsymmetry => $"{V("axis")} moves asymmetrically (ratio {V("ratio")}).",

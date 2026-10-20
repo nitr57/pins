@@ -151,6 +151,13 @@ curl "$H/set-setting?settingName=InternalGuiderSetting&newValue=MinSnr=8"  # any
     for Predictive.
   * *Backlash compensation* acts only while both directions are guided (like PHD2, which switches it off for North and
     South): one direction never reverses the gears. The Coach suggests Drift without it.
+* **Dec backlash model** (with Dec backlash compensation on): *Fixed* is PHD2's pulse at every reversal. *Play model*
+  (Predictive Dec algorithm only; with the others Fixed is used) tracks where the Dec gear is inside its play: while the
+  Dec error is seeing it holds back corrections that would only cross the play, a needed one is lengthened by the play
+  that is left, and it learns the size and shape of the play from the calibration's Dec return and every take-up, also
+  when the play changes. For a mount whose Dec backlash varies, or whose gear never engages with a fixed pulse. The
+  status (`DecBacklash`) shows the learned play, where the gear is and the corrections held back; the guide log gets an
+  `INFO: Backlash play model: …` line per take-up. Details in [PLAY-MODEL-BACKLASH.md](notes/PLAY-MODEL-BACKLASH.md).
   * *Shown* in the Statistics card (Dec direction, drift) and next to the Dec RMS in the status strip; the guide log gets
     an `INFO: Dec guide direction: …` line on every change and when the valve opens or closes, the PINS log (Debug) also
     a summary every 100 frames with the learned dead band and the jumps left out. Simulator and real-night results in

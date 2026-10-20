@@ -48,6 +48,9 @@ public sealed record GuideCorrection
     /// <summary>True when the Dec guide mode suppressed a non-zero Dec request.</summary>
     public bool DecSuppressedByMode { get; init; }
 
+    /// <summary>True when the backlash play model held back a Dec pulse that would only have taken up play (no Dec pulse).</summary>
+    public bool DecHeldByBacklash { get; init; }
+
     /// <summary>
     /// Pulses to issue in order (RA first, then Dec); zero-duration axes omitted. Durations are the
     /// final clamped values.
@@ -64,8 +67,8 @@ public sealed record GuideCorrection
     public double RaCorrectionPx { get; init; }
 
     /// <summary>
-    /// Estimated Dec correction applied (px), <c>±max(0, DECDuration − BacklashCompMs) · yRate</c>
-    /// (the backlash pulse is assumed to only take up slack).
+    /// Estimated Dec correction applied (px): <c>±max(0, DECDuration − BacklashCompMs) · yRate</c> with the fixed
+    /// compensation (it is assumed to only take up slack), the motion the play model expects with it.
     /// </summary>
     public double DecCorrectionPx { get; init; }
 }
@@ -90,7 +93,7 @@ public sealed record GuideCorrection
 /// </remarks>
 public sealed class AxisCorrector
 {
-    public AxisCorrector(IGuideAlgorithm raAlgorithm, IGuideAlgorithm decAlgorithm, PulseLimiter? limiter = null, BacklashCompensation? backlash = null)
+    public AxisCorrector(IGuideAlgorithm raAlgorithm, IGuideAlgorithm decAlgorithm, PulseLimiter? limiter = null, IBacklashCompensation? backlash = null)
     {
         RaAlgorithm = raAlgorithm;
         DecAlgorithm = decAlgorithm;
@@ -112,7 +115,7 @@ public sealed class AxisCorrector
 
     public PulseLimiter Limiter { get; }
 
-    public BacklashCompensation Backlash { get; }
+    public IBacklashCompensation Backlash { get; }
 
     private DecGuideMode decGuideMode = DecGuideMode.Auto;
     private GuideDirection? driftDecDirection;
@@ -277,11 +280,22 @@ public sealed class AxisCorrector
         // is no reversal. Rounded after it, a short reversal could be dropped whole, compensation included, after the
         // compensation had counted it, and the next pulse that way went out without compensation. As in PHD2 the
         // compensation works in Auto only (see EffectiveDecGuideModeChanged).
-        int requestedYAmount = MinimumPulse(DurationFor(yDistance, yRate), options);
-        int blc = EffectiveDecGuideMode == DecGuideMode.Auto && (requestedYAmount > 0 || minPulseMs == 0)
+        // the play model holds back a pulse that would only take up play the offset does not need (Auto only, as the compensation)
+        bool decHeld = EffectiveDecGuideMode == DecGuideMode.Auto && yDistance != 0.0 && Backlash.HoldMove(options, yDistance, yRate, now);
+        int requestedYAmount = decHeld ? 0 : MinimumPulse(DurationFor(yDistance, yRate), options);
+        int blc = !decHeld && EffectiveDecGuideMode == DecGuideMode.Auto && (requestedYAmount > 0 || minPulseMs == 0)
             ? Backlash.Apply(options, yDistance, ref requestedYAmount, now)
             : 0;
         var y = MoveAxis(yDirection, requestedYAmount, options, now, alerts, out bool decSuppressed);
+
+        // the gear moves with every Dec pulse; a recovery pulse is clamped to the max duration by the caller
+        bool algoOrDeduce = (options & (MoveOptions.AlgoResult | MoveOptions.AlgoDeduce)) != 0;
+        int decSentMs = algoOrDeduce ? y.DurationMs : Math.Min(y.DurationMs, Limiter.MaxDecDurationMs);
+        double decEffectiveMs = y.DurationMs > 0 ? Backlash.EffectiveMs(yDirection, y.DurationMs, blc) : 0;
+        if (decSentMs > 0)
+        {
+            Backlash.PulseSent(yDirection, decSentMs);
+        }
 
         var pulses = new List<PulseCommand>(2);
         if (x.DurationMs > 0)
@@ -292,7 +306,7 @@ public sealed class AxisCorrector
         double raSign = xDirection == GuideDirection.West ? 1.0 : -1.0;
         double decSign = yDirection == GuideDirection.South ? 1.0 : -1.0;
         double raCorr = ValidRate(xRate) ? raSign * x.DurationMs * xRate : 0.0;
-        double decCorr = ValidRate(yRate) ? decSign * Math.Max(0, y.DurationMs - blc) * yRate : 0.0;
+        double decCorr = ValidRate(yRate) ? decSign * decEffectiveMs * yRate : 0.0;
 
         return new GuideCorrection
         {
@@ -309,6 +323,7 @@ public sealed class AxisCorrector
             DecLimited = y.Limited,
             BacklashCompMs = blc,
             DecSuppressedByMode = decSuppressed,
+            DecHeldByBacklash = decHeld,
             Pulses = pulses,
             Alerts = alerts,
             RaCorrectionPx = raCorr == 0.0 ? 0.0 : raCorr,
@@ -441,6 +456,36 @@ public sealed class AxisCorrector
         }
 
         return (ValidRate(xRate) ? ra : 0, ValidRate(yRate) ? dec : 0);
+    }
+
+    /// <summary>
+    /// The correction the <paramref name="pulses"/> of <paramref name="corr"/> apply as the caller sends them (after its own
+    /// clamps or removals). With the play model the Dec part is the motion it expected for the pulse as computed; a Dec pulse
+    /// the caller dropped leaves the model's gear position unknown.
+    /// </summary>
+    public (double RaPx, double DecPx) CorrectionOf(GuideCorrection corr, IReadOnlyList<PulseCommand> pulses, double xRate, double yRate)
+    {
+        var fixedCorrection = CorrectionOf(pulses, xRate, yRate, corr.BacklashCompMs);
+        if (Backlash is not PlayModelBacklash)
+        {
+            return fixedCorrection;
+        }
+
+        var decPulses = pulses.Where(p => p.Direction.Axis() == GuideAxis.Dec).ToList();
+        if (decPulses.Count == 0)
+        {
+            if (corr.DECDuration > 0)
+            {
+                Backlash.ResetState();
+            }
+
+            return (fixedCorrection.RaPx, 0);
+        }
+
+        var decPulse = decPulses[0];
+        return decPulses.Count == 1 && decPulse.Direction == corr.DECDirection && decPulse.DurationMs == corr.DECDuration
+            ? (fixedCorrection.RaPx, corr.DecCorrectionPx)
+            : fixedCorrection;
     }
 
     private void Notify(Action<IGuideAlgorithm> action)

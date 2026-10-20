@@ -331,6 +331,165 @@ public class ClosedLoopTests
         h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The play model's measurement after the flip finds North pulses moving the star South (a wrong Dec-flip setting):
+    /// it inverts Dec, saves the setting and measures again before guiding (pins log 2026-10-19: guiding started anyway and
+    /// Dec ran away by 270 px).
+    /// </summary>
+    [Test]
+    public async Task Play_probe_after_the_flip_inverts_a_wrong_dec_flip_setting()
+    {
+        var scenario = SimulatorScenario.GoodMount with
+        {
+            Mount = SimulatorScenario.GoodMount.Mount with { DecGuideReversedOnWestPier = false, DecDriftArcsecPerMin = 3, DecBacklashArcsec = 3 },
+        };
+        var h = new Harness(scenario, PlayModel);
+        Task<SettleResult>? second = null;
+        DateTimeOffset? flippedAt = null;
+        h.OnEvent = e =>
+        {
+            if (flippedAt is null && e is SettleDoneEvent)
+            {
+                flippedAt = e.Timestamp;
+                h.Guider.StopGuiding();
+                h.Sim.Mount.MeridianFlip();
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(15));
+
+        foreach (var p in h.Events.OfType<DecPlayProbeEvent>())
+        {
+            TestContext.Out.WriteLine($"{h.Seconds(p.Timestamp):F0}s {p.Message}");
+        }
+
+        (await second!).Success.Should().BeTrue();
+        var probes = h.Events.OfType<DecPlayProbeEvent>().ToList();
+        probes.Should().HaveCount(2);
+        probes[0].Message.Should().Contain("North pulses moved the star South").And.Contain("Dec inverted");
+        probes[1].Measured.Should().BeTrue("the second measurement finds the play with the inverted Dec");
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.DecFlipCorrected);
+        h.Events.OfType<CalibrationCompleteEvent>().Should().ContainSingle("the flipped calibration is kept");
+        h.Guider.Settings.DecFlipRequired.Should().BeTrue();
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+        h.Sim.TruePointingError(h.Clock.Elapsed.TotalSeconds).Dec.Should().BeInRange(-5, 5, "Dec is guided after the flip");
+    }
+
+    /// <summary>
+    /// Without the post-flip self-check the play model's measurement does not invert Dec on its own: it calibrates again
+    /// instead of guiding with a calibration that pushes Dec away.
+    /// </summary>
+    [Test]
+    public async Task Play_probe_calibrates_again_when_dec_moves_the_wrong_way_and_may_not_be_inverted()
+    {
+        var scenario = SimulatorScenario.GoodMount with
+        {
+            Mount = SimulatorScenario.GoodMount.Mount with { DecGuideReversedOnWestPier = false, DecDriftArcsecPerMin = 3, DecBacklashArcsec = 3 },
+        };
+        var h = new Harness(scenario, s => PlayModel(s) with { VerifyDecAfterFlip = false });
+        Task<SettleResult>? second = null;
+        DateTimeOffset? flippedAt = null;
+        h.OnEvent = e =>
+        {
+            if (flippedAt is null && e is SettleDoneEvent)
+            {
+                flippedAt = e.Timestamp;
+                h.Guider.StopGuiding();
+                h.Sim.Mount.MeridianFlip();
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(15));
+
+        (await second!).Success.Should().BeTrue();
+        h.Events.OfType<DecPlayProbeEvent>().Should().ContainSingle(p => p.Message.Contains("calibrating again"));
+        h.Events.OfType<AlertEvent>().Should().Contain(a => a.Code == GuideErrorCode.CalibrationInvalidated);
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.DecFlipCorrected);
+        h.Events.OfType<CalibrationCompleteEvent>().Should().HaveCount(2);
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// A runaway on the pulse duty alone shortly after a flip, with the right Dec-flip setting and a small error, stops
+    /// guiding but does not invert Dec (pins log 2026-10-18: a play taken up on every reversal swung Dec between 2.5 s North
+    /// and South pulses at ±0.3 px, the duty tripped, Dec was inverted and the wrong setting saved).
+    /// </summary>
+    [Test]
+    public async Task Pulse_duty_runaway_after_a_flip_does_not_invert_dec()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount with { Mount = SimulatorScenario.GoodMount.Mount with { DecDriftArcsecPerMin = 30 } });
+        Task<SettleResult>? second = null;
+        h.OnEvent = e =>
+        {
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                h.Sim.Mount.MeridianFlip();
+                h.Guider.UpdateSettings(h.Guider.Settings with { Safety = h.Guider.Settings.Safety with { MaxPulseDuty = 0.03 } });
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(15));
+
+        h.Guider.State.Should().Be(GuiderState.Failed);
+        h.Guider.LastError!.Code.Should().Be(GuideErrorCode.RunawayDetected);
+        h.Events.OfType<AlertEvent>().Single(a => a.Code == GuideErrorCode.RunawayDetected).Detail.Should().Be("Dec axis");
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.DecFlipCorrected);
+        h.Guider.Settings.DecFlipRequired.Should().BeFalse("the setting was right");
+    }
+
+    /// <summary>
+    /// The play differs by pier side (OnStepX 2026-10-19: none on West, 4.6 s on East). When the measurement after the flip
+    /// cannot find the play, what was learned on the other side is forgotten rather than kept.
+    /// </summary>
+    [Test]
+    public async Task Play_learned_on_the_other_pier_side_is_forgotten_when_the_probe_fails()
+    {
+        var scenario = SimulatorScenario.GoodMount with
+        {
+            Mount = SimulatorScenario.GoodMount.Mount with { DecDriftArcsecPerMin = 3, DecBacklashArcsec = 3 },
+        };
+        var h = new Harness(scenario, PlayModel);
+        Task<SettleResult>? second = null;
+        h.OnEvent = e =>
+        {
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                h.Sim.Mount.MeridianFlip();
+                // longer than the probe's North pulses up to its largest play: it gives up
+                h.Sim.Mount.StopRespondingFor(TimeSpan.FromMinutes(3));
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(10));
+
+        foreach (var p in h.Events.OfType<DecPlayProbeEvent>())
+        {
+            TestContext.Out.WriteLine($"{h.Seconds(p.Timestamp):F0}s {p.Message}");
+        }
+
+        second.Should().NotBeNull();
+        var probe = h.Events.OfType<DecPlayProbeEvent>().Should().ContainSingle().Subject;
+        probe.Measured.Should().BeFalse();
+        probe.Message.Should().Contain("did not follow").And.Contain("forgotten");
+    }
+
+    // the Dec backlash play model, measured again after a flip (it needs Predictive in Dec)
+    private static GuiderSettings PlayModel(GuiderSettings s) => s with
+    {
+        DecAlgorithm = new AlgorithmSettings(GuideAlgorithmKind.Predictive),
+        Backlash = new BacklashSettings { Enabled = true, PulseMs = 900, Model = BacklashModel.PlayModel },
+    };
+
     [Test]
     public async Task Emits_phd2_event_sequence_for_guide_start()
     {

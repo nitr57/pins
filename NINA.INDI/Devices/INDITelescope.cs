@@ -100,6 +100,11 @@ namespace NINA.INDI.Devices {
         private DateTime _lastPulseGuideTimeoutWarning = DateTime.MinValue;
         private int _pulseGuideTimeoutsSinceWarning;
 
+        // Rejected or early-ended pulses can come at every reversal; warn at most as often as for timeouts.
+        private readonly object _pulseGuideFailureLock = new();
+        private DateTime _lastPulseGuideFailureWarning = DateTime.MinValue;
+        private int _pulseGuideFailuresSinceWarning;
+
         // Coordinate-motion tracking for the Slewing property. Some firmwares (observed on
         // OnStep while homing) move the mount without reporting a slew on ANY property state,
         // but the driver still polls and pushes EQUATORIAL_EOD_COORD values every cycle — so
@@ -194,6 +199,40 @@ namespace NINA.INDI.Devices {
 
         public INDITelescope(INDIDeviceInfo device) : base(device) {
             _pulseGuide.TimedOut += ReportPulseGuideTimeout;
+            _pulseGuide.Failed += ReportPulseGuideFailure;
+        }
+
+        private void ReportPulseGuideFailure(PulseGuideFailure failure) {
+            bool warn;
+            int count;
+            lock (_pulseGuideFailureLock) {
+                count = ++_pulseGuideFailuresSinceWarning;
+                var now = DateTime.UtcNow;
+                warn = now - _lastPulseGuideFailureWarning >= PulseGuideTimeoutWarningInterval;
+                if (warn) {
+                    _lastPulseGuideFailureWarning = now;
+                    _pulseGuideFailuresSinceWarning = 0;
+                }
+            }
+
+            var message = failure.Rejected
+                ? $"[{DeviceName}] The driver rejected a {failure.DurationMs} ms guide pulse on {failure.Property} (Alert after {failure.ElapsedMs:F0} ms)"
+                : $"[{DeviceName}] The driver reported the end of a {failure.DurationMs} ms guide pulse on {failure.Property} after {failure.ElapsedMs:F0} ms";
+            if (warn) {
+                Logger.Warning($"{message}. The mount may not have moved as far as the guider assumes "
+                    + $"({count} such pulse(s) since the last warning; further ones are logged at Debug level for {PulseGuideTimeoutWarningInterval.TotalMinutes:F0} minutes)");
+            } else {
+                Logger.Debug(message);
+            }
+        }
+
+        public string TakeRejectedPulse(GuideDirections direction) {
+            var property = direction is GuideDirections.guideNorth or GuideDirections.guideSouth
+                ? PulseGuideTracker.NorthSouth
+                : PulseGuideTracker.WestEast;
+            return _pulseGuide.TakeRejected(property) is { } failure
+                ? $"the driver rejected the {failure.DurationMs} ms pulse on {failure.Property}"
+                : null;
         }
 
         private void ReportPulseGuideTimeout(string property, int durationMs) {

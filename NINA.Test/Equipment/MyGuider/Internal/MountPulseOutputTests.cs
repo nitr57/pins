@@ -69,6 +69,27 @@ public class MountPulseOutputTests
         (doneAtMs - endedAt).Should().BeLessThan(60, "the guider notices the end of the pulse within a few ms");
     }
 
+    [TestCase(null, false)]
+    [TestCase("the driver rejected the 300 ms pulse on TELESCOPE_TIMED_GUIDE_NS", true)]
+    public async Task A_pulse_the_indi_driver_rejected_throws_once_it_is_over(string? rejection, bool throws)
+    {
+        var telescope = new ConnectedIndiTelescope { Rejection = rejection };
+        var mediator = new Mock<ITelescopeMediator>();
+        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true });
+        mediator.Setup(m => m.GetDevice()).Returns(telescope);
+
+        Func<Task> pulse = () => new MountPulseOutput(mediator.Object).PulseAsync(GuideDirection.South, 20, CancellationToken.None);
+
+        if (throws)
+        {
+            (await pulse.Should().ThrowAsync<PulseRejectedException>()).WithMessage(rejection);
+        }
+        else
+        {
+            await pulse.Should().NotThrowAsync();
+        }
+    }
+
     /// <summary>An INDI mount without a server: its device is a fake whose pulse flag the test sets.</summary>
     private sealed class ConnectedIndiTelescope : IndiTelescope
     {
@@ -78,11 +99,14 @@ public class MountPulseOutputTests
             : base(new INDIDeviceInfo { Id = "Mount", Name = "Mount", Interface = DeviceInterface.TELESCOPE_INTERFACE }, Mock.Of<IProfileService>())
         {
             fake.SetupGet(d => d.IsPulseGuiding).Returns(() => Pulsing);
+            fake.Setup(d => d.TakeRejectedPulse(It.IsAny<GuideDirections>())).Returns(() => Rejection);
             device = fake.Object;
             // connectedExpectation is set only by a real Connect; properties read as defaults without it
             typeof(NINA.Equipment.Equipment.IndiDevice<IINDITelescope>).GetField("connectedExpectation", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(this, true);
         }
 
         public volatile bool Pulsing;
+
+        public volatile string? Rejection;
     }
 }

@@ -181,6 +181,10 @@ public sealed class CalibrationProcess
     private GuidePoint calibrationStartingCoords = GuidePoint.Invalid;
     private GuidePoint eastStartingLocation = GuidePoint.Invalid;
     private GuidePoint southStartingLocation = GuidePoint.Invalid;
+
+    // Dec take-up after the reversal at the end of the North leg: South pulse time sent so far and the star positions after it
+    private readonly List<(double PulseMs, GuidePoint Location)> southTrack = [];
+    private double southPulseMs;
     private GuidePoint blMarkerPoint = GuidePoint.Invalid;
     private double blExpectedBacklashStep;
     private int blMaxClearingPulses;
@@ -266,6 +270,8 @@ public sealed class CalibrationProcess
         State = CalibrationState.GoWest;
         raSteps.Clear();
         decSteps.Clear();
+        southTrack.Clear();
+        southPulseMs = 0;
         raStepCount = 0;
         decStepCount = 0;
         InitEstimates(mount);
@@ -654,11 +660,14 @@ public sealed class CalibrationProcess
                 State = CalibrationState.GoSouth;
                 phasePulses = 0;
                 southStartingLocation = currentLocation;
+                southTrack.Clear();
+                southPulseMs = 0;
                 goto case CalibrationState.GoSouth;
             }
 
             case CalibrationState.GoSouth:
             {
+                TrackSouth(currentLocation);
                 var info = new CalibrationStepInfo("South", calibrationSteps, dX, dY, currentLocation, dist);
                 logged.Add(info);
                 decSteps.Add(new GuidePoint(dX, dY));
@@ -677,6 +686,7 @@ public sealed class CalibrationProcess
                     --calibrationSteps;
 
                     Schedule(GuideDirection.South, duration);
+                    southPulseMs += duration;
                     break;
                 }
 
@@ -729,6 +739,7 @@ public sealed class CalibrationProcess
 
             case CalibrationState.NudgeSouth:
             {
+                TrackSouth(currentLocation);
                 // Nudge further South on Dec, get within 2 px North/South of starting point, don't try more than 3
                 // times and don't do nudging at all if we're starting too far away from the target
                 double nudgeAmt = currentLocation.Distance(calibrationInitialLocation);
@@ -762,6 +773,7 @@ public sealed class CalibrationProcess
                             Status(new CalibrationStepInfo("NudgeSouth", calibrationSteps, dX, dY, currentLocation, dist),
                                 $"Nudge South {calibrationSteps,3}");
                             Schedule(GuideDirection.South, pulseAmt);
+                            southPulseMs += pulseAmt;
                             break;
                         }
                     }
@@ -797,6 +809,7 @@ public sealed class CalibrationProcess
                     DecSteps = decSteps.ToArray(),
                     Points = points.Concat(logged.Select(ToPoint)).ToArray(),
                     CalibrationStepMs = StepMs,
+                    DecTakeUp = DecTakeUp(),
                     CalibrationDistancePx = DistancePx,
                 };
 
@@ -845,6 +858,29 @@ public sealed class CalibrationProcess
     }
 
     // Convert camera coords to mount coords (scope.cpp static MountCoords), Y component
+    // the star's position after the South pulses so far (each frame of GoSouth/NudgeSouth enters once: a goto from
+    // GoSouth to NudgeSouth sees the same frame again)
+    private void TrackSouth(GuidePoint location)
+    {
+        if (southPulseMs > 0 && (southTrack.Count == 0 || southTrack[^1].PulseMs < southPulseMs))
+        {
+            southTrack.Add((southPulseMs, location));
+        }
+    }
+
+    // the Dec return as pulse time and Dec motion since the reversal (mount px, positive towards South)
+    private IReadOnlyList<DecTakeUpPoint> DecTakeUp()
+    {
+        if (southTrack.Count == 0 || !southStartingLocation.IsValid)
+        {
+            return [];
+        }
+
+        var moved = southTrack.Select(p => (p.PulseMs, Moved: MountCoordsY(southStartingLocation - p.Location))).ToList();
+        double sign = Math.Sign(moved[^1].Moved);
+        return sign == 0 ? [] : moved.Select(m => new DecTakeUpPoint(m.PulseMs, sign * m.Moved)).ToArray();
+    }
+
     private double MountCoordsY(GuidePoint cameraVector) => new MountTransform(xAngle, yAngle, 1.0, 1.0).CameraToMount(cameraVector).Y;
 
     private static GuidePoint GetRaDecCoordinates(MountSnapshot mount) =>

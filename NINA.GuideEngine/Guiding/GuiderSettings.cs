@@ -22,6 +22,20 @@ public sealed record BacklashSettings
 
     /// <summary>0 = automatic (1.5 × pulse).</summary>
     public int CeilingMs { get; init; }
+
+    /// <summary>
+    /// Fixed: PHD2's pulse at every reversal. PlayModel: the gear's play is tracked, reversals the offset does not need
+    /// are held back, and a reversal takes up the play that is left (<see cref="PlayModelBacklash"/>); <see cref="PulseMs"/>
+    /// is then only its first guess of the play.
+    /// </summary>
+    public BacklashModel Model { get; init; } = BacklashModel.Fixed;
+
+    /// <summary>
+    /// Play model only: when guiding starts with a kept calibration after the mount moved more than this (degrees) or
+    /// changed pier side since the play was last measured, the play is measured again first (<see cref="DecPlayProbe"/>):
+    /// the gear is driven North until the star follows, then South back to the start. 0 = never.
+    /// </summary>
+    public double RemeasureAfterSlewDeg { get; init; } = 5;
 }
 
 /// <summary>All guider settings. Immutable; apply changes with <see cref="Guider.UpdateSettings"/>.</summary>

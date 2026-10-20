@@ -60,6 +60,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     /// <summary>How long a disconnect waits for a cancelled dark library build: the guide camera aborts its exposure.</summary>
     private static readonly TimeSpan DarkBuildStopTimeout = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// The play model learns at nearly every Dec reversal: stored at most this often (and when the guider changes state or
+    /// disconnects), not per learned window, to spare the Pi's SD card and the NINA log.
+    /// </summary>
+    internal static readonly TimeSpan PlayModelSaveInterval = TimeSpan.FromMinutes(1);
+
     /// <summary>Added to the exposures of the auto-select attempts: download and processing of each frame on a slow Pi.</summary>
     private static readonly TimeSpan AutoSelectTimeoutMargin = TimeSpan.FromSeconds(20);
 
@@ -97,6 +103,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     private readonly IncidentStore incidents;
     private readonly string periodicErrorStorePath;
     private readonly string pulseModelStorePath;
+    private readonly string playModelStorePath;
 
     // the learned Dec backlash pulses, next to the pulse models (so tests that move those move these too)
     private readonly string backlashStorePath;
@@ -134,6 +141,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     private CancellationTokenSource? darkBuildCts;
     private Task darkBuildDone = Task.CompletedTask;
 
+    // the latest learned play model not yet stored (keyed when learned: the profile may change before it is stored), and
+    // when the engine last had one stored (engine time; MinValue: the next one is stored at once)
+    private readonly object playModelGate = new();
+    private (PulseModelKey Key, BacklashPlayModelLearnedEvent Learned)? pendingPlayModel;
+    private DateTimeOffset playModelStoredAt = DateTimeOffset.MinValue;
+
     // the pulse output of the connected session: the PulseOutput setting only applies at the next connect
     private bool sessionUsesCameraSt4;
 
@@ -157,6 +170,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         this.periodicErrorStorePath = periodicErrorStorePath ?? DefaultPeriodicErrorStorePath;
         this.pulseModelStorePath = pulseModelStorePath ?? DefaultPulseModelStorePath;
         backlashStorePath = Path.Combine(Path.GetDirectoryName(this.pulseModelStorePath)!, "backlash.json");
+        playModelStorePath = Path.Combine(Path.GetDirectoryName(this.pulseModelStorePath)!, "backlash-play-model.json");
         this.telescopeMediator = telescopeMediator;
         this.guideCameraMediator = guideCameraMediator;
         options = new InternalGuiderOptions(profileService, InternalGuiderOptions.SettingsId);
@@ -173,6 +187,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             RestoreStoredPeriodicError();
             RestoreStoredPulseModel();
             RestoreStoredBacklash();
+            RestoreStoredPlayModel();
             incidents.Options = IncidentStoreOptionsNow();
         };
     }
@@ -422,6 +437,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         RestoreStoredPeriodicError();
         RestoreStoredPulseModel();
         RestoreStoredBacklash();
+        RestoreStoredPlayModel();
 
         if (options.SaveGuideLog)
         {
@@ -466,6 +482,13 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             // an incident still open is saved as stopped (its save event comes from the store)
             g.SetIncidentStore(null);
             g.EventRaised -= OnEngineEvent;
+        }
+
+        // no more engine events: the last learned play model is stored, and the next session stores its first at once
+        lock (playModelGate)
+        {
+            StorePendingPlayModel(DateTimeOffset.MinValue);
+            playModelStoredAt = DateTimeOffset.MinValue;
         }
 
         CloseGuideLog();
@@ -745,9 +768,24 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 DecAlgorithmState = ToDto(g?.DecAlgorithm, PixelScale),
                 DecDrift = ToDecDriftDto(decDirection, PixelScale),
                 DecBacklashPulseMs = g?.DecBacklashPulseMs,
+                DecBacklash = ToDto(g?.BacklashPlayModelStatus),
             };
         }
     }
+
+    private static AdvancedDecBacklashState? ToDto(PlayModelValues? v) => v is null ? null : new AdvancedDecBacklashState
+    {
+        FullReversalMs = Math.Round(v.FullReversalMs),
+        SlackNorthMs = double.IsFinite(v.SlackNorthMs) ? Math.Round(v.SlackNorthMs) : null,
+        SlackSouthMs = double.IsFinite(v.SlackSouthMs) ? Math.Round(v.SlackSouthMs) : null,
+        Gear = v.Engaged?.ToString() ?? (v.StateKnown ? "Floating" : "Unknown"),
+        Shape = v.Shape,
+        ShapeFromCalibration = v.ShapeFromCalibration,
+        Reversals = v.Reversals,
+        HeldCorrections = v.HeldMoves,
+        LearnedTakeUps = Math.Round(v.LearnedWindows, 1),
+        LastCompensationMs = v.LastCompensationMs,
+    };
 
     private static AdvancedGuideTiming? ToDto(GuideTiming? timing) => timing is null ? null : new AdvancedGuideTiming
     {
@@ -1475,6 +1513,8 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                         calibrationProgress = 0;
                     }
 
+                    // guiding stopped, paused or lost its star: what the play model learned so far is kept
+                    StorePendingPlayModel(st.Timestamp);
                     RaisePropertyChanged(nameof(State));
                     Raise(AdvancedGuiderEventTypes.State, e.Timestamp, GetStatus());
                     break;
@@ -1531,6 +1571,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 case BacklashPulseLearnedEvent bl:
                     Logger.Info($"InternalGuider: Dec backlash compensation pulse {bl.State.PulseMs} ms (set {bl.State.SetPulseMs} ms)");
                     PersistBacklash(bl.State);
+                    break;
+                case DecPlayProbeEvent dp:
+                    Logger.Info($"InternalGuider: {dp.Message}");
+                    break;
+                case BacklashPlayModelLearnedEvent bp:
+                    QueuePlayModel(bp);
                     break;
                 case SettleBeginEvent:
                     settleStatus = "Settling";
@@ -2120,6 +2166,95 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         catch (Exception ex)
         {
             Logger.Warning($"InternalGuider: could not save the backlash pulse: {ex.Message}");
+        }
+    }
+
+    private PlayModelStore LoadPlayModelStore()
+    {
+        try
+        {
+            if (File.Exists(playModelStorePath))
+            {
+                return PlayModelStore.FromJson(File.ReadAllText(playModelStorePath));
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not read the backlash play model store: {ex.Message}");
+        }
+
+        return new PlayModelStore();
+    }
+
+    // the Dec gear belongs to the mount: stored per profile and mount like the pulse model
+    private void RestoreStoredPlayModel()
+    {
+        try
+        {
+            if (guider is { } g && LoadPlayModelStore().Get(PulseModelKeyNow()) is { } state)
+            {
+                g.RestoreBacklashPlayModel(state);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not restore the backlash play model: {ex.Message}");
+        }
+    }
+
+    // stores the learned play model unless one was stored within PlayModelSaveInterval; otherwise it waits for the next
+    private void QueuePlayModel(BacklashPlayModelLearnedEvent learned)
+    {
+        bool due;
+        lock (playModelGate)
+        {
+            pendingPlayModel = (PulseModelKeyNow(), learned);
+            due = playModelStoredAt == DateTimeOffset.MinValue || learned.Timestamp - playModelStoredAt >= PlayModelSaveInterval;
+        }
+
+        if (due)
+        {
+            StorePendingPlayModel(learned.Timestamp);
+        }
+    }
+
+    // now: the engine time recorded as the last store when one is pending
+    private void StorePendingPlayModel(DateTimeOffset now)
+    {
+        // under the gate: a disconnect's store and the guide loop's last one don't race for the file
+        lock (playModelGate)
+        {
+            if (pendingPlayModel is not { } pending)
+            {
+                return;
+            }
+
+            pendingPlayModel = null;
+            playModelStoredAt = now;
+            PersistPlayModel(pending.Key, pending.Learned.State);
+
+            // the guide log has every update (GuideLogBridge); the NINA log only the stored ones
+            if (pending.Learned.InUse)
+            {
+                Logger.Info($"InternalGuider: {GuideLogBridge.PlayModelText(pending.Learned.Values)}");
+            }
+        }
+    }
+
+    private void PersistPlayModel(PulseModelKey key, PlayModelState state)
+    {
+        try
+        {
+            var store = LoadPlayModelStore();
+            store.Set(key, state);
+            Directory.CreateDirectory(Path.GetDirectoryName(playModelStorePath)!);
+            var tmp = playModelStorePath + ".tmp";
+            File.WriteAllText(tmp, store.ToJson());
+            File.Move(tmp, playModelStorePath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not save the backlash play model: {ex.Message}");
         }
     }
 

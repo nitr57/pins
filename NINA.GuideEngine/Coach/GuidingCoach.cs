@@ -302,6 +302,71 @@ public sealed class GuidingCoach
         }
     }
 
+    /// <summary>
+    /// The backlash settings suggested for a measured Dec backlash of <paramref name="backlashMs"/> (guiding reversals)
+    /// and <paramref name="largeMoveBacklashMs"/> (after a long move); <paramref name="fits"/>: Dec guide mode Auto and
+    /// drift.decGuideMode not raised. Adds playModel or playModelNeedsPredictive (true, for the UI's notes) and playReason
+    /// (soft|large) to <paramref name="parameters"/>.
+    /// </summary>
+    internal static List<(string Name, string Value)> BacklashSuggestion(double backlashMs, double? largeMoveBacklashMs, bool fits,
+        GuideAlgorithmKind decAlgorithm, IDictionary<string, object?> parameters)
+    {
+        if (!fits || backlashMs < 100)
+        {
+            return [];
+        }
+
+        string? reason = PlayModelReason(backlashMs, largeMoveBacklashMs);
+        if (reason is not null && decAlgorithm == GuideAlgorithmKind.Predictive)
+        {
+            // a play that depends on the preceding move, or one too large for a single pulse, defeats a fixed pulse: the
+            // play model tracks the gear inside it (Guider.UsesPlayModel), the pulse only seeds its prior (sizes up to 8 s)
+            parameters["playModel"] = true;
+            parameters["playReason"] = reason;
+            return
+            [
+                (CoachSettingNames.BacklashCompensation, "true"),
+                (CoachSettingNames.BacklashModel, nameof(BacklashModel.PlayModel)),
+                (CoachSettingNames.BacklashPulseMs, CoachSettingsMap.Format(Floor10(Math.Min(backlashMs, PlayModelBacklash.MaxCompensationMs)))),
+            ];
+        }
+
+        if (reason is not null)
+        {
+            // the play model would fit, but PHD2's algorithms don't learn what a pulse really did; noted above the fixed
+            // pulse's range too, where the play model is the only compensation left
+            parameters["playReason"] = reason;
+            parameters["playModelNeedsPredictive"] = true;
+        }
+
+        if (backlashMs > 3000)
+        {
+            return [];
+        }
+
+        return
+        [
+            (CoachSettingNames.BacklashCompensation, "true"),
+            (CoachSettingNames.BacklashPulseMs, CoachSettingsMap.Format(Floor10(backlashMs))),
+        ];
+    }
+
+    // Why a fixed pulse won't fit a measured Dec backlash (PLAY-MODEL-BACKLASH.md): "soft" when a long move loses at least
+    // 1.5× what a guiding reversal loses (the play depends on the preceding move), "large" from 1 s (more play than a
+    // pulse should cross at once: the play model compensates per pulse up to the max Dec pulse and knows what is left);
+    // null for a small hard play, which the fixed pulse handles
+    internal static string? PlayModelReason(double backlashMs, double? largeMoveBacklashMs)
+    {
+        if (largeMoveBacklashMs is { } large && large >= 1.5 * backlashMs)
+        {
+            return "soft";
+        }
+
+        return backlashMs >= 1000 ? "large" : null;
+    }
+
+    private static int Floor10(double ms) => (int)(Math.Floor(ms / 10) * 10);
+
     /// <summary>A step could not run; becomes a problem finding and a failed step.</summary>
     private sealed class StepFailedException(string code, string? detail = null, Dictionary<string, object?>? parameters = null) : Exception(detail ?? code)
     {
@@ -1171,21 +1236,19 @@ public sealed class GuidingCoach
                 // works only while both directions are guided (in Auto, as in PHD2), and one-way guiding along the drift is
                 // suggested instead when that fits (drift.decGuideMode)
                 string severity = ms < 100 ? CoachSeverities.Good : ms < 1000 ? CoachSeverities.Info : CoachSeverities.Warning;
-                var changes = ms is >= 100 and <= 3000 && s.DecGuideMode == DecGuideMode.Auto && !SuggestsDriftMode(a, r)
-                    ? new[]
-                    {
-                        Change(CoachSettingNames.BacklashCompensation, "true"),
-                        Change(CoachSettingNames.BacklashPulseMs, CoachSettingsMap.Format((int)(Math.Floor(ms / 10) * 10))),
-                    }
-                    : [];
+                var parameters = new Dictionary<string, object?>
+                {
+                    ["ms"] = ms,
+                    ["arcsec"] = r.BacklashArcsec,
+                    ["largeMoveMs"] = r.LargeMoveBacklashMs,
+                    ["largeMoveArcsec"] = r.LargeMoveBacklashArcsec,
+                };
+
+                bool fits = s.DecGuideMode == DecGuideMode.Auto && !SuggestsDriftMode(a, r);
+                var changes = BacklashSuggestion(ms, r.LargeMoveBacklashMs, fits, s.DecAlgorithm.Kind, parameters)
+                    .Select(c => Change(c.Name, c.Value)).ToArray();
                 AddFinding(CoachFindings.Create(CoachCodes.ResponseDecBacklash, CoachStepNames.MountResponse, severity, ts,
-                    new()
-                    {
-                        ["ms"] = ms,
-                        ["arcsec"] = r.BacklashArcsec,
-                        ["largeMoveMs"] = r.LargeMoveBacklashMs,
-                        ["largeMoveArcsec"] = r.LargeMoveBacklashArcsec,
-                    }, ms >= 100 ? Math.Min(1.0, (r.BacklashArcsec ?? 0) * 0.25) : null, changes));
+                    parameters, ms >= 100 ? Math.Min(1.0, (r.BacklashArcsec ?? 0) * 0.25) : null, changes));
                 warnings |= severity == CoachSeverities.Warning;
             }
             else if (r.BacklashState == CoachBacklashStates.None)

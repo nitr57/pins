@@ -61,9 +61,18 @@ public interface IPulseOutput
     /// <summary>True when RA and Dec pulses may run concurrently.</summary>
     bool SupportsSimultaneousPulses { get; }
 
-    /// <summary>Issues a pulse and completes when the pulse has finished.</summary>
+    /// <summary>
+    /// Issues a pulse and completes when the pulse has finished. Throws <see cref="PulseRejectedException"/> when the
+    /// mount reports that it did not carry the pulse out.
+    /// </summary>
     Task PulseAsync(GuideDirection direction, int durationMs, CancellationToken ct);
 }
+
+/// <summary>
+/// The output sent the pulse, but the mount reported that it did not carry it out (e.g. an INDI driver's Alert). Unlike a
+/// failed output it says nothing about the connection: the guider treats the pulse as not sent and keeps guiding.
+/// </summary>
+public sealed class PulseRejectedException(string message) : Exception(message);
 
 /// <summary>Snapshot of mount state relevant to guiding.</summary>
 public sealed record MountSnapshot

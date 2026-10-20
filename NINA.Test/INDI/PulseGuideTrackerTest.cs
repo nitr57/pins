@@ -158,5 +158,83 @@ namespace NINA.Test.INDI {
             tracker.Observe(GuideVector(WE, PropertyState.Ok));
             Assert.That(tracker.IsPulseGuiding, Is.False);
         }
+
+        [Test]
+        public void Alert_IsAFailure_AndTheRejectionIsTakenOnce() {
+            var failures = new List<PulseGuideFailure>();
+            tracker.Failed += failures.Add;
+            tracker.PulseSending(NS, 2000);
+            now += TimeSpan.FromMilliseconds(30);
+
+            tracker.Observe(GuideVector(NS, PropertyState.Alert, 2000));
+
+            Assert.That(failures, Is.EqualTo(new[] { new PulseGuideFailure(NS, 2000, 30, Rejected: true) }));
+            Assert.That(tracker.TakeRejected(WE), Is.Null, "the other axis");
+            Assert.That(tracker.TakeRejected(NS), Is.EqualTo(failures[0]));
+            Assert.That(tracker.TakeRejected(NS), Is.Null, "taken once");
+        }
+
+        [Test]
+        public void AlertAfterItsTime_IsStillARejection() {
+            tracker.PulseSending(NS, 300);
+            tracker.Observe(GuideVector(NS, PropertyState.Busy, 300));
+            now += TimeSpan.FromMilliseconds(300);
+
+            tracker.Observe(GuideVector(NS, PropertyState.Alert, 300));
+
+            Assert.That(tracker.TakeRejected(NS), Is.Not.Null);
+        }
+
+        [Test]
+        public void OkWellBeforeTheEnd_IsAFailure_ButNotARejection() {
+            var failures = new List<PulseGuideFailure>();
+            tracker.Failed += failures.Add;
+            tracker.PulseSending(NS, 3000);
+            now += TimeSpan.FromMilliseconds(40);
+
+            tracker.Observe(GuideVector(NS, PropertyState.Ok, 3000));
+
+            Assert.That(failures, Is.EqualTo(new[] { new PulseGuideFailure(NS, 3000, 40, Rejected: false) }));
+            Assert.That(tracker.TakeRejected(NS), Is.Null, "a driver may end the pulse as soon as the mount, which times it, accepted it");
+        }
+
+        [TestCase(3000, 1600)]
+        [TestCase(300, 120)]
+        [TestCase(150, 0)]
+        public void OkAtOrNearItsEnd_OrShortlyBeforeTheEndOfAShortPulse_IsNoFailure(int durationMs, int elapsedMs) {
+            var failures = new List<PulseGuideFailure>();
+            tracker.Failed += failures.Add;
+            tracker.PulseSending(NS, durationMs);
+            now += TimeSpan.FromMilliseconds(elapsedMs);
+
+            tracker.Observe(GuideVector(NS, PropertyState.Ok, durationMs));
+
+            Assert.That(failures, Is.Empty);
+        }
+
+        [Test]
+        public void TheNextPulse_ClearsAnUntakenRejection() {
+            tracker.PulseSending(NS, 300);
+            tracker.Observe(GuideVector(NS, PropertyState.Alert, 300));
+
+            tracker.PulseSending(NS, 300);
+
+            Assert.That(tracker.TakeRejected(NS), Is.Null);
+        }
+
+        [Test]
+        public void AnUpdateAfterATimeout_OrForAnotherClientsPulse_IsNoFailure() {
+            var failures = new List<PulseGuideFailure>();
+            tracker.Failed += failures.Add;
+            tracker.PulseSending(NS, 300);
+            now += TimeSpan.FromMilliseconds(300) + Margin;
+            Assert.That(tracker.IsPulseGuiding, Is.False);
+
+            tracker.Observe(GuideVector(NS, PropertyState.Alert, 300));
+            tracker.Observe(GuideVector(WE, PropertyState.Alert, 300));
+
+            Assert.That(failures, Is.Empty);
+            Assert.That(tracker.TakeRejected(NS), Is.Null);
+        }
     }
 }

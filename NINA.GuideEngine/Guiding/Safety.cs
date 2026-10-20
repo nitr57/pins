@@ -78,6 +78,19 @@ public enum SafetyVerdict
     MountNotResponding,
 }
 
+/// <summary>Why <see cref="RunawayDetector"/> declared a runaway.</summary>
+public enum RunawayCause
+{
+    /// <summary>The error kept growing in the same direction despite the corrections.</summary>
+    ErrorGrowing,
+
+    /// <summary>
+    /// The pulse duty was implausibly high, also when the error stayed small (e.g. corrections swinging between North and
+    /// South): no evidence of corrections with the wrong sign.
+    /// </summary>
+    PulseDuty,
+}
+
 /// <summary>
 /// Detects guiding that makes things worse: per axis, the error keeps growing in the same direction
 /// despite corrections, or the pulse duty is implausibly high. Operates on mount-axis pixels.
@@ -95,25 +108,31 @@ public sealed class RunawayDetector
         dec = new AxisHistory(settings);
     }
 
+    /// <summary>Why the last <see cref="SafetyVerdict.Runaway"/> was declared; null while none was.</summary>
+    public RunawayCause? Cause { get; private set; }
+
     public void Reset()
     {
         ra.Reset();
         dec.Reset();
+        Cause = null;
     }
 
     /// <summary>Record a guide frame: mount-axis error (px) and the pulse issued in response (signed ms, 0 = none).</summary>
     public SafetyVerdict Record(DateTimeOffset time, double raError, int raPulseMs, double decError, int decPulseMs, out GuideAxis? axis)
     {
         axis = null;
-        if (ra.Record(time, raError, raPulseMs))
+        if (ra.Record(time, raError, raPulseMs) is { } raCause)
         {
             axis = GuideAxis.Ra;
+            Cause = raCause;
             return SafetyVerdict.Runaway;
         }
 
-        if (dec.Record(time, decError, decPulseMs))
+        if (dec.Record(time, decError, decPulseMs) is { } decCause)
         {
             axis = GuideAxis.Dec;
+            Cause = decCause;
             return SafetyVerdict.Runaway;
         }
 
@@ -133,7 +152,7 @@ public sealed class RunawayDetector
             pulseMsInWindow = 0;
         }
 
-        public bool Record(DateTimeOffset time, double error, int pulseMs)
+        public RunawayCause? Record(DateTimeOffset time, double error, int pulseMs)
         {
             frames.Enqueue((error, pulseMs != 0));
             while (frames.Count > s.RunawayWindow + 1)
@@ -156,12 +175,12 @@ public sealed class RunawayDetector
             if (pulses.Count > 0 && (time - pulses.Peek().Time).TotalSeconds >= s.DutyWindowSec * 0.8 &&
                 pulseMsInWindow > s.MaxPulseDuty * s.DutyWindowSec * 1000)
             {
-                return true;
+                return RunawayCause.PulseDuty;
             }
 
             if (frames.Count < s.RunawayWindow + 1)
             {
-                return false;
+                return null;
             }
 
             var f = frames.ToArray();
@@ -178,7 +197,9 @@ public sealed class RunawayDetector
             }
 
             double first = Math.Abs(f[0].Error), last = Math.Abs(f[^1].Error);
-            return increasing >= s.RunawayMinIncreasing && last >= s.RunawayMinErrorPx && last >= s.RunawayGrowthFactor * Math.Max(first, 0.5);
+            return increasing >= s.RunawayMinIncreasing && last >= s.RunawayMinErrorPx && last >= s.RunawayGrowthFactor * Math.Max(first, 0.5)
+                ? RunawayCause.ErrorGrowing
+                : null;
         }
     }
 }

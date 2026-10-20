@@ -133,6 +133,12 @@ public sealed class GuideLogBridge : IDisposable
             case PulseModelUpdatedEvent pm when guiding:
                 log.Info(PulseModelText(pm));
                 break;
+            case DecPlayProbeEvent p when guiding:
+                log.Info(p.Message);
+                break;
+            case BacklashPlayModelLearnedEvent b when guiding && b.InUse:
+                log.Info(PlayModelText(b.Values));
+                break;
             case BacklashPulseLearnedEvent b when guiding:
                 log.Info($"Dec backlash compensation: pulse {b.State.PulseMs} ms (set {b.State.SetPulseMs} ms)");
                 break;
@@ -205,7 +211,7 @@ public sealed class GuideLogBridge : IDisposable
                 Calibration = guider.Calibration,
                 XAlgorithm = Summary(guider.RaAlgorithm),
                 YAlgorithm = Summary(guider.DecAlgorithm),
-                Backlash = new GuideLogBacklash(s.Backlash.Enabled, s.Backlash.PulseMs),
+                Backlash = new GuideLogBacklash(s.Backlash.Enabled, s.Backlash.PulseMs, Guider.UsesPlayModel(s)),
                 PulseModel = s.PulseModel,
                 MaxRaDurationMs = s.MaxRaDurationMs,
                 MaxDecDurationMs = s.MaxDecDurationMs,
@@ -234,6 +240,15 @@ public sealed class GuideLogBridge : IDisposable
         double windows = Math.Max(v.Ra?.Windows ?? 0, v.Dec?.Windows ?? 0);
         return string.Create(CultureInfo.InvariantCulture,
             $"Pulse model: RA pulses ×{e.RaPulseFactor:F2} ({Estimate(v.Ra)}), Dec pulses ×{e.DecPulseFactor:F2} ({Estimate(v.Dec)}), from {windows:F0} dithers");
+    }
+
+    /// <summary>The guide-log line of what the backlash play model learned: the play, where the gear is and what it held back.</summary>
+    public static string PlayModelText(PlayModelValues v)
+    {
+        string engaged = v.Engaged is { } d ? $"engaged {d}" : v.StateKnown ? "floating" : "position unknown";
+        string slack = v.StateKnown ? string.Create(CultureInfo.InvariantCulture, $", play left North {v.SlackNorthMs:F0} ms, South {v.SlackSouthMs:F0} ms") : "";
+        return string.Create(CultureInfo.InvariantCulture,
+            $"Backlash play model: full reversal {v.FullReversalMs:F0} ms ({v.Shape}), gear {engaged}{slack}; {v.Reversals} reversals, {v.HeldMoves} held, from {v.LearnedWindows:F1} take-ups");
     }
 
     private static GuideLogAlgorithm Summary(IGuideAlgorithm a)
