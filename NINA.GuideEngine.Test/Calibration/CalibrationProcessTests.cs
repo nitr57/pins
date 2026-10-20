@@ -81,6 +81,37 @@ public class CalibrationProcessTests
     }
 
     [Test]
+    public void TheDecReturnRecordsHowTheBacklashIsTakenUp()
+    {
+        var m = new KinematicMount { DeclinationDeg = 10.0, DecBacklashMs = 1500 };
+        var (_, updates) = CalibrationRunner.Run(m);
+        CalibrationData cal = updates[^1].Result!;
+
+        // the North leg ends with the gear engaged North: the South return first loses the 1500 ms of backlash
+        cal.DecTakeUp.Should().HaveCountGreaterThanOrEqualTo(3);
+        cal.DecTakeUp.Should().BeInAscendingOrder(p => p.PulseMs);
+        foreach (var p in cal.DecTakeUp)
+        {
+            p.MovedPx.Should().BeApproximately(Math.Max(0, p.PulseMs - 1500) * m.DecRatePxPerMs, 1e-6);
+        }
+
+        var play = new NINA.GuideEngine.Algorithms.PlayModelBacklash();
+        play.SeedFromCalibration(cal.DecTakeUp, cal.YRate).Should().BeTrue();
+        play.PriorFullReversalMs.Should().BeApproximately(1500, 100);
+    }
+
+    [Test]
+    public void WithoutBacklashTheDecReturnMovesFromTheFirstPulse()
+    {
+        var m = new KinematicMount { DeclinationDeg = 10.0 };
+        var (_, updates) = CalibrationRunner.Run(m);
+        CalibrationData cal = updates[^1].Result!;
+
+        cal.DecTakeUp.Should().NotBeEmpty();
+        cal.DecTakeUp[0].MovedPx.Should().BeApproximately(cal.DecTakeUp[0].PulseMs * m.DecRatePxPerMs, 1e-6);
+    }
+
+    [Test]
     public void OddParitiesFromMountCoordinates()
     {
         var m = new KinematicMount { OddRaParity = true, OddDecParity = true };

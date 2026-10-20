@@ -89,6 +89,13 @@ namespace NINA.INDI.Interfaces {
         /// </summary>
         void SetSlewRateValue(double rateDps);
         void PulseGuide(GuideDirections direction, int duration);
+
+        /// <summary>
+        /// Why the driver rejected the last pulse sent on this direction's axis (an Alert on its timed-guide property),
+        /// or null when it did not; taken once.
+        /// </summary>
+        string TakeRejectedPulse(GuideDirections direction);
+
         Task ParkAsync(CancellationToken ct = default);
         void SetPark();
         void SetTrackingMode(TrackingMode mode);

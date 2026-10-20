@@ -55,6 +55,7 @@ public enum GuideErrorCode
     MountDisconnected = 306,
     PulseOutputFailed = 307,
     PierSideUnknown = 308,
+    PulseRejected = 309,
 
     // Camera 400-499
     CameraCaptureFailed = 400,
@@ -170,6 +171,9 @@ public static class GuideErrorCatalog
             "The mount or guide output disconnected.", "Reconnect the mount and restart guiding."),
         E(GuideErrorCode.PulseOutputFailed, GuideErrorSeverity.Warning, "Guide pulse failed",
             "A guide pulse could not be sent.", "Check the mount/guide port connection."),
+        E(GuideErrorCode.PulseRejected, GuideErrorSeverity.Warning, "Guide pulse rejected",
+            "The mount driver reported that it did not carry out a guide pulse; the guider counts it as not sent.",
+            "Check the driver log; a driver that rejects long pulses may need a smaller max pulse or backlash pulse."),
         E(GuideErrorCode.PierSideUnknown, GuideErrorSeverity.Warning, "Pier side unknown",
             "The mount does not report its pier side; meridian flips cannot be compensated automatically.",
             "Recalibrate after each meridian flip, or use a driver that reports pier side."),

@@ -1,0 +1,10 @@
+name: Build package pins-plugin-luckycapture
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    uses: ./.github/workflows/build-single-package.yml
+    with:
+      package_key: plugin-luckycapture

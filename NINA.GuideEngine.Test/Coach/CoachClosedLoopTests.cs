@@ -151,12 +151,14 @@ public class CoachClosedLoopTests
     [TestCase(DecGuideMode.Auto, false)]
     [TestCase(DecGuideMode.Auto, true)]
     [TestCase(DecGuideMode.Drift, false)]
-    public async Task Large_backlash_and_a_steady_dec_drift_suggest_the_drift_mode(DecGuideMode current, bool compensation)
+    [TestCase(DecGuideMode.Auto, false, true, TestName = "Large_backlash_and_a_steady_dec_drift_suggest_the_drift_mode, not the play model")]
+    public async Task Large_backlash_and_a_steady_dec_drift_suggest_the_drift_mode(DecGuideMode current, bool compensation, bool predictive = false)
     {
         var mount = new MountSimConfig { DecBacklashArcsec = 12.0, DecDriftArcsecPerMin = 1.5, RandomWalkArcsecPerSqrtSec = 0.01 };
         var h = new Harness(Quiet(mount, seeing: 0.3), s => s with
         {
             DecGuideMode = current,
+            DecAlgorithm = predictive ? new AlgorithmSettings(GuideAlgorithmKind.Predictive) : s.DecAlgorithm,
             Backlash = s.Backlash with { Enabled = compensation, PulseMs = compensation ? 1500 : s.Backlash.PulseMs },
         });
         var status = await h.RunFromGuiding(new CoachOptions { Steps = [CoachStepNames.Drift, CoachStepNames.MountResponse], DriftSeconds = 120 });
@@ -186,6 +188,27 @@ public class CoachClosedLoopTests
         }
 
         finding.Message.Should().Contain("one direction only, following the drift");
+    }
+
+    [Test]
+    public async Task Large_backlash_without_drift_and_Predictive_Dec_suggests_the_play_model()
+    {
+        var mount = new MountSimConfig { DecBacklashArcsec = 12.0, RandomWalkArcsecPerSqrtSec = 0.01 };
+        var h = new Harness(Quiet(mount, seeing: 0.3), s => s with { DecAlgorithm = new AlgorithmSettings(GuideAlgorithmKind.Predictive) });
+        var status = await h.RunFromGuiding(new CoachOptions { Steps = [CoachStepNames.Drift, CoachStepNames.MountResponse], DriftSeconds = 120 });
+
+        status.Phase.Should().Be(CoachPhases.Complete, status.Message);
+        h.AssertRestoredAndGuiding();
+        var r = status.Response!;
+        TestContext.Out.WriteLine($"backlash {r.BacklashMs} ms, after a long move {r.LargeMoveBacklashMs} ms (truth {mount.DecBacklashMs:F0} ms)");
+        status.Findings.Should().NotContain(f => f.Code == CoachCodes.DriftDecGuideMode, "no Dec drift to follow");
+        var blc = status.Findings.Single(f => f.Code == CoachCodes.ResponseDecBacklash);
+        TestContext.Out.WriteLine(blc.Message);
+        blc.Parameters["playModel"].Should().Be(true);
+        blc.Changes.Should().Contain(new CoachSettingChange(CoachSettingNames.BacklashModel, "PlayModel", "Fixed"));
+        blc.Changes.Should().Contain(c => c.Name == CoachSettingNames.BacklashCompensation && c.Value == "true");
+        blc.Changes.Single(c => c.Name == CoachSettingNames.BacklashPulseMs).Value
+            .Should().Be(CoachSettingsMap.Format((int)(Math.Floor(Math.Min(r.BacklashMs!.Value, 8000) / 10) * 10)), "the guiding value seeds the model");
     }
 
     [Test]

@@ -23,13 +23,14 @@ public static class CoachSettingNames
     public const string DecAlgorithm = "DecAlgorithm";
     public const string BacklashCompensation = "BacklashCompensation";
     public const string BacklashPulseMs = "BacklashPulseMs";
+    public const string BacklashModel = "BacklashModel";
     public const string MaxRaDurationMs = "MaxRaDurationMs";
     public const string MaxDecDurationMs = "MaxDecDurationMs";
 
     public static IReadOnlyList<string> All { get; } =
     [
         ExposureSeconds, Gain, Binning, MultiStar, RaAggression, RaHysteresis, RaMinMove, DecAggression, DecMinMove, DecGuideMode, DecAlgorithm,
-        BacklashCompensation, BacklashPulseMs, MaxRaDurationMs, MaxDecDurationMs,
+        BacklashCompensation, BacklashPulseMs, BacklashModel, MaxRaDurationMs, MaxDecDurationMs,
     ];
 }
 
@@ -68,6 +69,7 @@ public static class CoachSettingsMap
             CoachSettingNames.DecAlgorithm => AlgorithmName(s.DecAlgorithm.Kind),
             CoachSettingNames.BacklashCompensation => Format(s.Backlash.Enabled),
             CoachSettingNames.BacklashPulseMs => Format(s.Backlash.PulseMs),
+            CoachSettingNames.BacklashModel => s.Backlash.Model.ToString(),
             CoachSettingNames.MaxRaDurationMs => Format(s.MaxRaDurationMs),
             CoachSettingNames.MaxDecDurationMs => Format(s.MaxDecDurationMs),
             _ => null,
@@ -159,6 +161,13 @@ public static class CoachSettingsMap
                 return s with { Backlash = s.Backlash with { Enabled = Bool(name, value) } };
             case CoachSettingNames.BacklashPulseMs:
                 return s with { Backlash = s.Backlash with { PulseMs = Math.Max(0, Int(name, value)) } };
+            case CoachSettingNames.BacklashModel:
+                if (!Enum.TryParse<BacklashModel>(value, true, out var model) || !Enum.IsDefined(model))
+                {
+                    throw new ArgumentException($"{name}: invalid value '{value}'");
+                }
+
+                return s with { Backlash = s.Backlash with { Model = model } };
             case CoachSettingNames.MaxRaDurationMs:
                 return s with { MaxRaDurationMs = Math.Max(1, Int(name, value)) };
             case CoachSettingNames.MaxDecDurationMs:

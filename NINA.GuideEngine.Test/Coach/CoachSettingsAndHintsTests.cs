@@ -81,6 +81,94 @@ public class CoachSettingsAndHintsTests
     }
 
     [Test]
+    public void Settings_map_reads_and_writes_the_backlash_model()
+    {
+        var s = new GuiderSettings { Backlash = new BacklashSettings { Enabled = true, PulseMs = 450 } };
+        CoachSettingsMap.GetValue(s, CoachSettingNames.BacklashModel).Should().Be("Fixed");
+        CoachSettingNames.All.Should().ContainInConsecutiveOrder(CoachSettingNames.BacklashPulseMs, CoachSettingNames.BacklashModel);
+
+        var play = CoachSettingsMap.Apply(s, [new(CoachSettingNames.BacklashModel, "playmodel")]);
+        play.Backlash.Should().Be(new BacklashSettings { Enabled = true, PulseMs = 450, Model = BacklashModel.PlayModel });
+        CoachSettingsMap.GetValue(play, CoachSettingNames.BacklashModel).Should().Be("PlayModel");
+
+        var back = CoachSettingsMap.Apply(play, [new(CoachSettingNames.BacklashModel, CoachSettingsMap.GetValue(s, CoachSettingNames.BacklashModel)!)]);
+        back.Should().Be(s);
+        CoachSettingsMap.TryApply(s, [new(CoachSettingNames.BacklashModel, "Elastic")], out _, out var error).Should().BeFalse();
+        error.Should().Contain(CoachSettingNames.BacklashModel);
+    }
+
+    [TestCase(600, 1200, 600, "soft", TestName = "Soft play: the model")]
+    [TestCase(4000, 4200, 4000, "large", TestName = "Large play above the fixed pulse's 3 s: the model")]
+    [TestCase(9000, null, 8000, "large", TestName = "Play beyond the model's sizes: the largest prior")]
+    public void Soft_or_large_backlash_with_Predictive_suggests_the_play_model(double ms, double? largeMoveMs, int pulseMs, string reason)
+    {
+        var p = new Dictionary<string, object?>();
+        var changes = GuidingCoach.BacklashSuggestion(ms, largeMoveMs, fits: true, GuideAlgorithmKind.Predictive, p);
+
+        changes.Should().Equal(
+            (CoachSettingNames.BacklashCompensation, "true"),
+            (CoachSettingNames.BacklashModel, "PlayModel"),
+            (CoachSettingNames.BacklashPulseMs, CoachSettingsMap.Format(pulseMs)));
+        p["playModel"].Should().Be(true, "a boolean: the UI adds a note for it");
+        p["playReason"].Should().Be(reason);
+        p.Should().NotContainKey("playModelNeedsPredictive");
+    }
+
+    [Test]
+    public void Soft_backlash_without_Predictive_keeps_the_fixed_pulse_and_says_why()
+    {
+        var p = new Dictionary<string, object?> { ["ms"] = 600.0, ["arcsec"] = 1.8, ["largeMoveMs"] = 1200.0 };
+        var changes = GuidingCoach.BacklashSuggestion(600, 1200, fits: true, GuideAlgorithmKind.ResistSwitch, p);
+
+        changes.Should().Equal((CoachSettingNames.BacklashCompensation, "true"), (CoachSettingNames.BacklashPulseMs, "600"));
+        p.Should().NotContainKey("playModel");
+        p["playReason"].Should().Be("soft");
+        p["playModelNeedsPredictive"].Should().Be(true);
+        CoachFindings.MessageFor(CoachCodes.ResponseDecBacklash, p).Should().EndWith("needs the Predictive Dec algorithm.");
+
+        // above the fixed pulse's range nothing is suggested: switching the algorithm is not the coach's call here, but
+        // the note says that the play model would fit
+        var large = new Dictionary<string, object?> { ["ms"] = 4000.0, ["arcsec"] = 12.0, ["largeMoveMs"] = 4200.0 };
+        GuidingCoach.BacklashSuggestion(4000, 4200, fits: true, GuideAlgorithmKind.ResistSwitch, large).Should().BeEmpty();
+        large.Should().NotContainKey("playModel");
+        large["playReason"].Should().Be("large");
+        large["playModelNeedsPredictive"].Should().Be(true);
+        CoachFindings.MessageFor(CoachCodes.ResponseDecBacklash, large).Should().EndWith("needs the Predictive Dec algorithm.");
+    }
+
+    [TestCase(500, 520.0, TestName = "Hard play")]
+    [TestCase(500, null, TestName = "Hard play, no large-move value")]
+    public void Small_hard_backlash_keeps_the_fixed_pulse(double ms, double? largeMoveMs)
+    {
+        var p = new Dictionary<string, object?>();
+        var changes = GuidingCoach.BacklashSuggestion(ms, largeMoveMs, fits: true, GuideAlgorithmKind.Predictive, p);
+
+        changes.Should().Equal((CoachSettingNames.BacklashCompensation, "true"), (CoachSettingNames.BacklashPulseMs, "500"));
+        p.Should().BeEmpty();
+    }
+
+    [Test]
+    public void No_backlash_suggestion_outside_Auto_or_next_to_the_drift_mode()
+    {
+        var p = new Dictionary<string, object?>();
+        GuidingCoach.BacklashSuggestion(1500, 2500, fits: false, GuideAlgorithmKind.Predictive, p).Should().BeEmpty();
+        GuidingCoach.BacklashSuggestion(80, 300, fits: true, GuideAlgorithmKind.Predictive, p).Should().BeEmpty("below 100 ms");
+        p.Should().BeEmpty();
+    }
+
+    [Test]
+    public void Play_model_message_names_both_backlash_values()
+    {
+        var soft = new Dictionary<string, object?> { ["ms"] = 600.0, ["largeMoveMs"] = 1200.0, ["playModel"] = true, ["playReason"] = "soft" };
+        CoachFindings.MessageFor(CoachCodes.ResponseDecBacklash, soft).Should().Be(
+            "Dec backlash varies with the preceding move (about 600 ms after small corrections, 1200 ms after a long move): " +
+            "the play model tracks the gear inside its play and compensates what is left.");
+
+        var large = new Dictionary<string, object?>(soft) { ["ms"] = 4000.0, ["largeMoveMs"] = 4200.0, ["playReason"] = "large" };
+        CoachFindings.MessageFor(CoachCodes.ResponseDecBacklash, large).Should().StartWith("Dec backlash is large (about 4000 ms");
+    }
+
+    [Test]
     public void Live_hints_flag_oscillation_rate_limited_and_dismissable()
     {
         var hints = new LiveHintAnalyser();

@@ -513,3 +513,32 @@ the drift is significant after 3.7 minutes (5.2 ± 1.0 mpx/s), Drift would have 
 it for 44 minutes; the estimate stays positive all hour (median 7.1 mpx/s, 1.3″/min) and no dead band is learned.
 Another night, guided South with Resist Switch: South after 4.8 minutes, kept all session (median 8.2 mpx/s). The
 open-loop drift is a little faster than the net South corrections per hour (≈ 1″/min): those also carry the dithers.
+
+## Dec backlash play model
+
+`PlayModelBacklash` (not in PHD2; Dec backlash model `PlayModel`, Predictive Dec algorithm only) replaces PHD2's fixed
+pulse at every reversal. Derivation, the 2026-10-12 log behind it, the variants dropped and the results:
+[PLAY-MODEL-BACKLASH.md](notes/PLAY-MODEL-BACKLASH.md).
+
+- **State.** The Dec gear is a Prandtl-Ishlinskii superposition of play operators (Brokate & Sprekels 1996); every Dec
+  pulse moves it, so the play left towards North and South is known after small wobbles as after long moves.
+- **Hypotheses.** No play, and the shapes hard, medium, soft (and the one a calibration measured) at sizes of the full
+  reversal from 62.5 ms to 8 s, each with its own gear position; a posterior over them, tempered by 0.95 per take-up.
+- **Learning.** Every pulse that takes up play opens a 6-frame window; each frame's motion since the window started is
+  compared with every hypothesis, with the covariance of white noise (the start's common to all) and of a wander since
+  the start, both estimated from the open-loop changes over one and two frames. The calibration's South return after
+  the North leg (`CalibrationData.DecTakeUp`) fits a shape of its own on the simplex.
+- **Compensation.** The 0.3 quantile over the posterior of the motor time a pulse needs beyond the motion asked for
+  (the piecewise linear inverse, Kuhnen 2003), at most to the max Dec pulse; the algorithm is told the motion expected,
+  not the pulse minus the compensation.
+- **Gate** (`ReversalGate`). A pulse whose direction still has ≥ 60 ms of play to take up goes out only when the offset
+  needs it: a one-sided CUSUM per side on offset / σ with k = 0.5, h = 7 (Page 1954), or at once beyond 4 σ. Held, it
+  would only have moved the gear inside its play.
+
+*Simulator results* (`PlayModelBacklashLoopTests`, Dec-only closed loop with an elastic multi-stage gear, dithers every
+5 minutes, 1 h, mean of 5 seeds, Predictive): with the Dec wander of the 2026-10-12 log the Dec RMS goes from 0.252 px
+without compensation and 0.246 px with the fixed 900 ms to 0.220 px, reversals from about 700 to 210 per hour; on the
+logged mount's play without that wander from 0.179 to 0.161 px with about 25 instead of 1300 reversals per hour; a hard
+600 ms play from 0.206 to 0.170 px (guiding between dithers 0.148 → 0.104 px), a hard 2 s play with drift from 0.261 to
+0.178 px (dithers settle in 2.0 frames instead of 4.0); without backlash unchanged (0.139 / 0.142 px). With PHD2's
+algorithms the guiding between dithers was worse on a hard play, so they keep the fixed compensation.

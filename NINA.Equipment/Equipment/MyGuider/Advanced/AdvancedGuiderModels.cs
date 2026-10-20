@@ -192,6 +192,45 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
         /// Null while the compensation is off or the guider isn't connected.
         /// </summary>
         public int? DecBacklashPulseMs { get; set; }
+
+        /// <summary>What the Dec backlash play model knows, while it compensates (Dec backlash model PlayModel); null otherwise.</summary>
+        public AdvancedDecBacklashState? DecBacklash { get; set; }
+    }
+
+    /// <summary>
+    /// State of the Dec backlash play model: the play of the Dec gear it learned, where the gear is inside it, and what it
+    /// held back.
+    /// </summary>
+    public class AdvancedDecBacklashState {
+        /// <summary>Play a reversal from a fully engaged gear takes up (ms of pulse at the guide rate).</summary>
+        public double FullReversalMs { get; set; }
+
+        /// <summary>Play left before a North pulse moves the star (ms); null while the gear's position is unknown.</summary>
+        public double? SlackNorthMs { get; set; }
+
+        /// <summary>Play left before a South pulse moves the star (ms); null while the gear's position is unknown.</summary>
+        public double? SlackSouthMs { get; set; }
+
+        /// <summary>North or South when the gear rests against that side, Floating inside the play, Unknown before a move.</summary>
+        public string Gear { get; set; }
+
+        /// <summary>Most probable shape of the play: None, Hard, Medium, Soft or Calibrated.</summary>
+        public string Shape { get; set; }
+
+        /// <summary>True when a calibration measured the shape of the play.</summary>
+        public bool ShapeFromCalibration { get; set; }
+
+        /// <summary>Dec reversals made since the guider was connected.</summary>
+        public int Reversals { get; set; }
+
+        /// <summary>Corrections held back because they would only have crossed the play while the error was seeing.</summary>
+        public int HeldCorrections { get; set; }
+
+        /// <summary>Take-ups of the play learned from (older ones count less).</summary>
+        public double LearnedTakeUps { get; set; }
+
+        /// <summary>Compensation added to the last Dec pulse (ms).</summary>
+        public int LastCompensationMs { get; set; }
     }
 
     /// <summary>State of Dec guide mode Drift, which guides Dec in one direction only: the one that counters the measured drift.</summary>

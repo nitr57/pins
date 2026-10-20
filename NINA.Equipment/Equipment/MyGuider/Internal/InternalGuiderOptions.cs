@@ -124,8 +124,8 @@ internal sealed class InternalGuiderOptions
         new("SaturationAdu", "Saturation ADU", "Stars", "int", "0", Min: 0, Max: 65535, Description: "0 = detect saturation from the star profile."),
 
         // Algorithms
-        new("RaAlgorithm", "RA algorithm", "Algorithms", "enum", "Hysteresis", Basic: true, Options: RaAlgorithms, Description: AlgorithmDescription,
-            Phd2Fallback: s => AlgorithmName(s.PHD2GuideAlgorithmRA, RaAlgorithms)),
+        new("RaAlgorithm", "RA algorithm", "Algorithms", "enum", "Predictive", Basic: true, Options: RaAlgorithms, Description: AlgorithmDescription,
+            Phd2Fallback: s => AlgorithmName(s.PHD2GuideAlgorithmRA, RaAlgorithms, phd2Default: "Hysteresis")),
         new("RaAggression", "RA aggression", "Algorithms", "double", "0.7", Basic: true, Min: 0, Max: 1, Description: "Share of the error corrected per frame (0..1).",
             Phd2Fallback: s => s.PHD2RAAggressiveness?.ToString(Inv), DependsOn: "RaAlgorithm", AppliesTo: RaAggressionAlgorithms),
         new("RaHysteresis", "RA hysteresis", "Algorithms", "double", "0.1", Min: 0, Max: 0.5, Phd2Fallback: s => s.PHD2RAHysteresis?.ToString(Inv),
@@ -142,8 +142,8 @@ internal sealed class InternalGuiderOptions
             Description: "Teeth of the RA worm wheel (e.g. 180 on an EQ6-R, 135 on an HEQ5); gives the exact worm period. 0 = detect the period from the guide frames."),
         new("ForgetPeriodicError", "Forget periodic error", "Algorithms", "action", "", DependsOn: "RaAlgorithm", AppliesTo: PredictiveAlgorithms,
             Description: "Forgets the periodic error learned for this mount, e.g. after the worm was adjusted; it is then learned anew."),
-        new("DecAlgorithm", "Dec algorithm", "Algorithms", "enum", "ResistSwitch", Basic: true, Options: DecAlgorithms, Description: AlgorithmDescription,
-            Phd2Fallback: s => AlgorithmName(s.PHD2GuideAlgorithmDec, DecAlgorithms)),
+        new("DecAlgorithm", "Dec algorithm", "Algorithms", "enum", "Predictive", Basic: true, Options: DecAlgorithms, Description: AlgorithmDescription,
+            Phd2Fallback: s => AlgorithmName(s.PHD2GuideAlgorithmDec, DecAlgorithms, phd2Default: "ResistSwitch")),
         new("DecAggression", "Dec aggression", "Algorithms", "double", "1.0", Basic: true, Min: 0, Max: 1, Phd2Fallback: s => s.PHD2DecAggressiveness?.ToString(Inv),
             DependsOn: "DecAlgorithm", AppliesTo: DecAggressionAlgorithms),
         new("DecHysteresis", "Dec hysteresis", "Algorithms", "double", "0.1", Min: 0, Max: 0.5, Phd2Fallback: s => s.PHD2DecHysteresis?.ToString(Inv),
@@ -170,6 +170,18 @@ internal sealed class InternalGuiderOptions
                 "Only with mounts that time both axes separately (pins' native OnStepX driver); other mounts keep pulsing one after the other."),
         new("BacklashCompensation", "Dec backlash compensation", "Algorithms", "bool", "false"),
         new("BacklashPulseMs", "Dec backlash pulse", "Algorithms", "int", "20", Unit: "ms", Min: 20, Max: 8000),
+        new("BacklashModel", "Dec backlash model", "Algorithms", "enum", "Fixed", Options: ["Fixed", "PlayModel"],
+            DependsOn: "BacklashCompensation", AppliesTo: ["true"],
+            Description: "Fixed adds the Dec backlash pulse at every Dec reversal and adjusts it slowly, as PHD2 does. Play model tracks " +
+                "where the Dec gear is inside its play: while the error is only seeing it holds back corrections that would just cross " +
+                "the play, and a needed reversal is lengthened by the play that is left. It learns the size and shape of the play " +
+                "from the calibration and from every reversal, also when the play changes over the night, and the Dec backlash " +
+                "pulse is only its first guess. It needs the Predictive Dec algorithm; with the other algorithms the fixed pulse is used."),
+        new("BacklashRemeasureAfterSlewDeg", "Re-measure Dec play after a slew of", "Algorithms", "double", "5", Unit: "°", Min: 0, Max: 180,
+            DependsOn: "BacklashModel", AppliesTo: ["PlayModel"],
+            Description: "When guiding starts after the mount moved farther than this or changed pier side, the play model measures " +
+                "the play again first: Dec pulses North until the star follows, then South back to the start. The gear then rests " +
+                "on a known side and the model knows the play at the new target. Takes about 10 to 20 guide frames. 0 = never."),
         new("PulseModel", "Pulse model", "Algorithms", "bool", "true",
             Description: "Learns from the dithers how far a guide pulse really moves the star on each axis, and sizes the pulses by " +
                 "it, so a calibration that is off no longer makes the guiding over- or under-correct. It starts as calibrated, " +
@@ -486,7 +498,13 @@ internal sealed class InternalGuiderOptions
             MaxDecDurationMs = GetInt("MaxDecDurationMs"),
             MinPulseMs = GetInt("MinPulseMs"),
             SimultaneousPulses = GetBool("SimultaneousPulses"),
-            Backlash = new BacklashSettings { Enabled = GetBool("BacklashCompensation"), PulseMs = GetInt("BacklashPulseMs") },
+            Backlash = new BacklashSettings
+            {
+                Enabled = GetBool("BacklashCompensation"),
+                PulseMs = GetInt("BacklashPulseMs"),
+                Model = GetString("BacklashModel") == nameof(BacklashModel.PlayModel) ? BacklashModel.PlayModel : BacklashModel.Fixed,
+                RemeasureAfterSlewDeg = GetDouble("BacklashRemeasureAfterSlewDeg"),
+            },
             PulseModel = GetBool("PulseModel"),
             DitherMode = GetString("DitherMode") == "Spiral" ? DitherMode.Spiral : DitherMode.Random,
             DitherScale = GetDouble("DitherScale"),
@@ -551,7 +569,9 @@ internal sealed class InternalGuiderOptions
 
     private static string? Bool(bool? b) => b is null ? null : b.Value ? "true" : "false";
 
-    private static string? AlgorithmName(string? phd2Name, string[] allowed)
+    // every profile has PHD2's default algorithm unless it was changed, so it is no choice to carry over: the internal
+    // guider's own default applies
+    private static string? AlgorithmName(string? phd2Name, string[] allowed, string phd2Default)
     {
         if (string.IsNullOrWhiteSpace(phd2Name))
         {
@@ -559,6 +579,11 @@ internal sealed class InternalGuiderOptions
         }
 
         var n = phd2Name.Replace(" ", string.Empty).Replace("-", string.Empty);
+        if (string.Equals(n, phd2Default, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
         return allowed.FirstOrDefault(a => string.Equals(a, n, StringComparison.OrdinalIgnoreCase));
     }
 }

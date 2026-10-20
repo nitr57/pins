@@ -116,6 +116,10 @@ public sealed partial class Guider : IAsyncDisposable
     private double lastGoodMass;
     private double lastGoodSnr;
     private DateTimeOffset lastSlowAlert = DateTimeOffset.MinValue;
+
+    // a driver that rejects pulses may do so at every Dec reversal: alert once per interval, with the count
+    private DateTimeOffset lastPulseRejectedAlert = DateTimeOffset.MinValue;
+    private int pulsesRejectedSinceAlert;
     private GuideErrorInfo? lastError;
     private GuidingStatsSnapshot? lastStats;
     private readonly CycleTimer cycleTimer = new();
@@ -470,6 +474,7 @@ public sealed partial class Guider : IAsyncDisposable
         settle.Cancel();
         recenter.Cancel();
         calibrationProcess = null;
+        CancelPlayProbe();
         fullPause = false;
         userPaused = false;
         Emit(new GuidingStoppedEvent(clock.UtcNow));
@@ -774,6 +779,7 @@ public sealed partial class Guider : IAsyncDisposable
             settle.Cancel();
             recenter.Cancel();
             calibrationProcess = null;
+            CancelPlayProbe();
             ClearRequests();
             CompletePending(SettleResult.Failed(state == GuiderState.Failed ? lastError?.Code ?? GuideErrorCode.Internal : GuideErrorCode.None, "guiding stopped"));
             OnLoopEndedForCoach(ct.IsCancellationRequested);
@@ -892,26 +898,40 @@ public sealed partial class Guider : IAsyncDisposable
             {
                 coachPulsesDropped = IsCoachMeasuring;
                 pulseModel.Interrupt(mountMoved: true);
+
+                PlayModelPulsesNotSent();
                 return;
             }
 
             framePulses = pulses;
             cycleTimer.PulsesStarting(clock.UtcNow);
-            bool sent = await IssuePulsesAsync(pulses, ct).ConfigureAwait(false);
+            var sent = await IssuePulsesAsync(pulses, ct).ConfigureAwait(false);
             cycleTimer.PulsesDone(clock.UtcNow);
-            if (sent && pendingCorrection is { } applied)
+
+            // per axis: a rejected RA pulse leaves the Dec pulse sent, its correction applied and the Dec gear tracked
+            bool raSent = sent.Any(p => p.Direction.Axis() == GuideAxis.Ra);
+            bool decSent = sent.Any(p => p.Direction.Axis() == GuideAxis.Dec);
+            if (pendingCorrection is { } applied && sent.Count > 0)
             {
-                corrector.CorrectionsApplied(applied.RaPx, applied.DecPx);
-                decDrift.CorrectionApplied(applied.DecPx);
+                corrector.CorrectionsApplied(raSent ? applied.RaPx : 0, decSent ? applied.DecPx : 0);
+                if (decSent)
+                {
+                    decDrift.CorrectionApplied(applied.DecPx);
+                }
             }
 
-            if (sent)
+            if (sent.Count == pulses.Count)
             {
                 PulseModelPulsesSent(pulses);
             }
             else
             {
-                pulseModel.Interrupt(mountMoved: false);
+                // a Dec pulse the pulse model does not see moved the gear: its last Dec direction is no longer known
+                pulseModel.Interrupt(mountMoved: decSent);
+                if (pulses.Any(p => p.Direction.Axis() == GuideAxis.Dec && !sent.Contains(p)))
+                {
+                    PlayModelPulsesNotSent();
+                }
             }
         }
     }
@@ -1085,7 +1105,11 @@ public sealed partial class Guider : IAsyncDisposable
             var adj = AdjustCalibration(calibration, snapshot);
             if (adj.IsValid)
             {
-                EnterGuiding(starPosition, adj, now);
+                if (!StartPlayProbe(starPosition, adj, snapshot, now, out pulses))
+                {
+                    EnterGuiding(starPosition, adj, now);
+                }
+
                 return;
             }
 
@@ -1124,6 +1148,11 @@ public sealed partial class Guider : IAsyncDisposable
 
     private MultiStarFrameResult CalibratingFrame(GuideFrame frame, MountSnapshot snapshot, DateTimeOffset now, out IReadOnlyList<PulseCommand> pulses)
     {
+        if (playProbe is not null)
+        {
+            return PlayProbeFrame(frame, snapshot, now, out pulses);
+        }
+
         var r = tracker.ProcessFrame(frame, GuidePoint.Invalid, TrackerState.Looping, now);
         var pos = r.StarFound ? r.Primary.Position : GuidePoint.Invalid;
         if (!r.StarFound)
@@ -1201,8 +1230,15 @@ public sealed partial class Guider : IAsyncDisposable
 
             Emit(new CalibrationCompleteEvent(now, MountName, result));
             Emit(new CalibrationUpdatedEvent(now, result, settings.DecFlipRequired));
+
+            // what the Dec algorithm learned with the previous calibration may come from corrections in the wrong direction
+            // (pins log 2026-10-19: after a Dec runaway Predictive kept a wander of 30 and a gain of 0.97 learned from
+            // errors of 270 px, and chased the seeing with every frame)
+            corrector.DecAlgorithm.Reset();
+            PlayModelCalibrated(result, snapshot, now);
             var adj = AdjustCalibration(result, snapshot);
             EnterGuiding(starPosition.IsValid ? starPosition : lastStarPosition, adj, now);
+            PlayModelAfterCalibration(result);
             return [];
         }
 
@@ -1211,10 +1247,18 @@ public sealed partial class Guider : IAsyncDisposable
 
     private void FailCalibration(GuideErrorCode code, string? reason, DateTimeOffset now)
     {
+        // the Dec play measurement before guiding (Guider.PlayModel.cs) fails the start as a calibration would, but no
+        // calibration failed
+        bool calibrating = playProbe is null;
         calibrationProcess = null;
+        CancelPlayProbe();
         ClearRequests();
         Alert(code, reason);
-        Emit(new CalibrationFailedEvent(now, MountName, reason ?? GuideErrorCatalog.Get(code).Title, code));
+        if (calibrating)
+        {
+            Emit(new CalibrationFailedEvent(now, MountName, reason ?? GuideErrorCatalog.Get(code).Title, code));
+        }
+
         SetState(tracker.IsLocked ? GuiderState.Selected : GuiderState.Looping);
         CompletePending(SettleResult.Failed(code, reason));
     }
@@ -1451,17 +1495,21 @@ public sealed partial class Guider : IAsyncDisposable
                     int raMs = SignedMs(corr.RADuration, corr.RADirection);
                     int decMs = decObserved ? 0 : SignedMs(corr.DECDuration, corr.DECDirection);
                     var verdict = runaway.Record(now, mountOfs.X, raMs, decObserved ? 0 : mountOfs.Y, decMs, out var axis);
-                    if (verdict == SafetyVerdict.Runaway && axis == GuideAxis.Dec && flipTime is { } ft && now - ft < FlipRunawayWindow && !flipInverted
-                        && settings.VerifyDecAfterFlip)
+                    if (verdict == SafetyVerdict.Runaway && axis == GuideAxis.Dec && runaway.Cause == RunawayCause.ErrorGrowing
+                        && flipTime is { } ft && now - ft < FlipRunawayWindow && !flipInverted && settings.VerifyDecAfterFlip)
                     {
-                        // shortly after a meridian flip a Dec runaway is almost certainly a wrong Dec-flip setting:
-                        // invert Dec once instead of stopping; a second runaway stops guiding
+                        // shortly after a meridian flip a Dec error that keeps growing is almost certainly a wrong Dec-flip
+                        // setting: invert Dec once instead of stopping; a second runaway stops guiding. A runaway on the
+                        // pulse duty alone is no such evidence: Dec corrections swinging between North and South (a play
+                        // taken up on every reversal) keep the error small, and inverting then breaks a right setting
                         InvertDecAfterFlip(now);
                         corrPulses.RemoveAll(p => p.Direction.Axis() == GuideAxis.Dec);
                         runaway.Reset();
                     }
                     else if (verdict == SafetyVerdict.Runaway)
                     {
+                        // what the axis' algorithm learned while the corrections ran away does not describe the mount
+                        (axis == GuideAxis.Dec ? corrector.DecAlgorithm : corrector.RaAlgorithm).Reset();
                         Fail(GuideErrorCode.RunawayDetected, $"{axis} axis");
                         return r;
                     }
@@ -1482,7 +1530,7 @@ public sealed partial class Guider : IAsyncDisposable
                 }
 
                 pulses = corrPulses;
-                pendingCorrection = AxisCorrector.CorrectionOf(corrPulses, rates.X, rates.Y, corr.BacklashCompMs);
+                pendingCorrection = corrector.CorrectionOf(corr, corrPulses, rates.X, rates.Y);
                 stats.Add(GuideStepSample.FromCorrection(corr, now, r.Primary.Snr, r.StarsUsed, excluded: settle.IsActive || recenterMove));
                 lastStats = stats.GetSnapshot(now);
                 if (!settle.IsActive && !recenterMove)
@@ -1492,6 +1540,7 @@ public sealed partial class Guider : IAsyncDisposable
             }
 
             EmitAlgorithmNotes(now);
+            EmitPlayModelLearned(now);
 
             // the pulses as sent: a recenter pulse is clamped to the max pulse after the corrector computed it
             int raSentMs = pulses.Where(p => p.Direction.Axis() == GuideAxis.Ra).Sum(p => p.DurationMs);
@@ -1783,6 +1832,7 @@ public sealed partial class Guider : IAsyncDisposable
             corrector.GuidingStopped();
             pulseModel.Interrupt(mountMoved: true);
             calibrationProcess = null;
+            CancelPlayProbe();
             settle.Cancel();
             recenter.Cancel();
             Emit(new GuidingStoppedEvent(clock.UtcNow));
@@ -1892,25 +1942,73 @@ public sealed partial class Guider : IAsyncDisposable
         _ => GuideErrorCode.MountDisconnected,
     };
 
-    /// <summary>Sends the pulses; false when the guide output failed.</summary>
-    private async Task<bool> IssuePulsesAsync(IReadOnlyList<PulseCommand> pulses, CancellationToken ct)
+    /// <summary>
+    /// Sends the pulses and returns those the mount carried out: a pulse the mount rejected is left out and the other axis
+    /// still gets its pulse; after a failed guide output no further pulse is sent.
+    /// </summary>
+    private async Task<IReadOnlyList<PulseCommand>> IssuePulsesAsync(IReadOnlyList<PulseCommand> pulses, CancellationToken ct)
     {
-        try
+        var errors = new Exception?[pulses.Count];
+        if (settings.SimultaneousPulses && output.SupportsSimultaneousPulses && pulses.Count > 1)
         {
-            if (settings.SimultaneousPulses && output.SupportsSimultaneousPulses && pulses.Count > 1)
+            errors = await Task.WhenAll(pulses.Select(p => TryPulseAsync(p, ct))).ConfigureAwait(false);
+        }
+        else
+        {
+            for (int i = 0; i < pulses.Count; i++)
             {
-                await Task.WhenAll(pulses.Select(p => output.PulseAsync(p.Direction, p.DurationMs, ct))).ConfigureAwait(false);
+                errors[i] = await TryPulseAsync(pulses[i], ct).ConfigureAwait(false);
+                if (errors[i] is { } error && error is not PulseRejectedException)
+                {
+                    // the output failed: the pulses after it are not sent either
+                    errors.AsSpan(i + 1).Fill(error);
+                    break;
+                }
+            }
+        }
+
+        var sent = new List<PulseCommand>(pulses.Count);
+        Exception? failure = null;
+        for (int i = 0; i < pulses.Count; i++)
+        {
+            if (errors[i] is null)
+            {
+                sent.Add(pulses[i]);
+            }
+            else if (errors[i] is PulseRejectedException rejected)
+            {
+                // the output works, the mount did not move: not a step towards giving up on the output
+                PulseRejected(rejected.Message);
             }
             else
             {
-                foreach (var p in pulses)
-                {
-                    await output.PulseAsync(p.Direction, p.DurationMs, ct).ConfigureAwait(false);
-                }
+                failure ??= errors[i];
             }
+        }
 
+        if (failure is not null)
+        {
+            Alert(GuideErrorCode.PulseOutputFailed, failure.Message);
+            if (++pulseFailures >= settings.MaxPulseFailures)
+            {
+                Fail(GuideErrorCode.MountDisconnected, failure.Message);
+            }
+        }
+        else if (sent.Count > 0)
+        {
             pulseFailures = 0;
-            return true;
+        }
+
+        return sent;
+    }
+
+    // one pulse; the error when it was not carried out
+    private async Task<Exception?> TryPulseAsync(PulseCommand pulse, CancellationToken ct)
+    {
+        try
+        {
+            await output.PulseAsync(pulse.Direction, pulse.DurationMs, ct).ConfigureAwait(false);
+            return null;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -1918,14 +2016,22 @@ public sealed partial class Guider : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Alert(GuideErrorCode.PulseOutputFailed, ex.Message);
-            if (++pulseFailures >= settings.MaxPulseFailures)
-            {
-                Fail(GuideErrorCode.MountDisconnected, ex.Message);
-            }
-
-            return false;
+            return ex;
         }
+    }
+
+    private void PulseRejected(string reason)
+    {
+        pulsesRejectedSinceAlert++;
+        var now = clock.UtcNow;
+        if ((now - lastPulseRejectedAlert).TotalMinutes < 5)
+        {
+            return;
+        }
+
+        lastPulseRejectedAlert = now;
+        Alert(GuideErrorCode.PulseRejected, $"{reason} ({pulsesRejectedSinceAlert} rejected since the last alert)");
+        pulsesRejectedSinceAlert = 0;
     }
 
     #endregion
@@ -1963,7 +2069,8 @@ public sealed partial class Guider : IAsyncDisposable
         var limiter = new PulseLimiter();
         limiter.SetMaxRaDuration(s.MaxRaDurationMs);
         limiter.SetMaxDecDuration(s.MaxDecDurationMs);
-        var newCorrector = new AxisCorrector(ra, dec, limiter, CreateBacklash(s.Backlash, limiter))
+        var backlash = CreateBacklash(s, limiter);
+        var newCorrector = new AxisCorrector(ra, dec, limiter, backlash)
         {
             DecGuideMode = s.DecGuideMode,
             MinPulseMs = s.MinPulseMs,
@@ -2121,6 +2228,7 @@ public sealed partial class Guider : IAsyncDisposable
         settle.Cancel();
         recenter.Cancel();
         calibrationProcess = null;
+        CancelPlayProbe();
         ClearRequests();
         fullPause = false;
         userPaused = false;

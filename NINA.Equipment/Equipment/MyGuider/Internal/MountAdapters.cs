@@ -139,7 +139,8 @@ internal sealed class NinaMountState(ITelescopeMediator telescope, Func<bool>? p
 
 /// <summary>
 /// Pulse guiding through the connected NINA mount (any driver type). NINA's PulseGuide returns immediately for INDI
-/// mounts, so completion is awaited here: the nominal duration, then the driver's IsPulseGuiding flag.
+/// mounts, so completion is awaited here: the nominal duration, then the driver's IsPulseGuiding flag. A pulse an INDI
+/// driver rejected throws <see cref="PulseRejectedException"/> once it is over.
 /// </summary>
 internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOutput
 {
@@ -226,6 +227,11 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
             }
 
             await Task.Delay(pollInterval, ct).ConfigureAwait(false);
+        }
+
+        if (device is IndiTelescope indi && indi.TakeRejectedPulse(dir) is { } reason)
+        {
+            throw new PulseRejectedException(reason);
         }
     }
 }

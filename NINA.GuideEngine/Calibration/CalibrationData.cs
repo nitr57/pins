@@ -84,6 +84,13 @@ public sealed record CalibrationData
     /// </summary>
     public IReadOnlyList<CalibrationPoint> Points { get; init; } = [];
 
+    /// <summary>
+    /// Dec take-up after the reversal that ends the North leg (gear engaged North): South pulse time since the reversal and
+    /// the Dec motion it produced, per frame of the South return and nudges. Empty when Dec was not calibrated or for older
+    /// calibrations. The backlash play model measures the shape of the play from it.
+    /// </summary>
+    public IReadOnlyList<DecTakeUpPoint> DecTakeUp { get; init; } = [];
+
     /// <summary>Calibration pulse duration used, ms.</summary>
     public int CalibrationStepMs { get; init; }
 
@@ -104,3 +111,8 @@ public sealed record CalibrationData
 /// <param name="X">Star x (camera px).</param>
 /// <param name="Y">Star y (camera px).</param>
 public sealed record CalibrationPoint(string Direction, int Step, double X, double Y);
+
+/// <summary>One point of the Dec take-up after a reversal: cumulative motor time since the reversal and the star's motion.</summary>
+/// <param name="PulseMs">Pulse time sent in the new direction since the reversal (ms).</param>
+/// <param name="MovedPx">Star motion in that direction since the reversal (mount px).</param>
+public sealed record DecTakeUpPoint(double PulseMs, double MovedPx);

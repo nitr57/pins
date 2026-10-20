@@ -46,8 +46,30 @@ namespace NINA.INDI.Devices {
             this.utcNow = utcNow ?? (() => DateTime.UtcNow);
         }
 
+        /// <summary>
+        /// A pulse the driver reports as ended before this fraction of its length, and at least
+        /// <see cref="EarlyEndMinShortfall"/> before its end, counts as ended early.
+        /// </summary>
+        public const double EarlyEndFraction = 0.5;
+
+        /// <summary>A pulse that ended less than this before its end did not end early, whatever its length.</summary>
+        public static readonly TimeSpan EarlyEndMinShortfall = TimeSpan.FromMilliseconds(200);
+
+        // The pulse sent here per axis, until the driver reports its end or it times out.
+        private readonly Dictionary<string, (DateTime SentAt, int DurationMs)> sent = [];
+
+        // The last pulse per axis that the driver rejected, until it is taken or the next pulse is sent.
+        private readonly Dictionary<string, PulseGuideFailure> rejected = [];
+
         /// <summary>Raised outside the tracker's lock with the guide property and the pulse length in ms.</summary>
         public event Action<string, int> TimedOut;
+
+        /// <summary>
+        /// Raised outside the tracker's lock when the driver reports a pulse sent here as failed (Alert) or ends it well
+        /// before its length. PHD2 guide logs on an OnStep mount over INDI (2026-09/10) show compensated Dec reversals
+        /// ending at once without moving the star.
+        /// </summary>
+        public event Action<PulseGuideFailure> Failed;
 
         public bool IsPulseGuiding {
             get {
@@ -67,7 +89,10 @@ namespace NINA.INDI.Devices {
             List<(string, int)> expired;
             lock (sync) {
                 expired = ExpireOverdue();
-                active[property] = (utcNow() + TimeSpan.FromMilliseconds(Math.Max(0, durationMs)) + CompletionMargin, durationMs);
+                var now = utcNow();
+                active[property] = (now + TimeSpan.FromMilliseconds(Math.Max(0, durationMs)) + CompletionMargin, durationMs);
+                sent[property] = (now, durationMs);
+                rejected.Remove(property);
             }
             Report(expired);
         }
@@ -76,6 +101,18 @@ namespace NINA.INDI.Devices {
         public void PulseNotSent(string property) {
             lock (sync) {
                 active.Remove(property);
+                sent.Remove(property);
+            }
+        }
+
+        /// <summary>
+        /// The last pulse sent on this axis if the driver rejected it (Alert), else null; taken once. A pulse that only
+        /// ended early is not returned: some drivers report the end as soon as the mount, which times the pulse itself,
+        /// has accepted it.
+        /// </summary>
+        public PulseGuideFailure TakeRejected(string property) {
+            lock (sync) {
+                return rejected.Remove(property, out var failure) ? failure : null;
             }
         }
 
@@ -85,12 +122,28 @@ namespace NINA.INDI.Devices {
                 return;
             }
 
+            PulseGuideFailure failure = null;
             lock (sync) {
                 if (p.State != PropertyState.Busy) {
                     active.Remove(p.Name);
-                    return;
+                    if (sent.Remove(p.Name, out var pulse)) {
+                        failure = Classify(p.Name, p.State, pulse.DurationMs, utcNow() - pulse.SentAt);
+                        if (failure is { Rejected: true }) {
+                            rejected[p.Name] = failure;
+                        }
+                    }
                 }
+            }
 
+            if (failure is not null) {
+                Failed?.Invoke(failure);
+            }
+
+            if (p.State != PropertyState.Busy) {
+                return;
+            }
+
+            lock (sync) {
                 // Busy: the driver has started a pulse, ours or another client's. It ends one pulse length from
                 // now at the latest, which also covers a driver that started ours late.
                 var durationMs = (int)Math.Max(0, p.Numbers.Select(n => n.Value).DefaultIfEmpty(0).Max());
@@ -103,12 +156,23 @@ namespace NINA.INDI.Devices {
             }
         }
 
+        private static PulseGuideFailure Classify(string property, PropertyState state, int durationMs, TimeSpan elapsed) {
+            if (state == PropertyState.Alert) {
+                return new PulseGuideFailure(property, durationMs, elapsed.TotalMilliseconds, Rejected: true);
+            }
+
+            var length = TimeSpan.FromMilliseconds(durationMs);
+            bool early = elapsed < length * EarlyEndFraction && length - elapsed >= EarlyEndMinShortfall;
+            return early ? new PulseGuideFailure(property, durationMs, elapsed.TotalMilliseconds, Rejected: false) : null;
+        }
+
         // Caller holds sync.
         private List<(string, int)> ExpireOverdue() {
             var now = utcNow();
             var expired = active.Where(a => a.Value.Deadline <= now).Select(a => (a.Key, a.Value.DurationMs)).ToList();
             foreach (var (property, _) in expired) {
                 active.Remove(property);
+                sent.Remove(property);
             }
             return expired;
         }
@@ -119,4 +183,10 @@ namespace NINA.INDI.Devices {
             }
         }
     }
+
+    /// <summary>
+    /// A guide pulse sent here that the driver reported as failed (<paramref name="Rejected"/>, an Alert) or ended
+    /// <paramref name="ElapsedMs"/> after it was sent, well before its <paramref name="DurationMs"/>.
+    /// </summary>
+    public sealed record PulseGuideFailure(string Property, int DurationMs, double ElapsedMs, bool Rejected);
 }

@@ -29,6 +29,7 @@ public class SafetyTests
 
         v.Should().Be(SafetyVerdict.Runaway);
         frame.Should().BeLessThanOrEqualTo(8);
+        d.Cause.Should().Be(RunawayCause.ErrorGrowing);
     }
 
     [Test]
@@ -68,6 +69,9 @@ public class SafetyTests
         }
 
         v.Should().Be(SafetyVerdict.Runaway);
+        d.Cause.Should().Be(RunawayCause.PulseDuty, "the error swung around zero and never grew");
+        d.Reset();
+        d.Cause.Should().BeNull();
     }
 
     [Test]

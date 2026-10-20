@@ -71,7 +71,7 @@ public sealed record GuideLogCameraSettings
 }
 
 /// <summary>Dec backlash compensation settings.</summary>
-public sealed record GuideLogBacklash(bool Enabled, int PulseMs);
+public sealed record GuideLogBacklash(bool Enabled, int PulseMs, bool PlayModel = false);
 
 /// <summary>Mount settings (PHD2 Mount/Scope::GetSettingsSummary).</summary>
 public sealed record GuideLogMountSettings

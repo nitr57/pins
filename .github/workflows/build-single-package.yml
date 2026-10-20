@@ -510,6 +510,9 @@ jobs:
               plugin-touch-n-stars)
                 git clone --branch develop --single-branch https://github.com/nitr57/N.I.N.A-Plugin-for-Touch-N-Stars NINA.Plugins/Touch-N-Stars
                 ;;
+              plugin-luckycapture)
+                git clone --branch main --single-branch https://github.com/acocalypso/pins.LuckyCapture NINA.Plugins/pins.LuckyCapture
+                ;;
               plugin-pins)
                 git clone https://github.com/nitr57/pins.plugin NINA.Plugins/pins.plugin
                 ;;
@@ -593,6 +596,11 @@ jobs:
             local assembly_regex="$4"
             local needs_touch_frontend="$5"
             local needs_pins_sdks="$6"
+            local runtime_dependencies="${7:-}"
+            local source_args=()
+            if [ "$deb_package" = "pins-plugin-luckycapture" ]; then
+              source_args=(-p:PinsRoot="$(pwd)")
+            fi
 
             local plugin_dir
             plugin_dir=$(dirname "$project_path")
@@ -644,9 +652,8 @@ jobs:
 
             plugin_version="${plugin_version}+${CI_BUILD_NUMBER}"
 
-            dotnet restore "$project_path" -r "${TARGET_RUNTIME}"
-            JavaPath=$(which java) dotnet build "$project_path" -c "${BUILD_CONFIGURATION}" -f "${PLUGIN_TARGET_FRAMEWORK}" -r "${TARGET_RUNTIME}" --no-restore ${PLUGIN_MSBUILD_ARGS}
-
+            dotnet restore "$project_path" -r "${TARGET_RUNTIME}" "${source_args[@]}"
+            JavaPath=$(which java) dotnet build "$project_path" -c "${BUILD_CONFIGURATION}" -f "${PLUGIN_TARGET_FRAMEWORK}" -r "${TARGET_RUNTIME}" --no-restore ${PLUGIN_MSBUILD_ARGS} "${source_args[@]}"
             tfm_dir="$plugin_dir/bin/${BUILD_CONFIGURATION}/${PLUGIN_TARGET_FRAMEWORK}/${TARGET_RUNTIME}"
             if [ ! -d "$tfm_dir" ]; then
               build_root="$plugin_dir/bin/${BUILD_CONFIGURATION}"
@@ -668,6 +675,10 @@ jobs:
               (cd "$core_publish_dir" && find . -type f -printf '%P\n') > "$exclude_list"
               rsync -a --exclude-from="$exclude_list" "$tfm_dir/" "$install_root/"
               rm -f "$exclude_list"
+            elif [ "$deb_package" = "pins-plugin-luckycapture" ]; then
+              # All LuckyCapture references are provided by PINS. Do not ship
+              # duplicate core assemblies when building a plugin by itself.
+              rsync -a --include='/PINS.LuckyCapture.*' --exclude='*' "$tfm_dir/" "$install_root/"
             else
               echo "Core publish directory not found at $core_publish_dir; packaging plugin without core file exclusion."
               rsync -a "$tfm_dir/" "$install_root/"
@@ -700,6 +711,7 @@ jobs:
               echo "Maintainer: PINS Team"
               echo "Installed-Size: ${installed_size}"
               echo "Description: NINA plugin package for ${install_folder}"
+              if [ -n "$runtime_dependencies" ]; then echo "Depends: $runtime_dependencies"; fi
             } > "$control_dir/control"
 
             {
@@ -786,6 +798,10 @@ jobs:
             plugin-touch-n-stars)
               clone_selected_plugin_repo
               build_plugin_package "NINA.Plugins/Touch-N-Stars/Touch-N-Stars/Touch-N-Stars.csproj" "Touch-N-Stars" "pins-plugin-touch-n-stars" "" "yes" "no"
+              ;;
+            plugin-luckycapture)
+              clone_selected_plugin_repo
+              build_plugin_package "NINA.Plugins/pins.LuckyCapture/src/PINS.LuckyCapture/PINS.LuckyCapture.csproj" "PINS.LuckyCapture" "pins-plugin-luckycapture" "" "no" "no" "pins (>= 3.3.0.1066), ffmpeg"
               ;;
             plugin-pins)
               clone_selected_plugin_repo

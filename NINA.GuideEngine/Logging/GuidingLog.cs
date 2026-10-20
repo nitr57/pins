@@ -657,7 +657,7 @@ public sealed class GuidingLog
         s += $"X guide algorithm = {m.XAlgorithm.Name}, {m.XAlgorithm.Summary}\n";
         s += $"Y guide algorithm = {m.YAlgorithm.Name}, {m.YAlgorithm.Summary}\n";
         if (m.Backlash is { } bl)
-            s += string.Format(Inv, "Backlash comp = {0}, pulse = {1} ms\n", bl.Enabled ? "enabled" : "disabled", bl.PulseMs);
+            s += string.Format(Inv, "Backlash comp = {0}, pulse = {1} ms{2}\n", bl.Enabled ? "enabled" : "disabled", bl.PulseMs, bl.PlayModel ? ", model = play" : "");
         if (m.PulseModel is { } pulseModel)
             s += $"Pulse model = {(pulseModel ? "on" : "off")}\n";
 

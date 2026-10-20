@@ -144,13 +144,18 @@ Capture → dark subtraction **or** defect-map correction → optional noise red
 
 ### Guide algorithms
 Pluggable `IGuideAlgorithm` (so PPEC/GP and dark guiding can land in v2).
+* The internal guider defaults to [Predictive](docs/ALGORITHMS.md#predictive) on both axes; the engine's own
+  `GuiderSettings` keeps the PHD2 defaults below.
 * RA default Hysteresis (aggression 0.7, hysteresis 0.1), alternative Lowpass2 (aggressiveness 80 %).
 * Dec default ResistSwitch (aggression 1.0, fast switch on), alternatives Hysteresis/Lowpass2.
 * Min-move default `max(0.1515 + 0.1548/scale, 0.15)` px.
 * Dec guide mode Off / Auto / North / South, and Drift (not in PHD2: one direction along the measured drift, see
   [ALGORITHMS.md](docs/ALGORITHMS.md#dec-guide-mode-drift)). Dec backlash compensation (adaptive, PHD2 port; as in PHD2 only while both Dec
   directions are guided). The pulse it learns is kept per profile and mount (`backlash.json`) and used while the
-  setting is still the one it was learned from; unlike PHD2 the setting itself isn't overwritten.
+  setting is still the one it was learned from; unlike PHD2 the setting itself isn't overwritten. Or, with the Predictive
+  Dec algorithm, the Dec backlash play model (not in PHD2: tracks the gear inside its play, holds back pulses that would
+  only cross it while the offset is noise, compensates what is left; behind `IBacklashCompensation`, see
+  [ALGORITHMS.md](docs/ALGORITHMS.md#dec-backlash-play-model)).
 * Max pulse 2500 ms per axis (hard clamp).
 * Min pulse 20 ms (not in PHD2; 0 = PHD2, any length), for every algorithm: an algorithm or deduced pulse shorter than
   it is rounded to 0 or to it, whichever is nearer, before the Dec backlash compensation. EQMod drops pulses under
