@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+### Fixed
+- Player One cameras: Touch-N-Stars showed no dew heater strength slider although the camera's heater power can be set from 0 to 100 %. The native generic camera driver had a target strength but no `MaxDewHeaterStrength`, which ninaAPI's camera settings provide as the slider's scale; ToupTek-alike and INDI cameras already had it. The maximum is now 100 % for cameras with a dew heater, and the target strength is limited to 1–100 % (previously any value was stored, and 0 switched the heater off while it was set to on)
+
 ## 1.1.58 - 2026-09-18
 ### Fixed
 - INDI mounts: a goto the driver refused was not recognized as refused when the refusal arrived within the same second as the last position update, which is the normal case for a driver that answers within milliseconds. It was taken for a stale Alert left over from earlier, so each such goto waited 15 s for a reply and for motion that never came and was then treated as done, instead of being reported as refused at once. An Alert now only counts as stale when the mount's coordinates were already in Alert before the goto was sent
