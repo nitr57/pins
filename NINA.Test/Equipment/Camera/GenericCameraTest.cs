@@ -525,5 +525,66 @@ namespace NINA.Test.Equipment.Camera {
             sdk.Verify(x => x.GetCoolerOnOff(), Times.Never);
             sdk.Verify(x => x.GetCoolerPower(), Times.Never);
         }
+
+        [Test]
+        [TestCase(true, 100)]
+        [TestCase(false, 0)]
+        public async Task MaxDewHeaterStrength_DependsOnDewHeater(bool hasDewHeater, int expected) {
+            var sdk = new Mock<IGenericCameraSDK>();
+            sdk.SetupGet(x => x.Connected).Returns(true);
+            sdk.Setup(x => x.HasDewHeater()).Returns(hasDewHeater);
+            var profile = new Mock<IProfileService>();
+
+            var sut = new GenericCamera("12345", "", "", "Generic Camera", true, sdk.Object, profile.Object, dataFactoryUtility.ExposureDataFactory);
+            await sut.Connect(default);
+
+            sut.MaxDewHeaterStrength.Should().Be(expected);
+        }
+
+        [Test]
+        [TestCase(50, 50)]
+        [TestCase(5, 5)]
+        [TestCase(1, 1)]
+        [TestCase(0, 1)]
+        [TestCase(-5, 1)]
+        [TestCase(150, 100)]
+        public async Task TargetDewHeaterStrength_ClampedAndAppliedWhileHeaterOn(int requested, int expected) {
+            var sdk = new Mock<IGenericCameraSDK>();
+            sdk.SetupGet(x => x.Connected).Returns(true);
+            sdk.Setup(x => x.HasDewHeater()).Returns(true);
+            sdk.Setup(x => x.IsDewHeaterOn()).Returns(true);
+            var cameraSettings = new Mock<ICameraSettings>();
+            cameraSettings.SetupProperty(x => x.GenericCameraDewHeaterStrength, 10);
+            var profile = new Mock<IProfileService>();
+            profile.SetupGet(x => x.ActiveProfile.CameraSettings).Returns(cameraSettings.Object);
+
+            var sut = new GenericCamera("12345", "", "", "Generic Camera", true, sdk.Object, profile.Object, dataFactoryUtility.ExposureDataFactory);
+            await sut.Connect(default);
+
+            sut.TargetDewHeaterStrength = requested;
+
+            sut.TargetDewHeaterStrength.Should().Be(expected);
+            sdk.Verify(x => x.SetDewHeater(expected), Times.Once);
+        }
+
+        [Test]
+        public async Task TargetDewHeaterStrength_NotAppliedWhileHeaterOff() {
+            var sdk = new Mock<IGenericCameraSDK>();
+            sdk.SetupGet(x => x.Connected).Returns(true);
+            sdk.Setup(x => x.HasDewHeater()).Returns(true);
+            sdk.Setup(x => x.IsDewHeaterOn()).Returns(false);
+            var cameraSettings = new Mock<ICameraSettings>();
+            cameraSettings.SetupProperty(x => x.GenericCameraDewHeaterStrength, 10);
+            var profile = new Mock<IProfileService>();
+            profile.SetupGet(x => x.ActiveProfile.CameraSettings).Returns(cameraSettings.Object);
+
+            var sut = new GenericCamera("12345", "", "", "Generic Camera", true, sdk.Object, profile.Object, dataFactoryUtility.ExposureDataFactory);
+            await sut.Connect(default);
+
+            sut.TargetDewHeaterStrength = 40;
+
+            sut.TargetDewHeaterStrength.Should().Be(40);
+            sdk.Verify(x => x.SetDewHeater(It.IsAny<int>()), Times.Never);
+        }
     }
 }
