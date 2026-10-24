@@ -60,6 +60,7 @@ Important mechanics visible in the source:
   - `IPluggableBehavior`
   - `IEquipmentProvider`
 - Injects a large set of application services into the MEF container, including mediators, factories, profile service, image services, sequence mediator, message broker, and symbol broker
+- Exports the pins guide camera slot as `IGuideCameraMediator` only; `ICameraMediator` is always the imaging camera
 - Merges plugin resource dictionaries into `Application.Current.Resources`
 - Appends plugin metadata to in-memory registries such as `Items`, `Conditions`, `Triggers`, `Container`, `DockableVMs`, `PluggableBehaviors`, `DeviceProviders`, and `Upgraders`
 

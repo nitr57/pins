@@ -45,7 +45,7 @@ namespace NINA.Sequencer.SequenceItem.FilterWheel {
     [ExportMetadata("Category", "Lbl_SequenceCategory_FilterWheel")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class SwitchFilter : SequenceItem, IValidatable {
 
@@ -97,7 +97,8 @@ namespace NINA.Sequencer.SequenceItem.FilterWheel {
                     : null;
                 // If not, assume it's an Expression and find its value
                 if (Filter == null) {
-                    filter = profileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters?.FirstOrDefault(x => x.Position == (int)XfilterExpression.Value);
+                    var position = Xfilter;
+                    filter = profileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters?.FirstOrDefault(x => x.Position == position);
                 }
                 // Don't recurse; comboTextBox could be set from different places (including upgrade from 3.2)
                 comboBoxText = filterString;
@@ -181,8 +182,8 @@ namespace NINA.Sequencer.SequenceItem.FilterWheel {
                     filter = filterWheelMediator.GetInfo().SelectedFilter;
                 } else {
                     // ComboBoxText might have been set before a FW was connected, or a Symbol's value might have changed, so we need to re-resolve the filter here
-                    XfilterExpression.Evaluate(true);
-                    filter = profileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters?.FirstOrDefault(x => x.Position == (int)XfilterExpression.Value);
+                    var position = Xfilter;
+                    filter = profileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters?.FirstOrDefault(x => x.Position == position);
                 }
             } else {
                 filter = null;
@@ -199,16 +200,6 @@ namespace NINA.Sequencer.SequenceItem.FilterWheel {
             get => iFilterNames;
             set {
                 iFilterNames = value;
-            }
-        }
-
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
             }
         }
 
@@ -230,11 +221,10 @@ namespace NINA.Sequencer.SequenceItem.FilterWheel {
             }
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
 
             if (filter != null && !filterWheelMediator.GetInfo().Connected) {
-                i.Add(Loc.Instance["LblFilterWheelNotConnected"]);
+                issues.Add(Loc.Instance["LblFilterWheelNotConnected"]);
             } else {
                 if (FilterNames.Count == 0) {
                     // Lazy instantiation of FilterNames
@@ -247,12 +237,6 @@ namespace NINA.Sequencer.SequenceItem.FilterWheel {
                     }
                 }
             }
-
-            Logic.Expression.ValidateExpressions(i, XfilterExpression);
-
-            Issues = i;
-            RaisePropertyChanged("Issues");
-            return Issues.Count == 0;
         }
 
         public override void AfterParentChanged() {

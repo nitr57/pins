@@ -59,6 +59,9 @@ namespace NINA.Equipment.Equipment {
             return deviceMeta != null;
         }
 
+        /// <summary>pins: the address of an Alpaca device, in the form <see cref="MyCamera.AlpacaDirectCamera.Endpoint"/> uses; null for a COM driver.</summary>
+        internal string AlpacaEndpoint => deviceMeta == null ? null : $"{deviceMeta.IpAddress?.Trim().ToLowerInvariant()}:{deviceMeta.IpPort}#{deviceMeta.AlpacaDeviceNumber}";
+
         protected readonly ASCOM.Alpaca.Discovery.AscomDevice deviceMeta;
 
         protected DeviceT device;

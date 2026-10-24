@@ -21,6 +21,11 @@ namespace System.Windows.Media.Imaging {
         private bool _disposed;
         // Bytes of unmanaged memory reported to GC so it can schedule collections appropriately
         private long _memoryPressure;
+        // Native handle of a Mat handed in through the public BitmapSource(Mat) constructor. Its
+        // buffer may be caller-owned memory (Mat.FromPixelData) with no reference count, so it is
+        // never shared (see TryShareMat). A handle, not a reference, so it keeps nothing alive; a
+        // stale match can only ever disable sharing.
+        private IntPtr _foreignMatPtr;
 
         public bool CanFreeze => true;
 
@@ -35,9 +40,19 @@ namespace System.Windows.Media.Imaging {
             _mat = new Mat();
         }
 
-        public BitmapSource(Mat source) {
+        public BitmapSource(Mat source) : this(source, foreignMat: true) {
+        }
+
+        /// <summary>
+        /// For Mats this assembly allocated itself (foreignMat: false), whose buffers OpenCV
+        /// owns and reference-counts.
+        /// </summary>
+        internal BitmapSource(Mat source, bool foreignMat) {
             _mat = source;
             AddMemoryPressure();
+            if (foreignMat && source != null) {
+                _foreignMatPtr = source.CvPtr;
+            }
         }
 
         // Constructor for cropping: new BitmapSource(mat, rectangle)
@@ -125,6 +140,44 @@ namespace System.Windows.Media.Imaging {
         public static implicit operator Mat(BitmapSource bmp) => bmp._mat?.Clone();
         public static implicit operator BitmapSource(Mat mat) => new BitmapSource(mat);
 
+        /// <summary>
+        /// Read access to the pixel Mat for code in this assembly, without the full-image copy
+        /// the implicit conversion above makes. Disposing the lease only disposes a Mat the lease
+        /// cloned itself. WriteableBitmap and RenderTargetBitmap are still cloned, because their
+        /// pixels can be written (BackBuffer, Render) while the caller is reading.
+        /// </summary>
+        internal MatLease LeaseMat() {
+            if (this is WriteableBitmap || this is RenderTargetBitmap) {
+                return new MatLease(_mat?.Clone(), owned: true);
+            }
+            return new MatLease(_mat, owned: false);
+        }
+
+        /// <summary>
+        /// A new Mat header over this bitmap's pixel buffer, sharing it instead of copying it, or
+        /// null when sharing is not safe. Only a frozen bitmap qualifies, and never one whose
+        /// pixels can still be written in place (WriteableBitmap, RenderTargetBitmap). The buffer
+        /// must be OpenCV-owned, so its reference count keeps it alive after this bitmap is
+        /// disposed, and continuous, so the header covers exactly the image and nothing more.
+        /// </summary>
+        internal Mat TryShareMat() {
+            if (!IsFrozen || this is WriteableBitmap || this is RenderTargetBitmap) {
+                return null;
+            }
+            Mat mat = _mat;
+            if (mat == null || mat.CvPtr == _foreignMatPtr || mat.Empty() || mat.Dims != 2 || !mat.IsContinuous()) {
+                return null;
+            }
+            return new Mat(mat, new OpenCvSharp.Rect(0, 0, mat.Cols, mat.Rows));
+        }
+
+        /// <summary>
+        /// An unfrozen deep copy, as in WPF.
+        /// </summary>
+        public BitmapSource Clone() {
+            return new BitmapSource(_mat.Clone(), foreignMat: false) { DpiX = DpiX, DpiY = DpiY };
+        }
+
         public override void Freeze() {
             // In WPF, Freeze makes objects immutable for thread safety
             // For OpenCV Mat, this is a no-op since Mat is already thread-safe for reading
@@ -168,21 +221,21 @@ namespace System.Windows.Media.Imaging {
                 throw new ArgumentException($"Destination array too small. Need {offset + dataSize} elements, got {pixels.Length}");
             }
 
-            // Copy as raw bytes then reinterpret — Marshal.Copy does not accept ushort[]
-            int byteCount = dataSize * sizeof(ushort);
-            byte[] bytes = new byte[byteCount];
+            // Marshal.Copy has no ushort[] overload, but the runtime lets a ushort[] be viewed as a
+            // short[] (same element size), so copy straight into the caller's array instead of
+            // through a full-size temporary byte[].
+            short[] destination = (short[])(object)pixels;
 
             if (_mat.IsContinuous()) {
-                System.Runtime.InteropServices.Marshal.Copy(_mat.Data, bytes, 0, byteCount);
+                System.Runtime.InteropServices.Marshal.Copy(_mat.Data, destination, offset, dataSize);
             } else {
                 // See the byte[] overload above - a non-continuous Mat needs a row-by-row copy.
-                int rowBytes = _mat.Cols * _mat.Channels() * sizeof(ushort);
+                int rowElements = _mat.Cols * _mat.Channels();
                 for (int y = 0; y < _mat.Rows; y++) {
                     IntPtr srcPtr = _mat.Data + (y * (int)_mat.Step());
-                    System.Runtime.InteropServices.Marshal.Copy(srcPtr, bytes, y * rowBytes, rowBytes);
+                    System.Runtime.InteropServices.Marshal.Copy(srcPtr, destination, offset + (y * rowElements), rowElements);
                 }
             }
-            System.Buffer.BlockCopy(bytes, 0, pixels, offset * sizeof(ushort), byteCount);
             GC.KeepAlive(this);
         }
 
@@ -194,6 +247,26 @@ namespace System.Windows.Media.Imaging {
                 CopyPixels(ushortArray, stride, offset);
             } else {
                 throw new NotSupportedException($"Array type {pixels.GetType()} not supported");
+            }
+        }
+
+        /// <summary>
+        /// Copies sourceRect into a managed array, matching WPF: offset is an element index into
+        /// pixels, and stride is the destination pitch in bytes.
+        /// </summary>
+        public void CopyPixels(Int32Rect sourceRect, Array pixels, int stride, int offset) {
+            ArgumentNullException.ThrowIfNull(pixels);
+            int elementSize = Runtime.InteropServices.Marshal.SizeOf(pixels.GetType().GetElementType());
+            int byteOffset = checked(offset * elementSize);
+            int bufferSize = Buffer.ByteLength(pixels) - byteOffset;
+            if (offset < 0 || bufferSize < 0) {
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            }
+            Runtime.InteropServices.GCHandle handle = Runtime.InteropServices.GCHandle.Alloc(pixels, Runtime.InteropServices.GCHandleType.Pinned);
+            try {
+                CopyPixels(sourceRect, handle.AddrOfPinnedObject() + byteOffset, bufferSize, stride);
+            } finally {
+                handle.Free();
             }
         }
 
@@ -258,7 +331,7 @@ namespace System.Windows.Media.Imaging {
                 }
             }
 
-            return new BitmapSource(mat);
+            return new BitmapSource(mat, foreignMat: false);
         }
 
         public static BitmapSource Create(int pixelWidth, int pixelHeight, double dpiX, double dpiY,
@@ -272,11 +345,10 @@ namespace System.Windows.Media.Imaging {
             // Copy the pixel data using the same approach as the backup
             if (pixels is ushort[] ushortArray) {
                 int copyElements = (int)System.Math.Min((long)pixelWidth * pixelHeight * mat.Channels(), ushortArray.Length);
-                int copyBytes = copyElements * sizeof(ushort);
 
-                byte[] bytes = new byte[copyBytes];
-                System.Buffer.BlockCopy(ushortArray, 0, bytes, 0, copyBytes);
-                System.Runtime.InteropServices.Marshal.Copy(bytes, 0, mat.Data, copyBytes);
+                // Viewed as short[] (see CopyPixels(ushort[])) so the copy goes straight into the
+                // Mat instead of through a full-size temporary byte[].
+                System.Runtime.InteropServices.Marshal.Copy((short[])(object)ushortArray, 0, mat.Data, copyElements);
             } else if (pixels is byte[] byteArray) {
                 int copyBytes = (int)System.Math.Min(mat.Total() * mat.ElemSize(), byteArray.Length);
                 System.Runtime.InteropServices.Marshal.Copy(byteArray, 0, mat.Data, copyBytes);
@@ -293,7 +365,31 @@ namespace System.Windows.Media.Imaging {
                 }
             }
 
-            return new BitmapSource(mat);
+            return new BitmapSource(mat, foreignMat: false);
+        }
+    }
+
+    /// <summary>
+    /// A Mat handed out for reading (see BitmapSource.LeaseMat). Disposing it only disposes a
+    /// Mat the lease cloned itself.
+    /// </summary>
+    internal readonly struct MatLease : IDisposable {
+        private readonly bool _owned;
+
+        public MatLease(Mat mat, bool owned) {
+            Mat = mat;
+            _owned = owned;
+        }
+
+        /// <summary>
+        /// Read-only: never write to it and never dispose it directly.
+        /// </summary>
+        public Mat Mat { get; }
+
+        public void Dispose() {
+            if (_owned) {
+                Mat?.Dispose();
+            }
         }
     }
 
@@ -324,6 +420,7 @@ namespace System.Windows.Media.Imaging {
             System.Windows.Media.PixelFormat pixelFormat, BitmapPalette palette) : base() {
             // Create a new Mat with the specified dimensions and format
             MatType matType = pixelFormat;
+            _mat.Dispose(); // the empty Mat base() created
             _mat = new Mat(pixelHeight, pixelWidth, matType);
             AddMemoryPressure();
         }
@@ -353,13 +450,12 @@ namespace System.Windows.Media.Imaging {
             if (source != null) {
                 Mat sourceMat = (Mat)source;
                 if (sourceMat != null && !sourceMat.Empty()) {
+                    _mat.Dispose(); // the empty Mat base() created
                     _mat = sourceMat;
                 } else {
+                    // Keep the empty Mat base() created
                     sourceMat?.Dispose();
-                    _mat = new Mat();
                 }
-            } else {
-                _mat = new Mat();
             }
             AddMemoryPressure();
         }
@@ -496,6 +592,7 @@ namespace System.Windows.Media.Imaging {
             System.Windows.Media.PixelFormat pixelFormat) : base() {
             // Create the target Mat based on pixel format
             MatType matType = pixelFormat;
+            _mat.Dispose(); // the empty Mat base() created
             _mat = new Mat(pixelHeight, pixelWidth, matType);
 
             // Initialize with transparent/black background
@@ -551,7 +648,8 @@ namespace System.Windows.Media.Imaging {
         private void RenderDrawImage(System.Windows.Media.DrawingOperation operation) {
             if (operation.Image == null) return;
 
-            using Mat sourceMat = (Mat)operation.Image;
+            using var sourceLease = operation.Image.LeaseMat();
+            Mat sourceMat = sourceLease.Mat;
             if (sourceMat == null || sourceMat.Empty()) return;
 
             int x = (int)operation.Rect.X;

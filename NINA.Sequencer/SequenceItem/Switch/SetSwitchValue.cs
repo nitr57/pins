@@ -39,7 +39,7 @@ namespace NINA.Sequencer.SequenceItem.Switch {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Switch")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class SetSwitchValue : SequenceItem, IValidatable {
         private ISwitchMediator switchMediator;
@@ -58,16 +58,6 @@ namespace NINA.Sequencer.SequenceItem.Switch {
 
         partial void AfterClone(SetSwitchValue clone) {
             clone.SwitchIndex = SwitchIndex;
-        }
-
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
         }
 
         [IsExpression (Default = 1)]
@@ -125,9 +115,8 @@ namespace NINA.Sequencer.SequenceItem.Switch {
             Validate();
         }
 
-        public bool Validate() {
+        partial void ValidateAdditional(IList<string> issues) {
             try {
-                var i = new List<string>();
                 var info = switchMediator.GetInfo();
                 if (info?.Connected != true) {
                     //When switch gets disconnected the real list will be changed to the dummy list
@@ -135,7 +124,7 @@ namespace NINA.Sequencer.SequenceItem.Switch {
                         WritableSwitches = new ReadOnlyCollection<IWritableSwitch>(CreateDummyList());
                     }
 
-                    i.Add(Loc.Instance["LblSwitchNotConnected"]);
+                    issues.Add(Loc.Instance["LblSwitchNotConnected"]);
                 } else {
                     if (WritableSwitches.Count > 0) {
                         //When switch gets connected the dummy list will be changed to the real list
@@ -150,7 +139,7 @@ namespace NINA.Sequencer.SequenceItem.Switch {
                         }
                     } else {
                         SelectedSwitch = null;
-                        i.Add(Loc.Instance["Lbl_SequenceItem_Validation_NoWritableSwitch"]);
+                        issues.Add(Loc.Instance["Lbl_SequenceItem_Validation_NoWritableSwitch"]);
                     }
                 }
 
@@ -163,20 +152,14 @@ namespace NINA.Sequencer.SequenceItem.Switch {
                 var s = SelectedSwitch;
 
                 if (s == null) {
-                    i.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Validation_NoSwitchSelected"]));
+                    issues.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Validation_NoSwitchSelected"]));
                 } else {
                     if (Value < s.Minimum || Value > s.Maximum)
-                        i.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Validation_InvalidSwitchValue"], s.Minimum, s.Maximum, s.StepSize));
+                        issues.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Validation_InvalidSwitchValue"], s.Minimum, s.Maximum, s.StepSize));
                 }
-
-                Expression.ValidateExpressions(i, ValueExpression);
-
-                Issues = i;
-                return Issues.Count == 0;
             } catch (Exception ex) {
-                Issues = new List<string>() { "An unexpected error occurred" };
+                issues.Add("An unexpected error occurred");
                 Logger.Error(ex);
-                return false;
             }
         }
 

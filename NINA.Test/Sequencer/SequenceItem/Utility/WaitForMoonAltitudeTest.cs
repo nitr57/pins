@@ -41,7 +41,7 @@ namespace NINA.Test.Sequencer.SequenceItem.Utility {
         public void WaitForMoonAltitude_Clone_GoodClone() {
             var sut = new WaitForSunAltitude(profileServiceMock.Object);
             sut.Icon = new System.Windows.Media.GeometryGroup();
-            sut.Data.Offset = 12;
+            sut.Offset = 12;
             sut.Data.Comparator = ComparisonOperatorEnum.LESS_THAN;
             var item2 = (WaitForSunAltitude)sut.Clone();
 
@@ -60,7 +60,7 @@ namespace NINA.Test.Sequencer.SequenceItem.Utility {
         [Test]
         public async Task WaitForSunAltitude_Execute_EndsImmediatelyWhenThresholdCannotRequireWaiting() {
             WaitForSunAltitude sut = new WaitForSunAltitude(profileServiceMock.Object);
-            sut.Data.Offset = 90;
+            sut.Offset = 90;
             sut.Data.Comparator = ComparisonOperatorEnum.GREATER_THAN;
 
             await sut.Execute(default, CancellationToken.None);
@@ -110,7 +110,7 @@ namespace NINA.Test.Sequencer.SequenceItem.Utility {
             ComparisonOperatorEnum comparator,
             bool shouldWait) {
             var sut = new TestableWaitForSunAltitude(profileServiceMock.Object, currentAltitude);
-            sut.Data.Offset = 10.0;
+            sut.Offset = 10.0;
             sut.Data.Comparator = comparator;
             var progress = new Mock<IProgress<ApplicationStatus>>();
             using var cancellationTokenSource = new CancellationTokenSource();

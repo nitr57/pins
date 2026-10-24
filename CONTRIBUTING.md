@@ -2,7 +2,7 @@
 
 Thank you for considering a contribution to NINA!
 There are many areas where you can contribute, ranging from improving the documentation, writing tutorials, submitting bugs or even writing code for new features inside NINA itself.
-Before contributing code or documentation, please start a discussion via GitHub Issues or Discord. This helps ensure alignment and avoids duplicate work.
+Before proposing a substantial upstream change or a new feature, discuss it via GitHub Issues or Discord to agree on scope and avoid duplicate work. An existing issue or agreed task can provide that context; authorized local implementation and verification do not require repeated confirmation.
 
 # Ways to Contribute
 
@@ -77,9 +77,9 @@ git checkout <desired branch>
 git submodule update --init --recursive
 ```
 3. Add your changes
-4. Check that unit tests are passing
+4. Run the relevant local checks described in [verification guidance](#running-auts-from-the-command-line)
 5. Ensure no unintended or unnecessary files are committed.
-6. Add a short description about your changes to the correct section inside "RELEASE_NOTES.md"
+6. Add a short description of user-facing changes to the appropriate section in `RELEASE_NOTES.md`, when applicable
 7. Push the change to your forked repository using a good commit message
 8. Submit a pull request
 9. During pull requests, expect discussions and constructive feedback.
@@ -88,10 +88,10 @@ git submodule update --init --recursive
 
 ## Repository navigation
 
-* Before making non-trivial changes, read the repository-level [AGENTS.md](AGENTS.md)
-* Read the `ARCHITECTURE.md` file in the project you are changing before making structural changes there
-* `AGENTS.md` links the project architecture documents and explains solution-wide boundaries, startup/composition, localization, plugin/sequencer surfaces, and other cross-cutting rules
-* If a change depends on durable project knowledge that is only in an issue, Discord thread, or review comment, add it to the appropriate checked-in doc, test, or automation.
+* Use [AGENTS.md](AGENTS.md) for repository constraints and task-based guidance routes.
+* Use the [solution architecture index](ARCHITECTURE.md) to find ownership and cross-project boundaries. Read the owning project's linked document when the task involves its architecture or lifecycle.
+* Use the [testing map](.agents/skills/nina-repository/references/testing-map.md) when selecting checks or diagnosing build/test setup. Already-loaded guidance does not need to be reread.
+* If a change reveals durable project knowledge that exists only in an issue or review, record it in the nearest checked-in doc, test or analyzer.
 
 ## Coding rules
 
@@ -202,14 +202,11 @@ This database will be automatically created by the EntityFramework based on the 
 
 ## Running AUTs from the command line
 
-The repository CI uses the .NET CLI on Windows. The same basic flow can be used locally:
+Select focused local checks for the changed behavior using the [testing map](.agents/skills/nina-repository/references/testing-map.md#routing-table). Its [Windows command setup](.agents/skills/nina-repository/references/testing-map.md#command-setup) is the canonical local CLI reference, including build flags, test filters and separate WPF process groups. Rebuild after the final source edit before using `--no-build`.
 
-```powershell
-dotnet restore NINA.sln
-dotnet build NINA/NINA.csproj --configuration Debug --no-restore
-dotnet build NINA.Test/NINA.Test.csproj --configuration Debug --no-restore
-dotnet test NINA.Test/NINA.Test.csproj --configuration Debug --no-build -p:PlatformTarget=x64
-```
+For prose-only changes, check links, anchors, moved references and formatting instead of building the application. Skill changes also need metadata/discovery checks; changes to test commands need filter discovery checks. For behavior changes, add or update focused regression coverage and broaden verification when shared contracts, persistence, numerical results or UI integration are affected.
+
+Required upstream CI remains separate from local check selection. The [Build and Test workflow](.github/workflows/build-and-test.yml) runs release-policy tests, restores the solution, builds the application and test project and runs the unit suite on Windows. Focused local verification does not waive those checks. Record actual local results and any gaps in the PR; do not claim CI passed before it runs.
 
 ## Running AUTs in Visual Studio
 
@@ -237,10 +234,9 @@ dotnet test NINA.Test/NINA.Test.csproj --configuration Debug --no-build -p:Platf
 
 ## Pull Requests
 
-* Before making large changes, that will change existing patterns or disrupt ongoing features, please first discuss this via an issue or in discord, before starting to work on the changes! This way we can make sure, that it is the proper time for this change.  
+* For major upstream proposals that change existing patterns or disrupt ongoing features, agree on scope and timing through an issue or Discord before undertaking the contribution. An already-agreed task needs no additional discussion gate.
 * Make sure that only relevant changes are inside the pull request  
-* Validate that all unit tests are still passing
-* Test your changes *thoroughly* and give a short overview on how you tested your changes in the pull request's description
+* Record relevant local verification in the pull request description and ensure required CI checks pass before merge
 * Include any notable skipped tests, warnings, environment constraints, or manual verification limits in the pull request description.
 * Add yourself to the AUTHORS file, so you will be given proper credit!  
 * Create **one pull request per feature/fix**

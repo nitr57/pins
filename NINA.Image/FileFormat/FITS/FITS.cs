@@ -40,16 +40,21 @@ namespace NINA.Image.FileFormat.FITS {
 
 
         public static Task<IImageData> Load(Uri filePath, bool isBayered, IImageDataFactory imageDataFactory, CancellationToken ct) {
-            return Task.Run<IImageData>(() => LoadInternal(filePath, isBayered, imageDataFactory, ct), ct);
+            return Task.Run<IImageData>(() => LoadInternal(File.ReadAllBytes(filePath.LocalPath), filePath.LocalPath, isBayered, imageDataFactory, ct), ct);
+        }
+
+        /// <summary>
+        /// Loads a FITS image that is already in memory, e.g. a frame an INDI camera sent, without writing it to a file.
+        /// </summary>
+        public static Task<IImageData> Load(byte[] fits, bool isBayered, IImageDataFactory imageDataFactory, CancellationToken ct) {
+            return Task.Run<IImageData>(() => LoadInternal(fits, "memory", isBayered, imageDataFactory, ct), ct);
         }
 
         [SecurityCritical]
-        private static IImageData LoadInternal(Uri filePath, bool isBayered, IImageDataFactory imageDataFactory, CancellationToken ct) {
+        private static IImageData LoadInternal(byte[] bytes, string source, bool isBayered, IImageDataFactory imageDataFactory, CancellationToken ct) {
             IntPtr fitsPtr = IntPtr.Zero;
             IntPtr buffer = IntPtr.Zero;
             try {
-                var bytes = File.ReadAllBytes(filePath.LocalPath);
-
                 buffer = Marshal.AllocHGlobal(bytes.Length);
                 Marshal.Copy(bytes, 0, buffer, bytes.Length);
 
@@ -177,7 +182,7 @@ namespace NINA.Image.FileFormat.FITS {
                 if (buffer != IntPtr.Zero) {
                     Marshal.FreeHGlobal(buffer);
                 }
-                throw new Exception($"Unable to load FITS file from {filePath.LocalPath}");
+                throw new Exception($"Unable to load FITS file from {source}");
             } finally {
                 if (fitsPtr != IntPtr.Zero) {
                     CfitsioNative.fits_close_file(fitsPtr, out var status);

@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: MPL-2.0
+
+using Microsoft.Extensions.DependencyInjection;
+using Moq;
+using NINA.Equipment.Equipment.MyGuider;
+using NINA.Equipment.Equipment.MySafetyMonitor;
+using NINA.Equipment.Interfaces;
+using NINA.Equipment.Interfaces.Mediator;
+using NINA.Equipment.Interfaces.ViewModel;
+using NINA.Mcp.Adapter;
+using NINA.Mcp.Observatory;
+using NINA.WPF.Base.Interfaces.Mediator;
+using System;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace NINA.Test.Mcp {
+
+    /// <summary>
+    /// The MCP event bridge on mocked mediators. The bridge polls connections every three seconds, so each test waits one
+    /// or two polls.
+    /// </summary>
+    [TestFixture]
+    public class NinaEventBridgeTest {
+
+        private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(12);
+
+        [Test]
+        public async Task SafetyMonitorThatIsUnsafeWhenItConnects_IsPublished() {
+            var info = new SafetyMonitorInfo { Connected = false, IsSafe = false };
+            var safety = new Mock<ISafetyMonitorMediator>();
+            safety.Setup(mediator => mediator.GetInfo()).Returns(() => info);
+
+            var log = new ObservatoryEventLog();
+            var bridge = Start(log, services => services.AddSingleton(safety.Object));
+
+            try {
+                // Let the bridge take the disconnected state first.
+                await Task.Delay(500);
+
+                // SafetyMonitorVM.Connect takes the unsafe state of the device without raising IsSafeChanged.
+                info = new SafetyMonitorInfo { Connected = true, IsSafe = false };
+
+                var unsafeEvent = await WaitForAsync(log, entry => entry.Kind == "safety");
+
+                Assert.That(unsafeEvent.Severity, Is.EqualTo(EventSeverity.Critical));
+                Assert.That(unsafeEvent.Message, Is.EqualTo("The safety monitor reports UNSAFE."));
+
+                // The same state is not published twice; a real change is.
+                safety.Raise(mediator => mediator.IsSafeChanged += null, safety.Object, new IsSafeEventArgs(false));
+                info.IsSafe = true;
+                safety.Raise(mediator => mediator.IsSafeChanged += null, safety.Object, new IsSafeEventArgs(true));
+
+                var safetyEvents = log.Recent(50, entry => entry.Kind == "safety").Events;
+
+                Assert.That(safetyEvents.Select(entry => entry.Message), Is.EqualTo(new[] {
+                    "The safety monitor reports UNSAFE.", "The safety monitor reports safe."
+                }));
+            } finally {
+                await bridge.StopAsync(CancellationToken.None);
+            }
+        }
+
+        [Test]
+        public async Task SafetyMonitorThatIsUnsafeWhenTheBridgeStarts_IsPublished() {
+            var safety = new Mock<ISafetyMonitorMediator>();
+            safety.Setup(mediator => mediator.GetInfo()).Returns(new SafetyMonitorInfo { Connected = true, IsSafe = false });
+
+            var log = new ObservatoryEventLog();
+            var bridge = Start(log, services => services.AddSingleton(safety.Object));
+
+            try {
+                var unsafeEvent = await WaitForAsync(log, entry => entry.Kind == "safety");
+
+                Assert.That(unsafeEvent.Severity, Is.EqualTo(EventSeverity.Critical));
+            } finally {
+                await bridge.StopAsync(CancellationToken.None);
+            }
+        }
+
+        [TestCase(true, EventSeverity.Error, "guider lost its connection (not disconnected by request): check cable, power and driver.")]
+        [TestCase(false, EventSeverity.Info, "guider disconnected.")]
+        public async Task GuiderDisconnect_DropIsLost_RequestIsInfo(bool dropped, EventSeverity severity, string message) {
+            var info = new GuiderInfo { Connected = true };
+            IDevice? device = new Mock<IGuider>().Object;
+            IGuiderConsumer? consumer = null;
+            var guider = new Mock<IGuiderMediator>();
+            guider.Setup(mediator => mediator.GetInfo()).Returns(() => info);
+            guider.Setup(mediator => mediator.GetDevice()).Returns(() => device!);
+            guider.Setup(mediator => mediator.RegisterConsumer(It.IsAny<IGuiderConsumer>())).Callback<IGuiderConsumer>(registered => consumer = registered);
+
+            var log = new ObservatoryEventLog();
+            var bridge = Start(log, services => services.AddSingleton(guider.Object));
+
+            try {
+                consumer!.UpdateDeviceInfo(info);
+                await Task.Delay(500);
+
+                if (dropped) {
+                    // GuiderVM.Guider_PropertyChanged: broadcast while it still holds the device, then its own Disconnect.
+                    info = new GuiderInfo { Connected = false };
+                    consumer.UpdateDeviceInfo(info);
+                    device = null;
+                } else {
+                    // GuiderVM.Disconnect: the device is dropped before the reset info is broadcast.
+                    device = null;
+                    info = new GuiderInfo { Connected = false };
+                    consumer.UpdateDeviceInfo(info);
+                }
+
+                await guider.RaiseAsync(mediator => mediator.Disconnected += null, guider.Object, EventArgs.Empty);
+
+                var disconnect = await WaitForAsync(log, entry => entry.Kind == "device");
+
+                Assert.That(disconnect.Severity, Is.EqualTo(severity));
+                Assert.That(disconnect.Message, Is.EqualTo(message));
+            } finally {
+                await bridge.StopAsync(CancellationToken.None);
+            }
+        }
+
+        [Test]
+        public async Task ImageSaveFailure_WithLinuxNoSpaceLeft_IsDiskFull() {
+            Assume.That(OperatingSystem.IsWindows(), Is.False, "the errno is the Linux HResult of an IOException");
+
+            var saving = new Mock<IImageSaveMediator>();
+            var log = new ObservatoryEventLog();
+            var bridge = Start(log, services => services.AddSingleton(saving.Object));
+
+            try {
+                var full = new ImageSaveFailedEventArgs(null, "/media/usb/M31.fits", "$$TARGETNAME$$", ImageSaveFailureStage.SaveToDisk, new IOException("No space left on device", 28));
+                var other = new ImageSaveFailedEventArgs(null, "/media/usb/M33.fits", "$$TARGETNAME$$", ImageSaveFailureStage.SaveToDisk, new IOException("Permission denied", 13));
+
+                await saving.RaiseAsync(mediator => mediator.ImageSaveFailed += null, saving.Object, full);
+                await saving.RaiseAsync(mediator => mediator.ImageSaveFailed += null, saving.Object, other);
+
+                var events = log.Recent(10, entry => entry.Kind == "image").Events;
+
+                Assert.That(events.Select(entry => entry.Message), Is.EqualTo(new[] {
+                    "Saving an image failed: the disk is full.", "Saving an image failed: Permission denied."
+                }));
+                Assert.That(events[0].Data!["diskFull"], Is.EqualTo(true));
+                Assert.That(events[1].Data!["diskFull"], Is.EqualTo(false));
+            } finally {
+                await bridge.StopAsync(CancellationToken.None);
+            }
+        }
+
+        internal static NinaEventBridge Start(ObservatoryEventLog log, Action<IServiceCollection> register) {
+            var services = new ServiceCollection();
+            register(services);
+
+            var bridge = new NinaEventBridge(services.BuildServiceProvider(), log);
+            bridge.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+            return bridge;
+        }
+
+        internal static async Task<ObservatoryEvent> WaitForAsync(ObservatoryEventLog log, Func<ObservatoryEvent, bool> match) {
+            var page = await log.WaitAsync(0, 50, match, Timeout, CancellationToken.None);
+
+            Assert.That(page.Events, Is.Not.Empty, "no matching event was published");
+
+            return page.Events[0];
+        }
+    }
+}

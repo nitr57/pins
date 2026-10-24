@@ -62,7 +62,8 @@ namespace System.Windows.Media.Imaging {
                 return;
             }
 
-            using Mat sourceMat = (Mat)_source;
+            using var sourceLease = _source.LeaseMat();
+            Mat sourceMat = sourceLease.Mat;
             if (sourceMat.Empty()) {
                 _mat = new Mat();
                 AddMemoryPressure();

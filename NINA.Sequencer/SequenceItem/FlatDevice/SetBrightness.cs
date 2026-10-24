@@ -33,7 +33,7 @@ namespace NINA.Sequencer.SequenceItem.FlatDevice {
     [ExportMetadata("Category", "Lbl_SequenceCategory_FlatDevice")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class SetBrightness : SequenceItem, IValidatable {
 
@@ -47,15 +47,6 @@ namespace NINA.Sequencer.SequenceItem.FlatDevice {
         }
 
         private IFlatDeviceMediator flatDeviceMediator;
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
 
         [IsExpression]
         public partial int Brightness { get; set; }
@@ -97,24 +88,20 @@ namespace NINA.Sequencer.SequenceItem.FlatDevice {
             }
         }
 
-        public bool Validate() {
-            var i = new List<string>();
-            var info = flatDeviceMediator.GetInfo();
-            if (!info.Connected) {
-                i.Add(Loc.Instance["LblFlatDeviceNotConnected"]);
-            } else {
-                if (!info.SupportsOnOff) {
-                    i.Add(Loc.Instance["LblFlatDeviceCannotControlBrightness"]);
-                }
-            }
-
+        partial void PrepareExpressionValidation() {
             MinBrightness = flatDeviceMediator.GetInfo().MinBrightness;
             MaxBrightness = flatDeviceMediator.GetInfo().MaxBrightness;
+        }
 
-            Expression.ValidateExpressions(i, BrightnessExpression);
-            
-            Issues = i;
-            return i.Count == 0;
+        partial void ValidateAdditional(IList<string> issues) {
+            var info = flatDeviceMediator.GetInfo();
+            if (!info.Connected) {
+                issues.Add(Loc.Instance["LblFlatDeviceNotConnected"]);
+            } else {
+                if (!info.SupportsOnOff) {
+                    issues.Add(Loc.Instance["LblFlatDeviceCannotControlBrightness"]);
+                }
+            }
         }
 
         public override void AfterParentChanged() {

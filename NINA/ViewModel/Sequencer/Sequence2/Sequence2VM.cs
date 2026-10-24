@@ -203,47 +203,45 @@ namespace NINA.ViewModel.Sequencer {
             }
         }
 
-        public Task Initialize() {
-            return Task.Run(async () => {
-                await Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() => {
-                    SequenceJsonConverter = new SequenceJsonConverter(SequencerFactory);
-                    TemplateController = new TemplateController(SequenceJsonConverter, profileService, templateLinkResolver);
-                    TargetController = new TargetController(SequenceJsonConverter, profileService);
-                    SymbolController = new SymbolController(SymbolBroker, profileService);
-                    SymbolFunctionController = new SymbolFunctionController(SymbolBroker, profileService);
+        public async Task Initialize() {
+            await Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Render, new Action(() => {
+                SequenceJsonConverter = new SequenceJsonConverter(SequencerFactory);
+                TemplateController = new TemplateController(SequenceJsonConverter, profileService, templateLinkResolver);
+                TargetController = new TargetController(SequenceJsonConverter, profileService);
+                SymbolController = new SymbolController(SymbolBroker, profileService);
+                SymbolFunctionController = new SymbolFunctionController(SymbolBroker, profileService);
 
-                    var rootContainer = SequencerFactory.GetContainer<SequenceRootContainer>();
-                    rootContainer.Name = Loc.Instance["LblAdvancedSequenceTitle"];
-                    rootContainer.Add(SequencerFactory.GetContainer<StartAreaContainer>());
-                    rootContainer.Add(SequencerFactory.GetContainer<TargetAreaContainer>());
-                    rootContainer.Add(SequencerFactory.GetContainer<EndAreaContainer>());
+                var rootContainer = SequencerFactory.GetContainer<SequenceRootContainer>();
+                rootContainer.Name = Loc.Instance["LblAdvancedSequenceTitle"];
+                rootContainer.Add(SequencerFactory.GetContainer<StartAreaContainer>());
+                rootContainer.Add(SequencerFactory.GetContainer<TargetAreaContainer>());
+                rootContainer.Add(SequencerFactory.GetContainer<EndAreaContainer>());
 
-                    Sequencer = new NINA.Sequencer.Sequencer(
-                        rootContainer
-                    );
+                Sequencer = new NINA.Sequencer.Sequencer(
+                    rootContainer
+                );
 
-                    backgroundValidationCts = new CancellationTokenSource();
-                    backgroundValidationTask = RunBackgroundValidationTimer(backgroundValidationCts.Token);
+                backgroundValidationCts = new CancellationTokenSource();
+                backgroundValidationTask = RunBackgroundValidationTimer(backgroundValidationCts.Token);
 
-                    if (commandLineOptions.SequenceFile == null && File.Exists(profileService.ActiveProfile.SequenceSettings.StartupSequenceTemplate)) {
-                        try {
-                            LoadSequenceFromFile(profileService.ActiveProfile.SequenceSettings.StartupSequenceTemplate);
-                            SavePath = string.Empty;
-                        } catch (Exception ex) {
-                            Logger.Error("Startup Sequence failed to load", ex);
-                        }
+                if (commandLineOptions.SequenceFile == null && File.Exists(profileService.ActiveProfile.SequenceSettings.StartupSequenceTemplate)) {
+                    try {
+                        LoadSequenceFromFile(profileService.ActiveProfile.SequenceSettings.StartupSequenceTemplate);
+                        SavePath = string.Empty;
+                    } catch (Exception ex) {
+                        Logger.Error("Startup Sequence failed to load", ex);
                     }
+                }
 
-                    if (commandLineOptions.SequenceFile != null) {
-                        TryLoadSequenceFile();
-                    }
+                if (commandLineOptions.SequenceFile != null) {
+                    TryLoadSequenceFile();
+                }
 
-                    ClearHasChanged();
-                    templateLinkResolver.TemplatesChanged += TemplateLinkResolver_TemplatesChanged;
-                    ResolveLinkedTemplates();
+                ClearHasChanged();
+                templateLinkResolver.TemplatesChanged += TemplateLinkResolver_TemplatesChanged;
+                ResolveLinkedTemplates();
 
-                }));
-            });
+            })).Task.ConfigureAwait(false);
         }
 
         private void TemplateLinkResolver_TemplatesChanged(object sender, EventArgs e) {
@@ -251,7 +249,9 @@ namespace NINA.ViewModel.Sequencer {
                 return;
             }
 
-            Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() => ResolveLinkedTemplates()));
+            Application.Current.Dispatcher.BeginInvoke(DispatcherPriority.Normal, new Action(() => {
+                if (!IsRunning) ResolveLinkedTemplates();
+            }));
         }
 
         private void ResolveLinkedTemplates(bool materializeAll = false) {
@@ -268,7 +268,9 @@ namespace NINA.ViewModel.Sequencer {
                 return;
             }
 
-            if (container is LinkedTemplateContainer linkedTemplateContainer && !linkedTemplateContainer.IsEditing) {
+            if (container is LinkedTemplateContainer linkedTemplateContainer) {
+                // Startup and queued refreshes must preserve the entire graph owned by open editors.
+                if (linkedTemplateContainer.HasOpenEdits) return;
                 if (materializeAll || linkedTemplateContainer.IsMaterialized) {
                     linkedTemplateContainer.TryResolveTemplate();
                 } else {
@@ -437,8 +439,7 @@ namespace NINA.ViewModel.Sequencer {
         private void LoadSequenceFromFile(string file) {
             try {
                 UserSymbol.ClearUserSymbols();
-                var json = File.ReadAllText(file);
-                var container = SequenceJsonConverter.Deserialize(json, file);
+                var container = SequenceJsonConverter.DeserializeFromFile(file);
                 if (container is ISequenceRootContainer root) {
                     SavePath = file;
                     Sequencer.MainContainer = root;

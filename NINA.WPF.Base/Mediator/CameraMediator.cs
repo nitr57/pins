@@ -28,6 +28,7 @@ namespace NINA.WPF.Base.Mediator {
 
     public class CameraMediator : DeviceMediator<ICameraVM, ICameraConsumer, CameraInfo>, ICameraMediator {
         private object blockingConsumer;
+        private readonly object blockingConsumerLock = new();
         private readonly object captureCancellationLock = new();
         private CancellationTokenSource captureAbortTokenSource = new();
 
@@ -97,21 +98,44 @@ namespace NINA.WPF.Base.Mediator {
         }
 
         public void RegisterCaptureBlock(object cameraConsumer) {
-            if (this.blockingConsumer != null) {
-                throw new Exception("CameraMediator already blocked by " + blockingConsumer);
-            }
+            lock (blockingConsumerLock) {
+                if (this.blockingConsumer != null) {
+                    throw new Exception("CameraMediator already blocked by " + blockingConsumer);
+                }
 
-            blockingConsumer = cameraConsumer;
+                blockingConsumer = cameraConsumer;
+            }
+        }
+
+        /// <summary>
+        /// Takes the capture block if nobody holds it, in one step: checking <see cref="IsFreeToCapture(object)"/>
+        /// and then calling <see cref="RegisterCaptureBlock(object)"/> lets another consumer take it in between.
+        /// </summary>
+        /// <returns>True when <paramref name="cameraConsumer"/> now holds the block, false when another consumer
+        /// or <paramref name="cameraConsumer"/> itself already held it.</returns>
+        public bool TryRegisterCaptureBlock(object cameraConsumer) {
+            lock (blockingConsumerLock) {
+                if (this.blockingConsumer != null) {
+                    return false;
+                }
+
+                blockingConsumer = cameraConsumer;
+                return true;
+            }
         }
 
         public void ReleaseCaptureBlock(object cameraConsumer) {
-            if (this.blockingConsumer == cameraConsumer) {
-                blockingConsumer = null;
+            lock (blockingConsumerLock) {
+                if (this.blockingConsumer == cameraConsumer) {
+                    blockingConsumer = null;
+                }
             }
         }
 
         public bool IsFreeToCapture(object cameraConsumer) {
-            return blockingConsumer == null ? true : cameraConsumer == blockingConsumer;
+            lock (blockingConsumerLock) {
+                return blockingConsumer == null ? true : cameraConsumer == blockingConsumer;
+            }
         }
 
         public bool AtTargetTemp => handler.AtTargetTemp;

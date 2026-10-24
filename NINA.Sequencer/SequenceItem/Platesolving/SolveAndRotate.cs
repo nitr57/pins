@@ -44,7 +44,7 @@ namespace NINA.Sequencer.SequenceItem.Platesolving {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Rotator")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class SolveAndRotate : SequenceItem, IValidatable {
         protected IProfileService profileService;
@@ -94,16 +94,6 @@ namespace NINA.Sequencer.SequenceItem.Platesolving {
             get => inherited;
             set {
                 inherited = value;
-                RaisePropertyChanged();
-            }
-        }
-
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
                 RaisePropertyChanged();
             }
         }
@@ -229,17 +219,11 @@ namespace NINA.Sequencer.SequenceItem.Platesolving {
             Validate();
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
 
             if (!rotatorMediator.GetInfo().Connected) {
-                i.Add(Loc.Instance["LblRotatorNotConnected"]);
+                issues.Add(Loc.Instance["LblRotatorNotConnected"]);
             }
-
-            Expression.ValidateExpressions(i, PositionAngleExpression);
-            Issues = i;
-            RaisePropertyChanged("Issues");
-            return Issues.Count == 0;
         }
 
         public override string ToString() {

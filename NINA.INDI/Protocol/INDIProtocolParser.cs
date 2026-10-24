@@ -15,6 +15,7 @@
 using NINA.Core.Utility;
 using NINA.INDI.Enums;
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -262,45 +263,73 @@ namespace NINA.INDI.Protocol {
             }
         }
 
-        public static void UpdateBlobProperty(INDIBlobProperty prop, XElement element) {
-            prop.State = ParseState(element.Attribute("state")?.Value ?? "Idle");
-            prop.Timestamp = element.Attribute("timestamp")?.Value ?? string.Empty;
+        /// <summary>
+        /// One decoded <c>oneBLOB</c> of a <c>setBLOBVector</c>. <see cref="Data"/> is null when the
+        /// element carried no payload (the blob then keeps its previous data).
+        /// </summary>
+        public sealed record DecodedBlob(string Name, string Format, byte[] Data);
 
+        public static void UpdateBlobProperty(INDIBlobProperty prop, XElement element) {
+            ApplyBlobUpdate(prop, element, DecodeBlobs(element));
+        }
+
+        /// <summary>
+        /// Decodes the payloads of a <c>setBLOBVector</c> without touching any property, so a caller
+        /// can do this expensive part (hundreds of milliseconds for a camera image on a Pi) outside
+        /// its locks and apply the result with <see cref="ApplyBlobUpdate"/>.
+        /// </summary>
+        public static List<DecodedBlob> DecodeBlobs(XElement element) {
+            var decoded = new List<DecodedBlob>();
             foreach (var oneBlob in element.Elements("oneBLOB")) {
                 var name = oneBlob.Attribute("name")?.Value ?? string.Empty;
                 var format = oneBlob.Attribute("format")?.Value ?? string.Empty;
-
-                var blob = prop.Blobs.FirstOrDefault(b => b.Name == name);
-                if (blob == null) {
-                    blob = new INDIBlob { Name = name };
-                    prop.Blobs.Add(blob);
-                }
-
-                blob.Format = format;
 
                 // Decode base64 BLOB data. Convert.FromBase64String ignores embedded
                 // whitespace, so the payload (libindi wraps it in 72-char lines) is passed
                 // through as-is — stripping the line breaks first would copy the
                 // multi-megabyte string twice per frame.
                 var base64Data = oneBlob.Value;
-                if (!string.IsNullOrWhiteSpace(base64Data)) {
-                    try {
-                        var data = Convert.FromBase64String(base64Data);
+                if (string.IsNullOrWhiteSpace(base64Data)) {
+                    decoded.Add(new DecodedBlob(name, format, null));
+                    continue;
+                }
 
-                        // A ".z" format suffix means the driver zlib-compressed the payload
-                        // (libindi does this when the device's CCD_COMPRESSION is enabled —
-                        // reachable via the INDI control panel). Inflate here so downstream
-                        // consumers always see the raw payload and its real format.
-                        if (format.EndsWith(".z", StringComparison.OrdinalIgnoreCase)) {
-                            data = InflateZlib(data);
-                            blob.Format = format[..^2];
-                        }
+                try {
+                    var data = Convert.FromBase64String(base64Data);
 
-                        blob.Data = data;
-                    } catch (Exception ex) {
-                        Logger.Warning($"INDI: failed to decode BLOB '{name}' (format '{format}'): {ex.Message}");
-                        blob.Data = [];
+                    // A ".z" format suffix means the driver zlib-compressed the payload
+                    // (libindi does this when the device's CCD_COMPRESSION is enabled —
+                    // reachable via the INDI control panel). Inflate here so downstream
+                    // consumers always see the raw payload and its real format.
+                    if (format.EndsWith(".z", StringComparison.OrdinalIgnoreCase)) {
+                        data = InflateZlib(data);
+                        format = format[..^2];
                     }
+
+                    decoded.Add(new DecodedBlob(name, format, data));
+                } catch (Exception ex) {
+                    Logger.Warning($"INDI: failed to decode BLOB '{name}' (format '{format}'): {ex.Message}");
+                    decoded.Add(new DecodedBlob(name, format, []));
+                }
+            }
+            return decoded;
+        }
+
+        /// <summary>Applies the state and timestamp of a <c>setBLOBVector</c> and its blobs decoded by <see cref="DecodeBlobs"/>.</summary>
+        public static void ApplyBlobUpdate(INDIBlobProperty prop, XElement element, IReadOnlyList<DecodedBlob> decoded) {
+            prop.State = ParseState(element.Attribute("state")?.Value ?? "Idle");
+            prop.Timestamp = element.Attribute("timestamp")?.Value ?? string.Empty;
+
+            foreach (var d in decoded) {
+                var blob = prop.Blobs.FirstOrDefault(b => b.Name == d.Name);
+                if (blob == null) {
+                    blob = new INDIBlob { Name = d.Name };
+                    prop.Blobs.Add(blob);
+                }
+
+                blob.Format = d.Format;
+                if (d.Data != null) {
+                    blob.Data = d.Data;
                 }
             }
         }

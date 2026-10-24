@@ -34,7 +34,7 @@ namespace NINA.Sequencer.SequenceItem.Utility {
     [ExportMetadata("Icon", "Pen_NoFill_SVG")]
     [ExportMetadata("Category", "Lbl_SequenceCategory_Utility")]
     [Export(typeof(ISequenceItem))]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class WaitUntil : SequenceItem, IValidatable, ITrueFalse {
         private ISafetyMonitorMediator safetyMonitorMediator;
@@ -55,26 +55,8 @@ namespace NINA.Sequencer.SequenceItem.Utility {
         [IsExpression]
         public partial double Predicate { get; set; }
 
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
-
         public TimeSpan WaitInterval { get; set; } = TimeSpan.FromSeconds(5);
 
-        public bool Validate() {
-            var i = new List<string>();
-            
-            Expression.ValidateExpressions(i, PredicateExpression);
-            
-            Issues = i;
-            return i.Count == 0;
-        }
         public override string ToString() {
             return $"Category: {Category}, Item: {nameof(WaitUntil)}";
         }

@@ -141,6 +141,50 @@ namespace NINA.Test.SystemWindowsCompat {
 
         #endregion
 
+        #region Source borrowing
+
+        // The derived bitmaps read their source without copying it first. They must neither
+        // dispose nor modify it, and their result must not depend on it afterwards.
+        [Test]
+        public void DerivedBitmaps_LeaveSourceUsableAndUnchanged() {
+            var pixels = new byte[] { 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150 };
+            using var source = CreateGray8(4, 4, pixels);
+
+            using (new CroppedBitmap(source, new Int32Rect(1, 1, 2, 2))) { }
+            using (new TransformedBitmap(source, new ScaleTransform(0.5, 0.5))) { }
+            using (new TransformedBitmap(source, new ScaleTransform(-1, 1))) { }
+            using (new FormatConvertedBitmap(source, PixelFormats.Gray16, null, 0)) { }
+
+            Assert.That(source.PixelWidth, Is.EqualTo(4));
+            Assert.That(ReadBytes(source), Is.EqualTo(pixels));
+        }
+
+        [Test]
+        public void DerivedBitmaps_AreIndependentOfSourceDisposal() {
+            var source = CreateGray8(2, 2, new byte[] { 10, 20, 30, 40 });
+            var transformed = new TransformedBitmap(source, new ScaleTransform(1, 1));
+            var converted = new FormatConvertedBitmap(source, PixelFormats.Gray8, null, 0);
+
+            source.Dispose();
+
+            using (transformed)
+            using (converted) {
+                Assert.That(ReadBytes(transformed), Is.EqualTo(new byte[] { 10, 20, 30, 40 }));
+                Assert.That(ReadBytes(converted), Is.EqualTo(new byte[] { 10, 20, 30, 40 }));
+            }
+        }
+
+        [Test]
+        public void TransformedBitmap_FromWriteableBitmap_LeavesSourceUsable() {
+            using var source = new WriteableBitmap(CreateGray8(2, 2, new byte[] { 1, 2, 3, 4 }));
+            using var transformed = new TransformedBitmap(source, new ScaleTransform(2, 2));
+
+            Assert.That(transformed.PixelWidth, Is.EqualTo(4));
+            Assert.That(ReadBytes(source), Is.EqualTo(new byte[] { 1, 2, 3, 4 }));
+        }
+
+        #endregion
+
         #region TransformedBitmap
 
         [Test]

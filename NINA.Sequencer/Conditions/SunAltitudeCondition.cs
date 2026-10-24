@@ -26,6 +26,8 @@ using NINA.Sequencer.Generators;
 using System.Runtime.Serialization;
 using NINA.Sequencer.Logic;
 using System.Globalization;
+using NINA.Sequencer.Validations;
+using System.Collections.Generic;
 
 namespace NINA.Sequencer.Conditions {
 
@@ -35,9 +37,9 @@ namespace NINA.Sequencer.Conditions {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Condition")]
     [Export(typeof(ISequenceCondition))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]   
+    [UsesExpressions(GenerateValidation = true)]
     
-    public partial class SunAltitudeCondition : LoopForSunMoonAltitudeBase {
+    public partial class SunAltitudeCondition : LoopForSunMoonAltitudeBase, IValidatable {
 
         [ImportingConstructor]
         public SunAltitudeCondition(IProfileService profileService) : base(profileService, useCustomHorizon: false) {
@@ -59,13 +61,12 @@ namespace NINA.Sequencer.Conditions {
             }
         }
 
-        [IsExpression(Default = 0, Range = [-90, 90], Proxy = "Data.Offset", HasValidator = true)]
+        [IsExpression(Default = 0, Range = [-90, 90], Proxy = "Data.Offset")]
         public partial double Offset { get; set; }
 
-        partial void OffsetExpressionValidator(Expression expr) {
-            if (expr.Error == null) {
-                Data.Offset = expr.Value;
-            }
+        public override void AfterParentChanged() {
+            Validate();
+            base.AfterParentChanged();
         }
 
         private DateTimeOffset lastCalculation = DateTimeOffset.MinValue;
@@ -73,7 +74,8 @@ namespace NINA.Sequencer.Conditions {
         private ComparisonOperatorEnum lastCalculationComparator = ComparisonOperatorEnum.EQUALS;
 
         public override void CalculateExpectedTime() {
-            Data.CurrentAltitude = AstroUtil.GetSunAltitude(DateTime.Now, Data.Observer);
+            _ = Offset; // Refresh the target consumed by the shared altitude calculator.
+            Data.CurrentAltitude = Math.Round(AstroUtil.GetSunAltitude(DateTime.Now, Data.Observer), 2);
 
             if (!Check(null, null, true)) {
                 Data.ExpectedDateTime = DateTime.Now;
@@ -106,7 +108,8 @@ namespace NINA.Sequencer.Conditions {
 
         protected override double GetDataOffset() {
             // Sunrise/Sunset calculations are a special case where we adjust for the upper limp of the Sun touching the horizon including atmospheric refraction.
-            return Data.Offset != 0 ? Data.Offset : -AstroUtil.SunUpperLimbApparentHorizonAltitude;
+            var offset = Offset;
+            return offset != 0 ? offset : -AstroUtil.SunUpperLimbApparentHorizonAltitude;
         }
     }
 }

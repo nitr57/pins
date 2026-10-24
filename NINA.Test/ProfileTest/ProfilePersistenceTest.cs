@@ -6,6 +6,8 @@ using NINA.Profile.Interfaces;
 using NUnit.Framework;
 using System;
 using System.IO;
+using System.Linq;
+using System.Xml.Linq;
 using ProfileModel = NINA.Profile.Profile;
 
 namespace NINA.Test.ProfileTest {
@@ -30,6 +32,33 @@ namespace NINA.Test.ProfileTest {
             if (!string.IsNullOrWhiteSpace(testRoot) && Directory.Exists(testRoot)) {
                 Directory.Delete(testRoot, true);
             }
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void ImageFileSettings_LoadAndCloneRefreshUnpersistedPathValidity(bool initiallyExists, bool clone) {
+            string imageDirectory = Path.Combine(testRoot, "images");
+            if (initiallyExists) Directory.CreateDirectory(imageDirectory);
+            using var original = new ProfileModel("Output path validity");
+            original.ImageFileSettings.FilePath = imageDirectory;
+            original.ImageFileSettings.IsFilePathValid().Should().Be(initiallyExists);
+            original.Save();
+            if (!clone) original.Dispose();
+            if (initiallyExists) Directory.Delete(imageDirectory);
+            else Directory.CreateDirectory(imageDirectory);
+
+            using IProfile restored = clone ? ProfileModel.Clone(original) : ProfileModel.Load(original.Location);
+
+            restored.ImageFileSettings.Should().NotBeSameAs(original.ImageFileSettings);
+            restored.ImageFileSettings.FilePath.Should().Be(imageDirectory);
+            if (initiallyExists) Directory.CreateDirectory(imageDirectory);
+            else Directory.Delete(imageDirectory);
+            restored.ImageFileSettings.IsFilePathValid().Should().Be(!initiallyExists,
+                "deserialization must refresh the result before its first consumer reads it");
+            original.ImageFileSettings.IsFilePathValid().Should().Be(initiallyExists,
+                "the original settings retain their own result until their path changes");
         }
 
         /// <summary>
@@ -142,7 +171,81 @@ namespace NINA.Test.ProfileTest {
             File.Exists(location).Should().BeFalse();
         }
 
-        private static ProfileModel SaveProfile(string name, Action<ProfileModel> configure = null) {
+        /// <summary>
+        /// Verifies that the guide camera's settings are saved and loaded apart from the imaging camera's.
+        /// </summary>
+        [Test]
+        public void SaveAndLoad_RoundTripsGuideCameraSettingsSeparately() {
+            ProfileModel profile = SaveProfile("Guide Rig", profileToSave => {
+                profileToSave.CameraSettings.PixelSize = 3.76d;
+                profileToSave.CameraSettings.IndiDriver = "indi_toupcam_ccd";
+                profileToSave.GuideCameraSettings.PixelSize = 2.9d;
+                profileToSave.GuideCameraSettings.IndiDriver = "indi_asi_ccd";
+                profileToSave.GuideCameraSettings.Gain = 300;
+            });
+            string location = profile.Location;
+            profile.Dispose();
+
+            using IProfile loadedProfile = ProfileModel.Load(location);
+
+            loadedProfile.CameraSettings.PixelSize.Should().Be(3.76d);
+            loadedProfile.CameraSettings.IndiDriver.Should().Be("indi_toupcam_ccd");
+            loadedProfile.CameraSettings.Gain.Should().BeNull();
+            loadedProfile.GuideCameraSettings.PixelSize.Should().Be(2.9d);
+            loadedProfile.GuideCameraSettings.IndiDriver.Should().Be("indi_asi_ccd");
+            loadedProfile.GuideCameraSettings.Gain.Should().Be(300);
+        }
+
+        /// <summary>
+        /// Verifies that a profile saved before the guide camera section existed loads with default guide camera settings.
+        /// </summary>
+        [Test]
+        public void Load_ProfileWithoutGuideCameraSection_GetsDefaultGuideCameraSettings() {
+            ProfileModel profile = SaveProfile("Older Profile", profileToSave => {
+                profileToSave.CameraSettings.PixelSize = 3.76d;
+                profileToSave.GuideCameraSettings.PixelSize = 2.9d;
+            });
+            string location = profile.Location;
+            profile.Dispose();
+            EditProfileXml(location, root => root.Elements().Single(e => e.Name.LocalName == nameof(ProfileModel.GuideCameraSettings)).Remove());
+
+            using IProfile loadedProfile = ProfileModel.Load(location);
+
+            loadedProfile.CameraSettings.PixelSize.Should().Be(3.76d);
+            loadedProfile.GuideCameraSettings.Should().NotBeNull();
+            loadedProfile.GuideCameraSettings.PixelSize.Should().Be(new CameraSettings().PixelSize);
+        }
+
+        /// <summary>
+        /// Verifies that an element this build does not know is skipped without losing the sections after it, which is how
+        /// an older build reads a profile that already contains the guide camera section.
+        /// </summary>
+        [Test]
+        public void Load_SkipsUnknownSection_AndKeepsTheSectionsAfterIt() {
+            ProfileModel profile = SaveProfile("Newer Profile", profileToSave => {
+                profileToSave.GuiderSettings.GuiderName = "PHD2";
+                profileToSave.TelescopeSettings.FocalLength = 530d;
+            });
+            string location = profile.Location;
+            profile.Dispose();
+            EditProfileXml(location, root => {
+                XElement guiderSettings = root.Elements().Single(e => e.Name.LocalName == nameof(ProfileModel.GuiderSettings));
+                guiderSettings.AddBeforeSelf(new XElement(root.Name.Namespace + "GuideFutureSettings", new XElement(root.Name.Namespace + "Value", "42")));
+            });
+
+            using IProfile loadedProfile = ProfileModel.Load(location);
+
+            loadedProfile.GuiderSettings.GuiderName.Should().Be("PHD2");
+            loadedProfile.TelescopeSettings.FocalLength.Should().Be(530d);
+        }
+
+        private static void EditProfileXml(string location, Action<XElement> edit) {
+            XDocument document = XDocument.Load(location);
+            edit(document.Root!);
+            document.Save(location);
+        }
+
+        private static ProfileModel SaveProfile(string name, Action<ProfileModel>? configure = null) {
             ProfileModel profile = new ProfileModel(name);
             configure?.Invoke(profile);
             profile.Save();

@@ -34,6 +34,35 @@ namespace NINA.Test.Sequencer.Trigger.Connect {
 
     [TestFixture]
     public class ReconnectTriggerTest {
+        [Test]
+        public async Task ReconnectOnDownloadFailure_RepeatedInitializationAndReparentingReleaseBothPublishers() {
+            var sut = CreateReconnectOnDownloadFailure();
+            var firstRoot = new SequenceRootContainer();
+            var secondRoot = new SequenceRootContainer();
+            var parent = new SequentialContainer { Status = NINA.Core.Enum.SequenceEntityStatus.RUNNING };
+            firstRoot.Add(parent);
+            parent.Add(sut);
+            for (int cycle = 0; cycle < 2; cycle++) {
+                sut.SequenceBlockInitialize();
+                sut.SequenceBlockInitialize();
+                downloadTimeoutHandlers.Should().BeOfType<Func<object, EventArgs, Task>>().Which.GetInvocationList().Should().HaveCount(1);
+                sut.SequenceBlockTeardown();
+                sut.SequenceBlockTeardown();
+                downloadTimeoutHandlers.Should().BeNull();
+                await firstRoot.RaiseFailureEvent(Mock.Of<ISequenceItem>(), new CameraDownloadFailedException("after teardown"));
+                sut.ShouldTrigger(null, null).Should().BeFalse();
+            }
+
+            sut.SequenceBlockInitialize();
+            secondRoot.Add(parent);
+            await firstRoot.RaiseFailureEvent(Mock.Of<ISequenceItem>(), new CameraDownloadFailedException("old root"));
+            sut.ShouldTrigger(null, null).Should().BeFalse();
+            await secondRoot.RaiseFailureEvent(Mock.Of<ISequenceItem>(), new CameraDownloadFailedException("new root"));
+            sut.ShouldTrigger(null, null).Should().BeTrue();
+            parent.Detach();
+            downloadTimeoutHandlers.Should().BeNull();
+        }
+
         private NINA.Profile.Profile profile;
         private Mock<IProfileService> profileServiceMock;
         private Mock<ICameraMediator> cameraMediatorMock;
@@ -49,7 +78,7 @@ namespace NINA.Test.Sequencer.Trigger.Connect {
         private Mock<ISafetyMonitorMediator> safetyMonitorMediatorMock;
         private Mock<ISequenceMediator> sequenceMediatorMock;
         private CameraInfo cameraInfo;
-        private Func<object, EventArgs, Task> downloadTimeoutHandlers;
+        private Func<object, EventArgs, Task>? downloadTimeoutHandlers;
 
         [SetUp]
         public void SetUp() {
@@ -143,7 +172,7 @@ namespace NINA.Test.Sequencer.Trigger.Connect {
             ReconnectOnDownloadFailure sut = CreateReconnectOnDownloadFailure();
 
             sut.SequenceBlockInitialize();
-            await downloadTimeoutHandlers.Invoke(this, EventArgs.Empty);
+            await downloadTimeoutHandlers.Should().BeOfType<Func<object, EventArgs, Task>>().Which.Invoke(this, EventArgs.Empty);
 
             sut.ShouldTrigger(Mock.Of<ISequenceItem>(), Mock.Of<ISequenceItem>()).Should().BeTrue();
 

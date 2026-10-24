@@ -30,7 +30,6 @@ using NINA.WPF.Base.Interfaces.ViewModel;
 using NINA.WPF.Base.Mediator;
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.ComponentModel.Composition;
 using System.Linq;
 using System.Text;
@@ -47,7 +46,7 @@ namespace NINA.Sequencer.Trigger.Guider {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Guider")]
     [Export(typeof(ISequenceTrigger))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class DitherAfterExposures : SequenceTrigger, IValidatable {
         private IGuiderMediator guiderMediator;
@@ -78,16 +77,6 @@ namespace NINA.Sequencer.Trigger.Guider {
 
         [IsExpression(Default = 3, Range = [0, 32])]
         public partial int AfterExposures { get; set; }
-
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = ImmutableList.CreateRange(value);
-                RaisePropertyChanged();
-            }
-        }
 
         public int ProgressExposures => AfterExposures > 0 ? history.ImageHistory.Count % AfterExposures : 0;
 
@@ -132,17 +121,12 @@ namespace NINA.Sequencer.Trigger.Guider {
             Validate();
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             var info = guiderMediator.GetInfo();
 
             if (AfterExposures > 0 && !info.Connected) {
-                i.Add(Loc.Instance["LblGuiderNotConnected"]);
+                issues.Add(Loc.Instance["LblGuiderNotConnected"]);
             }
-
-            Expression.ValidateExpressions(i, AfterExposuresExpression);
-            Issues = i;
-            return i.Count == 0;
         }
     }
 }

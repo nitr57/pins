@@ -1,0 +1,95 @@
+{
+  "$id": "root",
+  "$type": "NINA.Sequencer.Container.SequenceRootContainer, NINA.Sequencer",
+  "Name": "Altitude symbols",
+  "Items": { "$values": [
+    {
+      "$id": "definitions",
+      "$type": "NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
+      "Strategy": { "$type": "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer" },
+      "Name": "Global definitions",
+      "Parent": { "$ref": "root" },
+      "Items": { "$values": [
+        {
+          "$type": "NINA.Sequencer.SequenceItem.Expressions.GlobalConstant, NINA.Sequencer",
+          "Expr": { "Definition": "-12" },
+          "Identifier": "dc",
+          "Parent": { "$ref": "definitions" }
+        },
+        {
+          "$type": "NINA.Sequencer.SequenceItem.Expressions.GlobalVariable, NINA.Sequencer",
+          "OriginalDefinition": "-15",
+          "Expr": { "Definition": "" },
+          "Identifier": "dv",
+          "Parent": { "$ref": "definitions" }
+        }
+      ] }
+    },
+    {
+      "$id": "scoped",
+      "$type": "NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
+      "Strategy": { "$type": "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer" },
+      "Name": "Scoped definitions",
+      "Parent": { "$ref": "root" },
+      "Items": { "$values": [
+        {
+          "$type": "NINA.Sequencer.SequenceItem.Expressions.Variable, NINA.Sequencer",
+          "OriginalDefinition": "-18",
+          "Expr": { "Definition": "" },
+          "Identifier": "dsv",
+          "Parent": { "$ref": "scoped" }
+        },
+        {
+          "$id": "consumers",
+          "$type": "NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
+          "Strategy": { "$type": "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer" },
+          "Name": "Altitude checks",
+          "Parent": { "$ref": "scoped" },
+          "Conditions": { "$values": [
+            {
+              "$type": "NINA.Sequencer.Conditions.LoopWhile, NINA.Sequencer",
+              "PredicateExpression": { "Definition": "dc == -12 && dv == -15 && dsv == -18" },
+              "Parent": { "$ref": "consumers" }
+            },
+            {
+              "$type": "NINA.Sequencer.Conditions.SunAltitudeCondition, NINA.Sequencer",
+              "OffsetExpression": { "Definition": "dc" },
+              "Data": { "Offset": -12 },
+              "Parent": { "$ref": "consumers" }
+            },
+            {
+              "$type": "NINA.Sequencer.Conditions.MoonAltitudeCondition, NINA.Sequencer",
+              "OffsetExpression": { "Definition": "dc" },
+              "Data": { "Offset": -12 },
+              "Parent": { "$ref": "consumers" }
+            },
+            {
+              "$type": "NINA.Sequencer.Conditions.SunAltitudeCondition, NINA.Sequencer",
+              "OffsetExpression": { "Definition": "dv" },
+              "Data": { "Offset": 0 },
+              "Parent": { "$ref": "consumers" }
+            },
+            {
+              "$type": "NINA.Sequencer.Conditions.MoonAltitudeCondition, NINA.Sequencer",
+              "OffsetExpression": { "Definition": "dv" },
+              "Data": { "Offset": 0 },
+              "Parent": { "$ref": "consumers" }
+            },
+            {
+              "$type": "NINA.Sequencer.Conditions.SunAltitudeCondition, NINA.Sequencer",
+              "OffsetExpression": { "Definition": "dsv" },
+              "Data": { "Offset": 0 },
+              "Parent": { "$ref": "consumers" }
+            },
+            {
+              "$type": "NINA.Sequencer.Conditions.MoonAltitudeCondition, NINA.Sequencer",
+              "OffsetExpression": { "Definition": "dsv" },
+              "Data": { "Offset": 0 },
+              "Parent": { "$ref": "consumers" }
+            }
+          ] }
+        }
+      ] }
+    }
+  ] }
+}

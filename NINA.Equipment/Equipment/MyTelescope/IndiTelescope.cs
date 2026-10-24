@@ -202,7 +202,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             get {
                 try {
                     if (CanPulseGuide) {
-                        return GetProperty(nameof(IINDITelescope.IsPulseGuiding), false);
+                        // Not cached: a guider waits on this for the end of every pulse, and the value is pins' own
+                        // in-memory pulse tracker, so a fresh read costs nothing and a cached one delays the next pulse.
+                        return GetProperty(nameof(IINDITelescope.IsPulseGuiding), false, TimeSpan.Zero);
                     } else {
                         return false;
                     }
@@ -546,6 +548,19 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 }
             } catch (NotImplementedException) {
                 canPulseGuide = false;
+            }
+        }
+
+        /// <summary>
+        /// Why the driver rejected the last pulse on this direction's axis, or null; taken once. The internal guider asks
+        /// after each pulse, so that a pulse the mount did not carry out is not counted as a move.
+        /// </summary>
+        internal string TakeRejectedPulse(GuideDirections direction) {
+            try {
+                return device?.TakeRejectedPulse(direction);
+            } catch (Exception e) {
+                Logger.Debug($"Could not read the outcome of the last guide pulse: {e.Message}");
+                return null;
             }
         }
 

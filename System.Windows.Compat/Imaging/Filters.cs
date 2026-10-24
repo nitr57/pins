@@ -53,21 +53,28 @@ namespace Accord.Imaging.Filters {
             // Note: OpenCV uses BGR order, so channels[0]=B, [1]=G, [2]=R
             Mat weighted = new Mat();
             Cv2.AddWeighted(channels[2], redCoefficient, channels[1], greenCoefficient, 0.0, weighted);
+            // R and G are no longer needed - release them before the next full-size allocation
+            // to keep the peak memory down on large 16-bit frames.
+            channels[2].Dispose();
+            channels[1].Dispose();
 
             Mat temp = new Mat();
             Cv2.AddWeighted(weighted, 1.0, channels[0], blueCoefficient, 0.0, temp);
             weighted.Dispose();
 
-            // Preserve the source bit depth
-            Mat result = new Mat();
-            if (temp.Depth() == MatType.CV_16U) {
-                temp.ConvertTo(result, MatType.CV_16UC1);
-            } else {
-                temp.ConvertTo(result, MatType.CV_8UC1);
+            // Cleanup (Dispose is idempotent, so the channels released above are safe to repeat)
+            foreach (var ch in channels) ch.Dispose();
+
+            // Preserve the source bit depth. AddWeighted keeps the input depth, so for 8U/16U
+            // input temp already has the target type and converting would only copy it; any
+            // other depth still goes through ConvertTo, which rounds and saturates.
+            MatType targetType = temp.Depth() == MatType.CV_16U ? MatType.CV_16UC1 : MatType.CV_8UC1;
+            if (temp.Type() == targetType) {
+                return new Bitmap(temp);
             }
 
-            // Cleanup
-            foreach (var ch in channels) ch.Dispose();
+            Mat result = new Mat();
+            temp.ConvertTo(result, targetType);
             temp.Dispose();
 
             return new Bitmap(result);

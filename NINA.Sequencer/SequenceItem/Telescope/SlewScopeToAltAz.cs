@@ -42,7 +42,7 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Telescope")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class SlewScopeToAltAz : SequenceItem, IValidatable, ISequenceCustomPropertyEditProvider {
 
@@ -99,8 +99,6 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
             }
         }
 
-        private IList<string> issues = new List<string>();
-
         private bool Protect = false;
 
         bool ISequenceCustomPropertyEditProvider.TryCapturePropertyState(object source, string propertyName, out ISequenceEditSnapshot snapshot) {
@@ -110,6 +108,7 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
             return snapshot != null;
         }
 
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "EXP0100", Justification = "Restore the result already evaluated by the definition setters while preserving the captured coordinate sign.")]
         private void RestoreEditorCoordinates(SequenceHorizontalCoordinateState state) {
             bool previous = Protect;
             try {
@@ -124,14 +123,6 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
                 lastAlt = restored.Altitude.Degree;
                 lastAz = restored.Azimuth.Degree;
             } finally { Protect = previous; }
-        }
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
         }
 
         [IsExpression (Default = 0, Range = [-90, 90], HasValidator = true)]
@@ -203,8 +194,6 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
         }
 
         public override void AfterParentChanged() {
-            AltExpression.Context = this;
-            AzExpression.Context = this;
             if (Coordinates != null) {
                 Coordinates.PropertyChanged -= Coordinates_PropertyChanged;
                 lastAlt = Coordinates.Coordinates.Altitude.Degree;
@@ -215,14 +204,10 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
             Validate();
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             if (!telescopeMediator.GetInfo().Connected) {
-                i.Add(Loc.Instance["LblTelescopeNotConnected"]);
+                issues.Add(Loc.Instance["LblTelescopeNotConnected"]);
             }
-            Logic.Expression.ValidateExpressions(i, AltExpression, AzExpression);
-            Issues = i;
-            return i.Count == 0;
         }
 
         public override string ToString() {

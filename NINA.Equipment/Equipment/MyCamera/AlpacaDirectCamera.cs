@@ -8,6 +8,7 @@ using NINA.Equipment.Equipment.MySwitch.Ascom;
 using NINA.Equipment.Equipment.MyTelescope;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Model;
+using NINA.Equipment.Utility;
 using NINA.Image.Interfaces;
 using NINA.Profile.Interfaces;
 using System;
@@ -59,9 +60,14 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private readonly IExposureDataFactory exposureDataFactory;
         private AlpacaDirectSettings settings;
 
-        public AlpacaDirectCamera(IProfileService profileService, IExposureDataFactory exposureDataFactory) {
+        /// <param name="id">
+        /// The device Id, which also keys the address in the profile's plugin settings: <see cref="AlpacaInteraction.AlpacaDirectCameraId"/>
+        /// for the imaging camera, <see cref="AlpacaInteraction.GuideAlpacaDirectCameraId"/> for pins' guide camera slot.
+        /// </param>
+        public AlpacaDirectCamera(IProfileService profileService, IExposureDataFactory exposureDataFactory, string id = AlpacaInteraction.AlpacaDirectCameraId) {
             this.profileService = profileService;
             this.exposureDataFactory = exposureDataFactory;
+            Id = id;
             settings = new AlpacaDirectSettings(new NINA.Profile.PluginOptionsAccessor(profileService, Guid.Parse(Id)));
         }
 
@@ -71,7 +77,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         public bool HasSetupDialog => true;
 
-        public string Id => "01E42001-1A8B-44AA-AD7E-CE8F5250F1F4";
+        public string Id { get; }
+
+        /// <summary>The address the camera connects to, which identifies the physical camera.</summary>
+        internal string Endpoint => $"{settings.IpAddress?.Trim().ToLowerInvariant()}:{settings.Port}#{settings.DeviceNumber}";
 
         public string Name => device?.Name ?? "Alpaca Camera - Static IP";
 

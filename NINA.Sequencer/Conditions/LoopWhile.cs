@@ -22,7 +22,7 @@ namespace NINA.Sequencer.Conditions {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Condition")]
     [Export(typeof(ISequenceCondition))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class LoopWhile : SequenceCondition, IValidatable, ITrueFalse {
 
@@ -43,20 +43,6 @@ namespace NINA.Sequencer.Conditions {
 
         public override string ToString() {
             return $"Category: {Category}, Item: {nameof(LoopWhile)}, Predicate: {PredicateExpression.Definition}";
-        }
-
-
-        public IList<string> Issues { get; set; }
-
-        public bool Validate() {
-
-            var i = new List<string>();
-
-            Expression.ValidateExpressions(i, PredicateExpression);
-
-            Issues = i;
-            RaisePropertyChanged("Issues");
-            return i.Count == 0;
         }
 
         private bool Debugging = false;

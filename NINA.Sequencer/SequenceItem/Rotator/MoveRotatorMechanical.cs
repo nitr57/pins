@@ -35,7 +35,7 @@ namespace NINA.Sequencer.SequenceItem.Rotator {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Rotator")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class MoveRotatorMechanical : SequenceItem, IValidatable {
 
@@ -54,28 +54,14 @@ namespace NINA.Sequencer.SequenceItem.Rotator {
         [IsExpression (Default = 0, Range = [0, 359.99])]
         public partial float MechanicalPosition { get; set; }
 
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
-
         public override Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
             return rotatorMediator.MoveMechanical(MechanicalPosition, token);
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             if (!rotatorMediator.GetInfo().Connected) {
-                i.Add(Loc.Instance["LblRotatorNotConnected"]);
+                issues.Add(Loc.Instance["LblRotatorNotConnected"]);
             }
-            Expression.ValidateExpressions(i, MechanicalPositionExpression);
-            Issues = i;
-            return i.Count == 0;
         }
 
         public override void AfterParentChanged() {

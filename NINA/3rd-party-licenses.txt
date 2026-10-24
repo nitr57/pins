@@ -967,6 +967,11 @@ applies to:
     - OpenCV
     - HIDAPI
     - Parlot
+    - PHD2 (parts of the internal guider in NINA.GuideEngine are ported from it)
+      Copyright (c) 2006-2010 Craig Stark
+      Copyright (c) 2012-2013 Bret McKee
+      Copyright (c) 2013-2020 Bruce Waddington
+      Copyright (c) 2013-2016 Andy Galasso
 -----------------------------------------------------------------------------
 
 Copyright <YEAR> <COPYRIGHT HOLDER>

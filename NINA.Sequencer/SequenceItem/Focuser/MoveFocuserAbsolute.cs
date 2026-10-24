@@ -36,7 +36,7 @@ namespace NINA.Sequencer.SequenceItem.Focuser {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Focuser")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class MoveFocuserAbsolute : SequenceItem, IValidatable {
 
@@ -57,29 +57,15 @@ namespace NINA.Sequencer.SequenceItem.Focuser {
         [IsExpression]
         public partial int Position { get; set; }
 
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
-
         public override Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
             // todo - Interface lacks progress
-            return focuserMediator.MoveFocuser((int)PositionExpression.Value, token);
+            return focuserMediator.MoveFocuser(Position, token);
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             if (!focuserMediator.GetInfo().Connected) {
-                i.Add(Loc.Instance["LblFocuserNotConnected"]);
+                issues.Add(Loc.Instance["LblFocuserNotConnected"]);
             }
-            Expression.ValidateExpressions(i, PositionExpression);
-            Issues = i;
-            return i.Count == 0;
         }
 
         public override void AfterParentChanged() {

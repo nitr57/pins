@@ -142,12 +142,13 @@ namespace NINA.Astrometry {
         /// <returns>Apparent equatorial coordinates from an earth-based geocentric observer</returns>
         public static Coordinates PlanetApparentCoordinates(double jd_tt, Body body, Accuracy accuracy = Accuracy.Full) {
             lock (lockObj) {
-                var result = NOVAS_make_object(ObjectType.MajorPlanetSunOrMoon, (short)body, body.ToString(), dummy_star.Value, out var celestialObject);
+                var star = dummy_star.Value;
+                var result = NOVAS_make_object(ObjectType.MajorPlanetSunOrMoon, (short)body, body.ToString(), ref star, out var celestialObject);
                 if (result != 0) {
                     throw new Exception($"Failed MakeObject for {body}. Result={result}");
                 }
 
-                result = NOVAS_app_planet(jd_tt, celestialObject, accuracy, out var ra, out var dec, out var _);
+                result = NOVAS_app_planet(jd_tt, ref celestialObject, accuracy, out var ra, out var dec, out var _);
                 if (result != 0) {
                     throw new Exception($"Failed AppPlanet for {body}. Result={result}");
                 }
@@ -206,7 +207,7 @@ namespace NINA.Astrometry {
             [In, Out][MarshalAs(UnmanagedType.LPArray, SizeConst = 3)] double[] pos,
             [In, Out][MarshalAs(UnmanagedType.LPArray, SizeConst = 3)] double[] vel) {
             lock (lockObj) {
-                return NOVAS_geo_posvel_native(jdtt, deltaT, accuracy, observer, pos, vel);
+                return NOVAS_geo_posvel_native(jdtt, deltaT, accuracy, ref observer, pos, vel);
             }
         }
 
@@ -259,18 +260,20 @@ namespace NINA.Astrometry {
             double rad_vel,
             [Out] out CatalogueEntry star);
 
+        // The C functions take their structs by pointer, hence ref: a struct passed by value only works on
+        // Windows x64, which passes large structs by hidden reference; Linux x64 copies them onto the stack.
         [DllImport(DLLNAME, EntryPoint = "make_object", CallingConvention = CallingConvention.Cdecl)]
         private static extern short NOVAS_make_object(
             ObjectType type,
             short number,
             [MarshalAs(UnmanagedType.LPTStr, SizeConst = SIZE_OF_OBJ_NAME)] string name,
-            CatalogueEntry star_data,
+            ref CatalogueEntry star_data,
             [Out] out CelestialObject cel_obj);
 
         [DllImport(DLLNAME, EntryPoint = "app_planet", CallingConvention = CallingConvention.Cdecl)]
         private static extern short NOVAS_app_planet(
             double jd_tt,
-            CelestialObject ss_body,
+            ref CelestialObject ss_body,
             Accuracy accuracy,
             [Out] out double ra,
             [Out] out double dec,
@@ -278,7 +281,7 @@ namespace NINA.Astrometry {
 
         [DllImport(DLLNAME, EntryPoint = "geo_posvel", CallingConvention = CallingConvention.Cdecl)]
         private static extern short NOVAS_geo_posvel_native(
-            double jdtt, double deltaT, NOVAS.Accuracy accuracy, NOVAS.Observer observer,
+            double jdtt, double deltaT, NOVAS.Accuracy accuracy, ref NOVAS.Observer observer,
             [In, Out][MarshalAs(UnmanagedType.LPArray, SizeConst = 3)] double[] pos,
             [In, Out][MarshalAs(UnmanagedType.LPArray, SizeConst = 3)] double[] vel);
 

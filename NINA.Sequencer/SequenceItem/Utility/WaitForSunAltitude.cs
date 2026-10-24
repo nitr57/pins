@@ -19,6 +19,7 @@ using NINA.Profile.Interfaces;
 using NINA.Core.Utility;
 using NINA.Astrometry;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Globalization;
 using System.Threading;
@@ -39,7 +40,7 @@ namespace NINA.Sequencer.SequenceItem.Utility {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Utility")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
     public partial class WaitForSunAltitude : WaitForAltitudeBase, IValidatable {
 
         [ImportingConstructor]
@@ -94,14 +95,8 @@ namespace NINA.Sequencer.SequenceItem.Utility {
             }
         }
 
-        [IsExpression(Default = 30, Range = [-90, 90], Proxy = "Data.Offset", HasValidator = true)]
+        [IsExpression(Default = 30, Range = [-90, 90], Proxy = "Data.Offset")]
         public partial double Offset { get; set; }
-
-        partial void OffsetExpressionValidator(Expression expr) {
-            if (expr.Error == null) {
-                Data.Offset = expr.Value;
-            }
-        }
 
         private DateTimeOffset lastCalculation = DateTimeOffset.MinValue;
         private double lastCalculationOffset = double.NaN;
@@ -109,7 +104,7 @@ namespace NINA.Sequencer.SequenceItem.Utility {
 
         public override void CalculateExpectedTime() {
             // Refraction correction is omitted here. The altitude would otherwise jump when going below the horizon, as refraction modeling breaks down below the horizon.
-            Data.CurrentAltitude = AstroUtil.GetSunAltitude(DateTime.Now, Data.Observer);
+            Data.CurrentAltitude = Math.Round(AstroUtil.GetSunAltitude(DateTime.Now, Data.Observer), 2);
 
             if (!MustWait()) {
                 Data.ExpectedDateTime = DateTime.Now;
@@ -149,15 +144,14 @@ namespace NINA.Sequencer.SequenceItem.Utility {
             Validate();
         }
 
-        public bool Validate() {
+        partial void ValidateAdditional(IList<string> issues) {
             CalculateExpectedTime();
-            Expression.ValidateExpressions(Issues, OffsetExpression);
-            return Issues.Count == 0;
         }
 
         private double GetDataOffset() {
             // Sunrise/Sunset calculations are a special case where we adjust for the upper limp of the Sun touching the horizon including atmospheric refraction.
-            return Data.Offset != 0 ? Data.Offset : -AstroUtil.SunUpperLimbApparentHorizonAltitude;
+            var offset = Offset;
+            return offset != 0 ? offset : -AstroUtil.SunUpperLimbApparentHorizonAltitude;
         }
     }
 }

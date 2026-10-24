@@ -139,6 +139,60 @@ namespace NINA.Test.SystemWindowsCompat {
             Assert.That(canvas.GetPixel(0, 0).B, Is.EqualTo(0));
         }
 
+        // DrawImage reads its source without copying it, except when source and canvas share
+        // memory: copying into an overlapping region in place would smear the image.
+        [Test]
+        public void DrawImage_BitmapOntoItself_DrawsTheOriginalPixels() {
+            using var bitmap = new Bitmap(4, 4, PixelFormat.Format8bppIndexed);
+            OpenCvSharp.Mat pixels = bitmap;
+            FillGradient(pixels);
+            using var original = pixels.Clone();
+
+            using (var graphics = Graphics.FromImage(bitmap)) {
+                graphics.DrawImage(bitmap, 1, 1);
+            }
+
+            AssertShiftedByOne(original, pixels);
+        }
+
+        [Test]
+        public void DrawImage_BetweenBitmapsOverTheSameBuffer_DrawsTheOriginalPixels() {
+            var buffer = new byte[16];
+            var handle = System.Runtime.InteropServices.GCHandle.Alloc(buffer, System.Runtime.InteropServices.GCHandleType.Pinned);
+            try {
+                var scan0 = handle.AddrOfPinnedObject();
+                using var canvas = new Bitmap(4, 4, 4, PixelFormat.Format8bppIndexed, scan0);
+                using var sprite = new Bitmap(4, 4, 4, PixelFormat.Format8bppIndexed, scan0);
+                OpenCvSharp.Mat pixels = canvas;
+                FillGradient(pixels);
+                using var original = pixels.Clone();
+
+                using (var graphics = Graphics.FromImage(canvas)) {
+                    graphics.DrawImage(sprite, 1, 1);
+                }
+
+                AssertShiftedByOne(original, pixels);
+            } finally {
+                handle.Free();
+            }
+        }
+
+        private static void FillGradient(OpenCvSharp.Mat mat) {
+            for (int y = 0; y < 4; y++)
+                for (int x = 0; x < 4; x++)
+                    mat.Set(y, x, (byte)(y * 10 + x + 1));
+        }
+
+        // Row and column 0 keep their pixels; everything else is the original moved by (1, 1).
+        private static void AssertShiftedByOne(OpenCvSharp.Mat original, OpenCvSharp.Mat actual) {
+            for (int y = 0; y < 4; y++) {
+                for (int x = 0; x < 4; x++) {
+                    byte expected = (x == 0 || y == 0) ? original.Get<byte>(y, x) : original.Get<byte>(y - 1, x - 1);
+                    Assert.That(actual.Get<byte>(y, x), Is.EqualTo(expected), $"pixel ({x}, {y})");
+                }
+            }
+        }
+
         [Test]
         public void MeasureString_ReturnsPositiveSize() {
             using var bitmap = NewCanvas();

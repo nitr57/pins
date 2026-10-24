@@ -131,8 +131,50 @@ namespace NINA.Image.RawConverter {
                 Logger.Warning($"LibRaw RAW bit depth setting {bitDepth} adjusted to {copiedFrame.EffectiveBitDepth}; maximum unpacked pixel value is {copiedFrame.MaxPixelValue}.");
             }
 
+            var whiteLevel = TryGetWhiteLevel(processor);
+            var dataBitDepth = GetDataBitDepth(
+                copiedFrame.OutputBitDepth,
+                copiedFrame.EffectiveBitDepth,
+                copiedFrame.MaxPixelValue,
+                whiteLevel);
+
+            if (dataBitDepth != copiedFrame.OutputBitDepth) {
+                Logger.Debug($"LibRaw RAW white level {whiteLevel} spans {dataBitDepth} bits; reporting {dataBitDepth} instead of {copiedFrame.OutputBitDepth} bits for the unchanged pixel data.");
+            }
+
             ApplyBayerPatternMetadata(processor, metaData);
-            return CreateImageData(copiedFrame.Pixels, rawBytes, rawType, frame.Width, frame.Height, copiedFrame.OutputBitDepth, metaData);
+            return CreateImageData(copiedFrame.Pixels, rawBytes, rawType, frame.Width, frame.Height, dataBitDepth, metaData);
+        }
+
+        private static int TryGetWhiteLevel(IntPtr processor) {
+            try {
+                return LibRawNative.GetColorMaximum(processor);
+            } catch (EntryPointNotFoundException ex) {
+                Logger.Debug($"LibRaw does not export libraw_get_color_maximum; RAW bit depth follows the profile setting. {ex.Message}");
+                return 0;
+            }
+        }
+
+        // The bit depth reported for the copied pixels is the full range that statistics, the preview stretch
+        // and the flat histogram targets measure against. It never changes the pixel values; it only stops a
+        // profile bit depth above the camera's (16 by default) from claiming a range the RAW data cannot reach.
+        // Otherwise a 14-bit NEF reads four times darker than it is and a saturated frame stretches to black.
+        // LibRaw's white level (color.maximum, black level included) gives the reach of the RAW data. It only
+        // ever lowers the bit depth: a profile setting below the data was already raised while copying, and a
+        // pixel above the white level keeps the bit depth needed to hold it.
+        private static int GetDataBitDepth(int outputBitDepth, int effectiveBitDepth, ushort maxPixelValue, int whiteLevel) {
+            if (whiteLevel <= 0) {
+                return outputBitDepth;
+            }
+
+            // Bit scaling shifted every pixel left by the difference; without scaling both are equal.
+            var appliedShift = outputBitDepth - effectiveBitDepth;
+            var reach = Math.Max((long)whiteLevel, maxPixelValue) << appliedShift;
+            if (reach > ushort.MaxValue) {
+                return outputBitDepth;
+            }
+
+            return Math.Min(outputBitDepth, GetRequiredBitDepth((ushort)reach));
         }
 
         private IImageData CreateImageData(ushort[] pixels, byte[] rawBytes, string rawType, int width, int height, int bitDepth, ImageMetaData metaData) {
@@ -362,6 +404,10 @@ namespace NINA.Image.RawConverter {
 
             [DllImport(LibRawDllName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "libraw_get_iheight")]
             public static extern int GetIHeight(IntPtr processor);
+
+            // Returns imgdata.color.maximum, the RAW white level including the black level.
+            [DllImport(LibRawDllName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "libraw_get_color_maximum")]
+            public static extern int GetColorMaximum(IntPtr processor);
 
             [DllImport(LibRawDllName, CallingConvention = CallingConvention.Cdecl, EntryPoint = "libraw_get_iparams")]
             public static extern IntPtr GetImageParams(IntPtr processor);

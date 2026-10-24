@@ -64,7 +64,8 @@ namespace System.Windows.Media.Imaging {
                 return;
             }
 
-            using Mat sourceMat = (Mat)_source;
+            using var sourceLease = _source.LeaseMat();
+            Mat sourceMat = sourceLease.Mat;
             Mat result = new Mat();
 
             // Apply the transform
@@ -91,11 +92,13 @@ namespace System.Windows.Media.Imaging {
                 int newWidth = Math.Max(1, (int)Math.Round(sourceMat.Width * Math.Abs(scaleX)));
                 int newHeight = Math.Max(1, (int)Math.Round(sourceMat.Height * Math.Abs(scaleY)));
 
-                // Resize first (using absolute scale), then flip if needed for negative scales
-                using var resized = new Mat();
-                Cv2.Resize(sourceMat, resized, new OpenCvSharp.Size(newWidth, newHeight), 0, 0, InterpolationFlags.Linear);
+                var newSize = new OpenCvSharp.Size(newWidth, newHeight);
 
+                // Resize first (using absolute scale), then flip if needed for negative scales
                 if (scaleX < 0 || scaleY < 0) {
+                    using var resized = new Mat();
+                    Cv2.Resize(sourceMat, resized, newSize, 0, 0, InterpolationFlags.Linear);
+
                     // REVIEW.md F25: OpenCV's FlipMode.X flips around the x-axis (vertical
                     // mirror), and FlipMode.Y flips around the y-axis (horizontal mirror) - the
                     // opposite of what the names suggest at a glance.
@@ -107,7 +110,7 @@ namespace System.Windows.Media.Imaging {
                     }
                     Cv2.Flip(resized, result, flipMode);
                 } else {
-                    resized.CopyTo(result);
+                    Cv2.Resize(sourceMat, result, newSize, 0, 0, InterpolationFlags.Linear);
                 }
             } else if (_transform is TranslateTransform translateTransform) {
                 // Shift the raster within the same-sized canvas; content shifted past an edge is

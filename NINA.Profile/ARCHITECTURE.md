@@ -27,6 +27,12 @@ The project keeps both interface and implementation types:
 
 `Settings.cs` is the abstract base for settings sections.
 
+## Guide Camera Settings (pins)
+
+`Profile.GuideCameraSettings` is a second `CameraSettings` section for the guide camera. `GuideCameraProfileService` wraps the real `IProfileService` so that its `ActiveProfile.CameraSettings` is that section and every other member is the real service's. Its `ActiveProfile` is one view object that follows profile switches, and it raises the real service's events with itself as sender, wrapping both profiles of `ProfileChangedEventArgs` in guide views.
+
+Camera classes, `PersistSettingsCameraDecorator`, `CameraVM`, `CameraChooserVM` and `INDIInteraction` reach camera settings only through `ActiveProfile.CameraSettings`, so the guide camera stack is built with this service instead of changing those classes. Keep it that way: a camera that cached its settings object, or read them some other way, would silently share the imaging camera's settings. `GuideCameraProfileServiceTest` checks by reflection that only `CameraSettings` differs from the real profile, so a section upstream adds to `IProfile` must also be forwarded in the view, which fails to compile until it is.
+
 ## Profile Lifecycle
 
 `ProfileService.cs` is the operational core.
@@ -50,6 +56,12 @@ Responsibilities that are explicit in the code:
 `Profile` itself manages its persisted file. The service loads and disposes profiles rather than treating them as detached DTOs. That is why `ProfileService.Release()` and `SelectProfile(...)` explicitly dispose the current profile before replacing it.
 
 This is also why many higher-level components subscribe to `ProfileChanged` instead of caching settings references indefinitely.
+
+## Output-Path Validation
+
+`ImageFileSettings` checks directory existence when its default output path is initialized and whenever `FilePath` changes. The result is ready before the `FilePath` notification and is not serialized; loading or cloning a profile checks the path again. Reassigning an unchanged path does not check again. Filesystem changes alone do not refresh this result, including for relative paths.
+
+`ImageFileSettingsExtensions.IsFilePathValid` exposes the result through the existing `IImageFileSettings` contract without adding an interface member. Custom interface implementations retain direct filesystem validation. Consumers should read the active profile's settings each time rather than retaining an old profile's result. Actual image saving still performs its own filesystem operations and error handling.
 
 ## Generated Plugin Settings Support
 

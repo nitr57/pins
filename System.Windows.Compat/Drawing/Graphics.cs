@@ -102,7 +102,8 @@ namespace System.Drawing {
                 return;
             }
 
-            using (Mat srcMat = image.GetMat()) {
+            using (var srcLease = LeaseSource(image)) {
+                Mat srcMat = srcLease.Mat;
                 if (srcMat == null || srcMat.Empty()) return;
                 if (_canvas == null || _canvas.Empty()) return;
 
@@ -157,7 +158,8 @@ namespace System.Drawing {
                 return;
             }
 
-            using (Mat srcMat = bitmap.GetMat()) {
+            using (var srcLease = LeaseSource(bitmap)) {
+                Mat srcMat = srcLease.Mat;
                 if (srcMat == null || srcMat.Empty()) return;
                 if (_canvas == null || _canvas.Empty()) return;
 
@@ -185,6 +187,30 @@ namespace System.Drawing {
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// Reads a source image without copying it. When its pixels share memory with this
+        /// canvas (a bitmap drawn into itself, or two bitmaps over the same buffer), copying into
+        /// the overlapping region would smear the image, so that case still takes a copy.
+        /// </summary>
+        private System.Windows.Media.Imaging.MatLease LeaseSource(Bitmap image) {
+            Mat source = image;
+            // Empty checks first, in the order the callers make them, so a disposed or empty
+            // image fails (or returns early) exactly as it did before the overlap check existed.
+            if (source != null && !source.Empty() && _canvas != null && !_canvas.Empty() && SharesMemory(source, _canvas)) {
+                return new System.Windows.Media.Imaging.MatLease(image.GetMat(), owned: true);
+            }
+            return new System.Windows.Media.Imaging.MatLease(source, owned: false);
+        }
+
+        /// <summary>
+        /// Whether two Mats' underlying buffers overlap. Compares the whole allocations
+        /// (DataStart..DataLimit), not just the visible regions, so ROI views are caught too.
+        /// Both Mats must be non-empty.
+        /// </summary>
+        private static bool SharesMemory(Mat a, Mat b) {
+            return a.DataStart.ToInt64() < b.DataLimit.ToInt64() && b.DataStart.ToInt64() < a.DataLimit.ToInt64();
         }
 
         /// <summary>
@@ -681,7 +707,8 @@ namespace System.Drawing {
                 throw new ArgumentException("Three destination points are required.", nameof(destPoints));
             }
 
-            using (Mat srcMat = image.GetMat()) {
+            using (var srcLease = LeaseSource(image)) {
+                Mat srcMat = srcLease.Mat;
                 if (srcMat == null || srcMat.Empty()) return;
                 if (_canvas == null || _canvas.Empty()) return;
 
@@ -813,7 +840,8 @@ namespace System.Drawing {
         public void DrawImage(Bitmap image, RectangleF destRect, RectangleF srcRect, GraphicsUnit unit) {
             if (image == null) return;
 
-            using (Mat srcMat = image.GetMat()) {
+            using (var srcLease = LeaseSource(image)) {
+                Mat srcMat = srcLease.Mat;
                 if (srcMat == null || srcMat.Empty()) return;
                 if (_canvas == null || _canvas.Empty()) return;
 

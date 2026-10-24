@@ -87,9 +87,11 @@ namespace NINA.INDI {
         private readonly HashSet<string> _loadedDrivers = [];
 
         // Maps NINA device-type category name (e.g. "WeatherData", "SafetyMonitor") to the
-        // driver that was last loaded for that category.  Eviction during a rescan only touches
-        // the driver previously loaded for the SAME category, so two categories that share an
-        // INDI interface flag (e.g. WEATHER_INTERFACE) never evict each other's drivers.
+        // driver last requested for that category, whether this request loaded it or another
+        // category already had. Eviction during a rescan only touches the driver previously used
+        // by the SAME category, and only when no other category still uses it, so two categories
+        // never evict each other's drivers: neither when they share an INDI interface flag (e.g.
+        // WEATHER_INTERFACE) nor when they share a driver (e.g. mount and focuser on indi_lx200_OnStep).
         private readonly Dictionary<string, string> _lastDriverPerCategory = [];
 
         // Global property store: deviceName -> (propertyName -> property). Captures every property
@@ -109,13 +111,48 @@ namespace NINA.INDI {
 
         // Private: the class manages a machine-wide indiserver (pkill on start, a fixed FIFO
         // path), so a second instance would fight the first. Use INDIClient.Instance.
-        private INDIClient(int port) {
+        private INDIClient(int port) : this(port, startServer: true) {
+        }
+
+        /// <summary>
+        /// Tests only: <paramref name="startServer"/> false leaves the machine's indiserver alone, and
+        /// the test attaches the client to its own fake server with <see cref="Connect"/>.
+        /// </summary>
+        internal INDIClient(int port, bool startServer) {
             if (port < 1 || port > 65535) {
                 throw new ArgumentOutOfRangeException(nameof(port), "Port must be between 1 and 65535.");
             }
 
             _port = port;
-            Task.Run(async () => await StartServerInFifoMode());
+            _managesServer = startServer;
+            if (startServer) {
+                Task.Run(async () => await StartServerInFifoMode());
+            } else {
+                _serverReadyTcs.SetResult(true);
+            }
+        }
+
+        // False for a test client: Dispose must then leave the machine's indiserver and FIFO alone.
+        private readonly bool _managesServer;
+
+        /// <summary>
+        /// Tests only: receives the driver start/stop commands of a client created with startServer false,
+        /// which never writes to the machine's FIFO.
+        /// </summary>
+        internal Action<string> FifoCommandsForTests { get; set; }
+
+        /// <summary>
+        /// Tests only: makes <see cref="Instance"/>, which every INDIDevice talks to, return this client.
+        /// Returns the previous instance to restore afterwards. Never restore null: the next access to
+        /// <see cref="Instance"/> would then create a real client, which kills the machine's indiserver.
+        /// </summary>
+        internal static INDIClient SetInstanceForTests(INDIClient client) {
+            ArgumentNullException.ThrowIfNull(client);
+            lock (_lock) {
+                var previous = _instance;
+                _instance = client;
+                return previous;
+            }
         }
 
         public bool IsConnected => _tcpClient?.Connected ?? false;
@@ -144,7 +181,7 @@ namespace NINA.INDI {
                 // stream (two concurrent readers) after a quick Disconnect→Connect cycle.
                 var stream = _stream;
                 var token = _cts.Token;
-                _receiveTask = Task.Run(() => ReceiveLoop(stream, token));
+                _receiveTask = Task.Run(() => ReceiveLoop(stream, token, ProcessMainElement, "main connection"));
 
                 // Request all properties from all devices
                 GetProperties();
@@ -173,6 +210,8 @@ namespace NINA.INDI {
 
         public void Disconnect() {
             if (!IsConnected) {
+                // The main connection can die on its own while image connections are still open.
+                CloseBlobConnections();
                 Logger.Warning("INDI not connected to server");
                 return;
             }
@@ -209,9 +248,8 @@ namespace NINA.INDI {
                 _tcpClient = null;
 
                 // Wait (bounded) for the receive loop to actually exit: it may still be
-                // draining a large buffered element, and ProcessXmlMessage writes the shared
-                // big-tag scanner state — a Connect issued right after this Disconnect must
-                // not race those writes (the new loop resets that state on entry).
+                // applying elements it already read, and a Connect issued right after this
+                // Disconnect must not race those writes to the shared stores.
                 var receiveTask = _receiveTask;
                 _receiveTask = null;
                 if (receiveTask != null && !receiveTask.IsCompleted) {
@@ -221,6 +259,8 @@ namespace NINA.INDI {
                         // Faulted or cancelled — either way it has exited, which is all we need.
                     }
                 }
+
+                CloseBlobConnections();
 
                 // Drop the cached property snapshot — once the receive loop is cancelled no more
                 // delProperty messages will arrive to evict stale devices from the control panel.
@@ -330,16 +370,19 @@ namespace NINA.INDI {
                 return;
             }
 
+            List<string> devicesToRemove;
             lock (_driverLock) {
                 _loadedDrivers.Remove(driverName);
 
                 // Remove devices associated with this driver
-                var devicesToRemove = _discoveredDevices.Where(d => d.Value.Driver == driverName).Select(d => d.Key).ToList();
+                devicesToRemove = _discoveredDevices.Where(d => d.Value.Driver == driverName).Select(d => d.Key).ToList();
                 foreach (var deviceKey in devicesToRemove) {
                     _discoveredDevices.Remove(deviceKey);
                     Logger.Debug($"Removed device '{deviceKey}' (driver: {driverName})");
                 }
             }
+            // Their devices are gone, so their image connections would only idle until Disconnect.
+            CloseBlobConnectionsOf(devicesToRemove);
             Logger.Info($"Unloaded driver '{driverName}'");
         }
 
@@ -351,6 +394,12 @@ namespace NINA.INDI {
         /// so a dead server can never freeze the caller (or, more importantly, any lock it holds).
         /// </summary>
         private bool WriteFifoCommand(string command, TimeSpan timeout) {
+            if (!_managesServer) {
+                // A test client never writes to the machine's FIFO, which may belong to a running indiserver.
+                FifoCommandsForTests?.Invoke(command);
+                return true;
+            }
+
             try {
                 // When the open() blocks past the timeout the task is abandoned but stays
                 // stuck in the syscall. If a reader appears much later (indiserver restart),
@@ -474,31 +523,191 @@ namespace NINA.INDI {
             SendMessage(prop.ToXml());
         }
 
-        public void EnableBLOB(string deviceName) {
-            var element = new XElement("enableBLOB",
-                new XAttribute("device", deviceName),
-                "Also");
-            SendMessage(element);
-            Logger.Debug($"Sent enableBLOB for device '{deviceName}'");
+        // Every camera receives its images on a connection of its own (enableBLOB Only), so the
+        // main connection carries the control traffic alone: guide pulse states, exposure states
+        // and mount positions never wait behind a multi-megabyte image, and one camera's image
+        // never waits behind another camera's. indiserver keeps the BLOB mode per connection, and
+        // naming the device in enableBLOB registers the connection's interest in that device, so
+        // that single message is the whole handshake. The main connection keeps indiserver's
+        // default (Never). Guarded by _blobConnectionsLock.
+        private sealed class BlobConnection {
+            public string Device;
+            public TcpClient Tcp;
+            public CancellationTokenSource Cts;
+            public DateTime OpenedAt;
+            public Task Loop;
         }
 
-        // State for the O(n) large-element fast path in ProcessXmlMessage.
-        private string _pendingBigTagName = null;
-        private int _pendingBigTagSearchFrom = 0;
+        private readonly Dictionary<string, BlobConnection> _blobConnections = [];
+        private readonly object _blobConnectionsLock = new();
+        private static readonly TimeSpan BlobConnectTimeout = TimeSpan.FromSeconds(5);
+        // An image connection the server closes sooner than this after opening is not reopened
+        // (the camera falls back to the main connection) so a server that keeps refusing it can't
+        // make pins reconnect in a tight loop. Settable for tests only.
+        internal TimeSpan BlobConnectionMinLifetime { get; set; } = TimeSpan.FromSeconds(5);
+
+        public void EnableBLOB(string deviceName) {
+            if (!IsConnected) {
+                return;
+            }
+
+            bool opened;
+            lock (_blobConnectionsLock) {
+                if (_blobConnections.ContainsKey(deviceName)) {
+                    return;
+                }
+                opened = OpenBlobConnection(deviceName);
+            }
+
+            if (!opened) {
+                FallBackToMainConnection(deviceName);
+            }
+        }
+
+        // The camera still works, but whatever follows one of its images on the main connection waits for it.
+        private void FallBackToMainConnection(string deviceName) {
+            SendMessage(new XElement("enableBLOB", new XAttribute("device", deviceName), "Also"));
+            Logger.Warning($"INDI: receiving the images of '{deviceName}' on the main connection, so other updates can wait behind them");
+        }
+
+        // Caller holds _blobConnectionsLock.
+        private bool OpenBlobConnection(string deviceName) {
+            var tcp = new TcpClient();
+            try {
+                using (var timeout = new CancellationTokenSource(BlobConnectTimeout)) {
+                    tcp.ConnectAsync("localhost", _port, timeout.Token).AsTask().GetAwaiter().GetResult();
+                }
+                var stream = tcp.GetStream();
+                var handshake = Encoding.UTF8.GetBytes(
+                    new XElement("enableBLOB", new XAttribute("device", deviceName), "Only").ToString(SaveOptions.DisableFormatting));
+                stream.Write(handshake, 0, handshake.Length);
+                stream.Flush();
+
+                var connection = new BlobConnection {
+                    Device = deviceName,
+                    Tcp = tcp,
+                    Cts = new CancellationTokenSource(),
+                    OpenedAt = DateTime.UtcNow
+                };
+                var token = connection.Cts.Token;
+                _blobConnections[deviceName] = connection;
+                connection.Loop = Task.Run(async () => {
+                    await ReceiveLoop(stream, token, ProcessBlobElement, $"image connection of '{deviceName}'");
+                    OnBlobConnectionEnded(connection);
+                });
+                Logger.Info($"INDI: receiving the images of '{deviceName}' on a dedicated connection");
+                return true;
+            } catch (Exception ex) {
+                tcp.Dispose();
+                Logger.Error($"INDI: could not open an image connection for '{deviceName}': {ex.Message}");
+                return false;
+            }
+        }
+
+        private void OnBlobConnectionEnded(BlobConnection connection) {
+            lock (_blobConnectionsLock) {
+                if (!_blobConnections.TryGetValue(connection.Device, out var current) || current != connection) {
+                    // Closed by Disconnect or a driver unload, which dispose it.
+                    return;
+                }
+                _blobConnections.Remove(connection.Device);
+            }
+            CloseBlobConnection(connection);
+
+            if (!IsConnected) {
+                return;
+            }
+            // e.g. indiserver dropped it for falling too far behind (-m): images of a camera that is
+            // still connected would otherwise never arrive again.
+            if (DateTime.UtcNow - connection.OpenedAt < BlobConnectionMinLifetime) {
+                FallBackToMainConnection(connection.Device);
+            } else {
+                Logger.Warning($"INDI: the server closed the image connection of '{connection.Device}', reopening it");
+                EnableBLOB(connection.Device);
+            }
+        }
+
+        private static void CloseBlobConnection(BlobConnection connection) {
+            connection.Cts.Cancel();
+            connection.Tcp.Close();
+            connection.Cts.Dispose();
+        }
+
+        private void CloseBlobConnections() {
+            List<BlobConnection> connections;
+            lock (_blobConnectionsLock) {
+                connections = _blobConnections.Values.ToList();
+                _blobConnections.Clear();
+            }
+            CloseAndWait(connections);
+        }
+
+        private void CloseBlobConnectionsOf(IEnumerable<string> devices) {
+            var connections = new List<BlobConnection>();
+            lock (_blobConnectionsLock) {
+                foreach (var device in devices) {
+                    // Removed first, so OnBlobConnectionEnded neither reopens it nor falls back to the main connection.
+                    if (_blobConnections.Remove(device, out var connection)) {
+                        connections.Add(connection);
+                        Logger.Info($"INDI: closing the image connection of '{device}', its driver was unloaded");
+                    }
+                }
+            }
+            CloseAndWait(connections);
+        }
+
+        private static void CloseAndWait(List<BlobConnection> connections) {
+            foreach (var connection in connections) {
+                connection.Cts.Cancel();
+                connection.Tcp.Close();
+            }
+            // Bounded, like the main loop: a loop may be applying an image right now.
+            foreach (var connection in connections) {
+                try {
+                    connection.Loop?.Wait(TimeSpan.FromSeconds(2));
+                } catch (AggregateException) {
+                    // Faulted or cancelled — either way it has exited.
+                }
+                connection.Cts.Dispose();
+            }
+        }
+
+        private void ProcessMainElement(string xmlText) {
+            ProcessElement(XElement.Parse(xmlText));
+        }
+
+        private void ProcessBlobElement(string xmlText) {
+            // An Only connection carries nothing but setBLOBVector; ignore anything else.
+            if (xmlText.StartsWith("<setBLOBVector", StringComparison.Ordinal)) {
+                ProcessElement(XElement.Parse(xmlText));
+            }
+        }
+
+        private bool HasRegisteredBlobProperty(string deviceName, string propertyName) {
+            lock (_lock) {
+                return _registeredDevices.TryGetValue(deviceName, out var devices) && devices.Count > 0
+                    && devices[0].GetProperty(propertyName) is INDIBlobProperty;
+            }
+        }
+
+        // State of the O(n) large-element fast path in ProcessXmlMessage. One per connection:
+        // the main connection and every image connection scan their own stream.
+        private sealed class XmlScanState {
+            public string PendingBigTagName;
+            public int PendingBigTagSearchFrom;
+        }
 
         // The stream is a parameter on purpose: this loop must only ever read the stream it
         // was started with. Re-reading the _stream field would let a loop from a previous
         // session pick up (and corrupt) the NEW session's stream after a fast
-        // Disconnect→Connect cycle.
-        private async Task ReceiveLoop(NetworkStream stream, CancellationToken ct) {
+        // Disconnect→Connect cycle. <paramref name="handleElement"/> receives every complete
+        // top-level element, in wire order.
+        private async Task ReceiveLoop(NetworkStream stream, CancellationToken ct, Action<string> handleElement, string connectionName) {
             if (stream == null) return;
 
-            // The scanner state below is per-connection, but lives in instance fields (the
-            // xmlBuffer is local). If the previous connection died mid-large-element, stale
-            // big-tag state would make this session wait for an end tag (and a buffer offset)
-            // belonging to the old stream — buffering everything and delivering nothing.
-            _pendingBigTagName = null;
-            _pendingBigTagSearchFrom = 0;
+            // Fresh per connection, like the xmlBuffer: a previous connection that died
+            // mid-large-element must not make this one wait for that element's end tag.
+            var scan = new XmlScanState();
 
             var buffer = new byte[1024 * 1024]; // 1 MB — fewer iterations for multi-MB BLOBs
             var xmlBuffer = new StringBuilder();
@@ -515,7 +724,7 @@ namespace NINA.INDI {
                 try {
                     var bytesRead = await stream.ReadAsync(buffer, ct);
                     if (bytesRead == 0) {
-                        Logger.Error("Server disconnected");
+                        Logger.Error($"INDI server closed the {connectionName}");
                         break;
                     }
 
@@ -523,14 +732,14 @@ namespace NINA.INDI {
                     AppendValidXmlChars(xmlBuffer, charBuffer, charCount);
 
                     // Process complete XML elements
-                    ProcessXmlMessage(xmlBuffer);
+                    ProcessXmlMessage(xmlBuffer, scan, handleElement);
                 } catch (Exception ex) when (ex is not OperationCanceledException) {
                     if (ct.IsCancellationRequested) {
                         // Normal Disconnect: the stream was closed under us, so the read
                         // faulted (ObjectDisposedException etc.) — not a receive error.
                         break;
                     }
-                    Logger.Error($"Receive error: {ex.Message}");
+                    Logger.Error($"Receive error on the {connectionName}: {ex.Message}");
                     break;
                 }
             }
@@ -562,21 +771,32 @@ namespace NINA.INDI {
                     // was previously loaded for THIS specific NINA device-type category.
                     // This prevents a SafetyMonitor rescan from evicting a WeatherData driver
                     // even though both share WEATHER_INTERFACE.
+                    // Record the category's driver even when it is already loaded (e.g. started by
+                    // another category with the same driver): eviction below must know every
+                    // category a driver serves, or a mount and a focuser on indi_lx200_OnStep would
+                    // lose their shared driver as soon as either of them switches to another one.
+                    // Only GetDevices touches _lastDriverPerCategory, serialized by the semaphore.
+                    if (deviceTypeCategory != null) {
+                        if (_lastDriverPerCategory.TryGetValue(deviceTypeCategory, out string oldDriver) && oldDriver != driver) {
+                            var stillUsedBy = _lastDriverPerCategory
+                                .Where(c => c.Key != deviceTypeCategory && c.Value == oldDriver)
+                                .Select(c => c.Key)
+                                .ToList();
+                            if (stillUsedBy.Count > 0) {
+                                Logger.Info($"Keeping previous {deviceTypeCategory} driver '{oldDriver}', still used by {string.Join(", ", stillUsedBy)}");
+                            } else {
+                                Logger.Info($"Evicting previous {deviceTypeCategory} driver '{oldDriver}' before loading '{driver}'");
+                                UnloadDriver(oldDriver);
+                            }
+                        }
+                        _lastDriverPerCategory[deviceTypeCategory] = driver;
+                    }
+
                     bool driverAlreadyLoaded;
                     lock (_driverLock) {
                         driverAlreadyLoaded = _loadedDrivers.Contains(driver);
                     }
                     if (!driverAlreadyLoaded) {
-                        if (deviceTypeCategory != null
-                            && _lastDriverPerCategory.TryGetValue(deviceTypeCategory, out string oldDriver)
-                            && oldDriver != driver) {
-                            Logger.Info($"Evicting previous {deviceTypeCategory} driver '{oldDriver}' before loading '{driver}'");
-                            UnloadDriver(oldDriver);
-                        }
-                        if (deviceTypeCategory != null) {
-                            _lastDriverPerCategory[deviceTypeCategory] = driver;
-                        }
-
                         ct.ThrowIfCancellationRequested();
 
                         // Use LoadDriver's default (15s) DRIVER_INFO wait. A 3s override used
@@ -662,7 +882,9 @@ namespace NINA.INDI {
         public void Dispose() {
             Logger.Info("INDIClient.Dispose() starting cleanup");
             Disconnect();
-            CleanupServer();
+            if (_managesServer) {
+                CleanupServer();
+            }
             Logger.Info("INDIClient.Dispose() complete");
         }
 
@@ -1019,16 +1241,16 @@ namespace NINA.INDI {
             }
         }
 
-        private void ProcessXmlMessage(StringBuilder message) {
+        private void ProcessXmlMessage(StringBuilder message, XmlScanState scan, Action<string> handleElement) {
             if (message.Length == 0) return;
 
             // ── Fast path: waiting for the end of a large element (e.g. setBLOBVector ──────
             // containing a multi-megabyte BLOB). Each call converts only the newly-arrived
             // tail of the buffer instead of the entire thing, turning O(n²) into O(n).
-            if (_pendingBigTagName != null) {
-                var endTag = "</" + _pendingBigTagName + ">";
+            if (scan.PendingBigTagName != null) {
+                var endTag = "</" + scan.PendingBigTagName + ">";
                 var bufLen = message.Length;
-                var from = _pendingBigTagSearchFrom;
+                var from = scan.PendingBigTagSearchFrom;
 
                 if (bufLen - from <= 0) return;
 
@@ -1038,15 +1260,15 @@ namespace NINA.INDI {
                 if (endInTail == -1) {
                     // Still incomplete — advance the search pointer so the next call
                     // only scans the new bytes (minus a small overlap for boundary cases).
-                    _pendingBigTagSearchFrom = Math.Max(0, bufLen - endTag.Length);
+                    scan.PendingBigTagSearchFrom = Math.Max(0, bufLen - endTag.Length);
                     return;
                 }
 
                 var elementLength = from + endInTail + endTag.Length;
                 var xmlText = message.ToString(0, elementLength);
                 message.Remove(0, elementLength);
-                _pendingBigTagName = null;
-                _pendingBigTagSearchFrom = 0;
+                scan.PendingBigTagName = null;
+                scan.PendingBigTagSearchFrom = 0;
 
                 // Give the BLOB-sized capacity back: chars are 2 bytes, so a 32 MB base64
                 // payload would otherwise keep ~85 MB pinned in this builder for the rest
@@ -1059,11 +1281,11 @@ namespace NINA.INDI {
                 // failure here is genuine corruption worth logging. (An earlier version
                 // filtered by exception message text, which is locale-dependent and silently
                 // swallowed real errors on non-English .NET locales.)
-                try { ProcessElement(XElement.Parse(xmlText)); } catch (Exception ex) {
+                try { handleElement(xmlText); } catch (Exception ex) {
                     Logger.Error($"Error processing large element: {ex.Message}");
                 }
 
-                if (message.Length > 0) ProcessXmlMessage(message);
+                if (message.Length > 0) ProcessXmlMessage(message, scan, handleElement);
                 return;
             }
 
@@ -1147,8 +1369,8 @@ namespace NINA.INDI {
             if (lastProcessed > 0) message.Remove(0, lastProcessed);
 
             if (pendingTagName != null) {
-                _pendingBigTagName = pendingTagName;
-                _pendingBigTagSearchFrom = pendingFrom;
+                scan.PendingBigTagName = pendingTagName;
+                scan.PendingBigTagSearchFrom = pendingFrom;
             }
 
             if (elementsToProcess.Count > 0) {
@@ -1159,7 +1381,7 @@ namespace NINA.INDI {
                 // message — that text is locale-dependent).
                 foreach (var xmlText in elementsToProcess) {
                     try {
-                        ProcessElement(XElement.Parse(xmlText));
+                        handleElement(xmlText);
                     } catch (Exception ex) {
                         Logger.Error($"Error processing element: {ex.Message}");
                     }
@@ -1170,6 +1392,13 @@ namespace NINA.INDI {
         private void ProcessElement(XElement element) {
             var deviceName = element.Attribute("device")?.Value ?? string.Empty;
             var propertyName = element.Attribute("name")?.Value ?? string.Empty;
+
+            // Decode image payloads before taking _lock: a large camera image can take a noticeable
+            // time to decode on a Pi, and the main connection's updates need _lock too.
+            List<INDIProtocolParser.DecodedBlob> decodedBlobs = null;
+            if (element.Name.LocalName == "setBLOBVector" && HasRegisteredBlobProperty(deviceName, propertyName)) {
+                decodedBlobs = INDIProtocolParser.DecodeBlobs(element);
+            }
 
             lock (_lock) {
                 INDIProperty property;
@@ -1244,7 +1473,9 @@ namespace NINA.INDI {
                             // then notify all devices.
                             if (_registeredDevices.TryGetValue(deviceName, out var setBlobDevices) && setBlobDevices.Count > 0) {
                                 if (setBlobDevices[0].GetProperty(propertyName) is INDIBlobProperty bp) {
-                                    INDIProtocolParser.UpdateBlobProperty(bp, element);
+                                    // null only if the device registered while the payload was decoded
+                                    decodedBlobs ??= INDIProtocolParser.DecodeBlobs(element);
+                                    INDIProtocolParser.ApplyBlobUpdate(bp, element, decodedBlobs);
                                     foreach (var deviceInstance in setBlobDevices)
                                         deviceInstance.OnBlobPropertyUpdated(bp);
                                 }

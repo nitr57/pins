@@ -15,7 +15,7 @@ This project is pins-specific; it does not exist in upstream NINA. It is consume
 ## Top-Level Structure
 
 - `INDIClient.cs`
-  The hub. A process-wide singleton (`INDIClient.Instance`) that starts/stops `indiserver`, maintains the TCP connection, parses inbound XML, owns the global property store and message log, loads/unloads drivers, and routes property updates to registered devices.
+  The hub. A process-wide singleton (`INDIClient.Instance`) that starts/stops `indiserver`, maintains the TCP connections (one main connection plus one image connection per camera, see Concurrency Notes), parses inbound XML, owns the global property store and message log, loads/unloads drivers, and routes property updates to registered devices.
 - `Protocol/`
   Wire-protocol layer. `INDIProperty.cs` (the number/switch/text/light/blob property + element model), `INDIProtocolParser.cs` (XML ⇄ model), and `INDISnapshot.cs` (immutable, JSON-friendly snapshots for the control panel).
 - `Devices/`
@@ -77,8 +77,12 @@ Subclasses override `GetRequiredConnectionProperties`, `OnPreConnect`, and the `
 - `_getDriversSemaphore` serializes `GetDevices` so concurrent enumerations can't race driver load/unload.
 - `_operationLock` serializes socket writes; per-device `_asyncOperationsLock` guards the pending-async-operation map.
 - `ProcessXmlMessage` processes elements strictly sequentially, in wire order. INDI is a stateful, ordered stream (a `defXxxVector` must be applied before the `setXxxVector` that follows it in the same batch; consecutive coordinate updates must apply oldest-first), so do not parallelize this loop.
+- Camera images do not travel on the main connection. `EnableBLOB(device)` opens a connection of the camera's own that sends only `<enableBLOB device="…">Only</enableBLOB>` (indiserver keeps the BLOB mode per connection, and naming the device registers the connection's interest in it); the main connection stays at indiserver's default, Never. So guide-pulse states, exposure states and mount positions never wait behind a multi-megabyte image, and one camera's image never waits behind another's. Each connection runs its own receive loop and scanner state (`XmlScanState`), still strictly in order within that connection.
+- Consequence: an image can be applied before or after the main-connection updates that surrounded it on the server. `INDICamera` completes an exposure on the image itself, not on `CCD_EXPOSURE`'s state; keep image handling independent of that order.
+- `ProcessElement` decodes image payloads (`INDIProtocolParser.DecodeBlobs`) **before** taking `_lock` and only applies them under it, so the main connection's updates never wait for a decode.
+- An image connection the server closes is reopened; one closed within `BlobConnectionMinLifetime` of opening, or one that can't be opened, falls back to `enableBLOB Also` on the main connection (the pre-split behavior) so the camera keeps working. Unloading a driver closes its devices' image connections; `Disconnect` closes all of them.
 
-When adding behavior, respect which lock owns which state; the comments in `INDIClient.cs` document several non-obvious invariants (e.g. why driver eviction is scoped per NINA device-type category even when two categories share an INDI interface bit).
+When adding behavior, respect which lock owns which state; the comments in `INDIClient.cs` document several non-obvious invariants (e.g. why driver eviction is scoped per NINA device-type category even when two categories share an INDI interface bit, and why a category's previous driver is only unloaded once no other category still uses it).
 
 ## Dependency Position
 
@@ -94,4 +98,5 @@ When adding behavior, respect which lock owns which state; the comments in `INDI
 - Maintain the `IINDIDevice` / per-type interfaces when adding capabilities; `NINA.Equipment` depends on them.
 - Do not add WPF or profile-setting dependencies here — keep the project portable and headless-friendly.
 - The server lifecycle assumes a Linux host with `indiserver`, `mkfifo`, and `pkill` available; treat that as a platform constraint.
+- Tests never let `INDIClient.Instance` create the real client: its first access starts `indiserver` after a `pkill`. They use `new INDIClient(port, startServer: false)` (whose `Dispose` leaves the machine's server alone) against `NINA.Test/INDI/FakeIndiServer`, swap it in with `INDIClient.SetInstanceForTests`, and on teardown restore the previous instance or keep the disposed test client, never null (`SetInstanceForTests` rejects null).
 - This project participates in the pins INDI control panel and INDI equipment integrations; cross-check the related pins project notes and `NINA.Equipment` when changing the property store or device adapters.

@@ -27,6 +27,8 @@ namespace NINA.Test.ViewModel {
             Type[] expectedTypes = {
                 typeof(DockableVM),
                 typeof(CameraVM),
+                // pins: CameraVM with the guide camera's settings; it adds only its title.
+                typeof(GuideCameraVM),
                 typeof(DomeVM),
                 typeof(FilterWheelVM),
                 typeof(FlatDeviceVM),
@@ -55,6 +57,8 @@ namespace NINA.Test.ViewModel {
         public void ConcreteDeviceVmTypes_MatchExpectedCoverageInventory() {
             Type[] expectedTypes = {
                 typeof(CameraVM),
+                // pins: CameraVM with the guide camera's settings; it adds only its title.
+                typeof(GuideCameraVM),
                 typeof(DomeVM),
                 typeof(FilterWheelVM),
                 typeof(FlatDeviceVM),

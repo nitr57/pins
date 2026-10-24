@@ -65,6 +65,7 @@ namespace NINA.Sequencer.Container {
         private bool exposureInfoListExpanded;
         private AsyncObservableCollection<ExposureInfo> exposureInfoList;
         private readonly ISymbolBroker symbolBroker;
+        private readonly EventHandler targetCoordinatesChangedHandler;
 
         private InputTarget target;
 
@@ -86,12 +87,15 @@ namespace NINA.Sequencer.Container {
             this.cameraMediator = cameraMediator;
             this.filterWheelMediator = filterWheelMediator;
             this.symbolBroker = symbolBroker;
+            targetCoordinatesChangedHandler = new InputTargetCoordinatesChangedHandler<DeepSkyObjectContainer>(
+                this, static (owner, sender, args) => owner.Target_OnCoordinatesChanged(sender, args)).Handle;
             Task.Run(() => NighttimeData = nighttimeCalculator.Calculate());
             ExposureInfoList = new AsyncObservableCollection<ExposureInfo>();
             Target = new InputTarget(Angle.ByDegree(profileService.ActiveProfile.AstrometrySettings.Latitude), Angle.ByDegree(profileService.ActiveProfile.AstrometrySettings.Longitude), profileService.ActiveProfile.AstrometrySettings.Horizon);
             CoordsToFramingCommand = new GalaSoft.MvvmLight.Command.RelayCommand(SendCoordinatesToFraming);
             CoordsFromPlanetariumCommand = new GalaSoft.MvvmLight.Command.RelayCommand(GetCoordsFromPlanetarium);
-            DropTargetCommand = new GalaSoft.MvvmLight.Command.RelayCommand<object>(o => Editing.SequenceEditContext.Target(this, () => DropTarget(o)));
+            // Bind the weak command to the container, not a temporary constructor closure.
+            DropTargetCommand = new GalaSoft.MvvmLight.Command.RelayCommand<object>(DropTargetWithHistory);
             DeleteExposureInfoCommand = new GalaSoft.MvvmLight.Command.RelayCommand<ExposureInfo>(DeleteExposureInfo);
 
             WeakEventManager<IProfileService, EventArgs>.AddHandler(profileService, nameof(profileService.LocationChanged), ProfileService_LocationChanged);
@@ -118,6 +122,10 @@ namespace NINA.Sequencer.Container {
 
         private void ProfileService_LocationChanged(object sender, EventArgs e) {
             Target?.SetPosition(Angle.ByDegree(profileService.ActiveProfile.AstrometrySettings.Latitude), Angle.ByDegree(profileService.ActiveProfile.AstrometrySettings.Longitude));
+        }
+
+        private void DropTargetWithHistory(object obj) {
+            Editing.SequenceEditContext.Target(this, () => DropTarget(obj));
         }
 
         private void DropTarget(object obj) {
@@ -152,11 +160,11 @@ namespace NINA.Sequencer.Container {
             set {
                 if (ReferenceEquals(target, value)) return;
                 if (target != null) {
-                    WeakEventManager<InputTarget, EventArgs>.RemoveHandler(target, nameof(InputTarget.CoordinatesChanged), Target_OnCoordinatesChanged);
+                    target.CoordinatesChanged -= targetCoordinatesChangedHandler;
                 }
                 target = value;
                 if (target != null) {
-                    WeakEventManager<InputTarget, EventArgs>.AddHandler(target, nameof(InputTarget.CoordinatesChanged), Target_OnCoordinatesChanged);
+                    target.CoordinatesChanged += targetCoordinatesChangedHandler;
                 }
                 RaisePropertyChanged();
             }

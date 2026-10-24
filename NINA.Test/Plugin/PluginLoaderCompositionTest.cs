@@ -86,6 +86,26 @@ namespace NINA.Test.Plugin {
         }
 
         /// <summary>
+        /// Verifies that a plugin importing both camera mediators gets the guide camera under IGuideCameraMediator
+        /// and still the imaging camera under ICameraMediator.
+        /// </summary>
+        [Test]
+        public void Compose_ExportsTheGuideCameraUnderItsOwnContract() {
+            var resourceDictionaryMock = new Mock<IApplicationResourceDictionary>();
+            resourceDictionaryMock.Setup(x => x[It.IsAny<string>()]).Returns(new GeometryGroup());
+            ICameraMediator camera = Mock.Of<ICameraMediator>();
+            IGuideCameraMediator guideCamera = Mock.Of<IGuideCameraMediator>();
+            PluginLoader loader = CreateLoader(resourceDictionaryMock.Object, Mock.Of<ISymbolBroker>(), camera, guideCamera);
+            InitializeCollections(loader);
+
+            InvokeCompose(loader, new TypeCatalog(typeof(ExportedGuidingItem)), "Synthetic Guiding Plugin");
+
+            ExportedGuidingItem item = loader.Items.Should().ContainSingle().Subject.Should().BeOfType<ExportedGuidingItem>().Subject;
+            item.Camera.Should().BeSameAs(camera);
+            item.GuideCamera.Should().BeSameAs(guideCamera);
+        }
+
+        /// <summary>
         /// Verifies that plugin entities already merged into core are filtered by plugin name and
         /// type identity so migrated users do not see duplicate Connector entries in the palette.
         /// </summary>
@@ -461,10 +481,10 @@ namespace NINA.Test.Plugin {
         private static PluginManifest InvokeCreateFailedPluginManifest(
             string file,
             IReadOnlyDictionary<string, string> metadata,
-            string fileVersion,
+            string? fileVersion,
             string message) {
             MethodInfo method = typeof(PluginLoader).GetMethod("CreateFailedPluginManifest", BindingFlags.Static | BindingFlags.NonPublic)!;
-            return (PluginManifest)method.Invoke(null, new object[] { file, metadata, fileVersion, message })!;
+            return (PluginManifest)method.Invoke(null, new object?[] { file, metadata, fileVersion, message })!;
         }
 
         private static IList<ISequenceItem> InvokeAssignSequenceEntity(
@@ -519,7 +539,8 @@ namespace NINA.Test.Plugin {
             return CreateLoader(resourceDictionaryMock.Object, Mock.Of<ISymbolBroker>());
         }
 
-        private static PluginLoader CreateLoader(IApplicationResourceDictionary resourceDictionary, ISymbolBroker symbolBroker) {
+        private static PluginLoader CreateLoader(IApplicationResourceDictionary resourceDictionary, ISymbolBroker symbolBroker,
+                                                 ICameraMediator? cameraMediator = null, IGuideCameraMediator? guideCameraMediator = null) {
             var applicationStatusMediatorMock = new Mock<IApplicationStatusMediator>();
             applicationStatusMediatorMock
                 .Setup(x => x.StatusUpdate(It.IsAny<ApplicationStatus>()))
@@ -527,7 +548,7 @@ namespace NINA.Test.Plugin {
 
             return new PluginLoader(
                 Mock.Of<IProfileService>(),
-                Mock.Of<ICameraMediator>(),
+                cameraMediator ?? Mock.Of<ICameraMediator>(),
                 Mock.Of<ITelescopeMediator>(),
                 Mock.Of<IFocuserMediator>(),
                 Mock.Of<IFilterWheelMediator>(),
@@ -565,7 +586,9 @@ namespace NINA.Test.Plugin {
                 Mock.Of<ITwilightCalculator>(),
                 Mock.Of<IMessageBroker>(),
                 symbolBroker,
-                Mock.Of<ITemplateLinkResolver>());
+                Mock.Of<ITemplateLinkResolver>(),
+                guideCameraMediator ?? Mock.Of<IGuideCameraMediator>(),
+                Mock.Of<IAdvancedGuider>());
         }
 
         private sealed class CollectingLogEventSink : ILogEventSink {
@@ -599,13 +622,37 @@ namespace NINA.Test.Plugin {
             }
         }
 
+        [ExportMetadata("Name", "Synthetic Guide Exposure")]
+        [ExportMetadata("Description", "Takes a guide camera exposure.")]
+        [ExportMetadata("Icon", "GuideSvg")]
+        [ExportMetadata("Category", "Guiding")]
+        [Export(typeof(ISequenceItem))]
+        public class ExportedGuidingItem : SequenceItem {
+            [ImportingConstructor]
+            public ExportedGuidingItem(ICameraMediator camera, IGuideCameraMediator guideCamera) {
+                Camera = camera;
+                GuideCamera = guideCamera;
+            }
+
+            public ICameraMediator Camera { get; }
+            public IGuideCameraMediator GuideCamera { get; }
+
+            public override object Clone() {
+                return new ExportedGuidingItem(Camera, GuideCamera);
+            }
+
+            public override Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
+                return Task.CompletedTask;
+            }
+        }
+
         [ExportMetadata("Name", "Synthetic Science Upgrade")]
         [Export(typeof(ISequenceEntityUpgrader))]
         public class ExportedScienceUpgrader : ISequenceEntityUpgrader {
             public string Name { get; set; } = string.Empty;
             public SequenceUpgradeStage Stages => SequenceUpgradeStage.AfterPopulate;
 
-            public object Upgrade(SequenceUpgradeContext context, SequenceUpgradeStage stage, object? current) {
+            public object? Upgrade(SequenceUpgradeContext context, SequenceUpgradeStage stage, object? current) {
                 return current;
             }
         }

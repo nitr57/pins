@@ -14,6 +14,7 @@
 
 using Newtonsoft.Json;
 using NINA.Core.Model;
+using NINA.Profile;
 using NINA.Profile.Interfaces;
 using NINA.Sequencer.Container;
 using NINA.Sequencer.Validations;
@@ -23,7 +24,6 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel.Composition;
-using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using NINA.WPF.Base.Interfaces.Mediator;
@@ -46,7 +46,7 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Camera")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class TakeExposure : SequenceItem, IExposureItem, IValidatable {
         private ICameraMediator cameraMediator;
@@ -78,16 +78,6 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
 
             if (clone.Binning == null) {
                 clone.Binning = new BinningMode(1, 1);
-            }
-        }
-
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
             }
         }
 
@@ -254,30 +244,9 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
             }
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void PrepareExpressionValidation() {
             CameraInfo = this.cameraMediator.GetInfo();
             GainExpression.IsValid = OffsetExpression.IsValid = CameraInfo.Connected;
-            if (!CameraInfo.Connected) {
-                i.Add(Loc.Instance["LblCameraNotConnected"]);
-            } else {
-                if (CameraInfo.CanSetGain && Gain > -1 && (Gain < CameraInfo.GainMin || Gain > CameraInfo.GainMax)) {
-                    i.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_Gain"], CameraInfo.GainMin, CameraInfo.GainMax, Gain));
-                }
-                if (CameraInfo.CanSetOffset && Offset > -1 && (Offset < CameraInfo.OffsetMin || Offset > CameraInfo.OffsetMax)) {
-                    i.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_Offset"], CameraInfo.OffsetMin, CameraInfo.OffsetMax, Offset));
-                }
-            }
-
-            // Test added to simplify unit test...
-            var fileSettings = profileService.ActiveProfile.ImageFileSettings;
-
-            if (string.IsNullOrWhiteSpace(fileSettings.FilePath)) {
-                i.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_FilePathEmpty"]);
-            } else if (!Directory.Exists(fileSettings.FilePath)) {
-                i.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_FilePathInvalid"]);
-            }
-
             if (GainExpression.Default != CameraInfo.DefaultGain) {
                 GainExpression.Default = CameraInfo.DefaultGain;
                 if (GainExpression.Definition.Length == 0) {
@@ -292,13 +261,30 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
                 }
             }
 
-            Expression.ValidateExpressions(i, ExposureTimeExpression, GainExpression, OffsetExpression);
-
             GainExpression.Range = CameraInfo.CanSetGain ? new double[] { CameraInfo.GainMin, CameraInfo.GainMax, 0 } : null;
             OffsetExpression.Range = CameraInfo.CanSetOffset ? new double[] { CameraInfo.OffsetMin, CameraInfo.OffsetMax, 0 } : null;
+        }
 
-            Issues = i;
-            return i.Count == 0;
+        partial void ValidateAdditional(IList<string> issues) {
+            if (!CameraInfo.Connected) {
+                issues.Add(Loc.Instance["LblCameraNotConnected"]);
+            } else {
+                if (CameraInfo.CanSetGain && Gain > -1 && (Gain < CameraInfo.GainMin || Gain > CameraInfo.GainMax)) {
+                    issues.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_Gain"], CameraInfo.GainMin, CameraInfo.GainMax, Gain));
+                }
+                if (CameraInfo.CanSetOffset && Offset > -1 && (Offset < CameraInfo.OffsetMin || Offset > CameraInfo.OffsetMax)) {
+                    issues.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_Offset"], CameraInfo.OffsetMin, CameraInfo.OffsetMax, Offset));
+                }
+            }
+
+            // Test added to simplify unit test...
+            var fileSettings = profileService.ActiveProfile.ImageFileSettings;
+
+            if (string.IsNullOrWhiteSpace(fileSettings.FilePath)) {
+                issues.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_FilePathEmpty"]);
+            } else if (!fileSettings.IsFilePathValid()) {
+                issues.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeExposure_Validation_FilePathInvalid"]);
+            }
         }
 
         public override TimeSpan GetEstimatedDuration() {

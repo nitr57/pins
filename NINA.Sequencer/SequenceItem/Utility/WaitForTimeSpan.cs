@@ -37,7 +37,7 @@ namespace NINA.Sequencer.SequenceItem.Utility {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Utility")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class WaitForTimeSpan : SequenceItem, IValidatable {
 
@@ -50,17 +50,6 @@ namespace NINA.Sequencer.SequenceItem.Utility {
 
         [IsExpression(Default = 60, Range = [1, ExpressionRange.NO_MAXIMUM])]
         public partial double Time { get; set; }
-
-        private IList<string> issues = new List<string>();
-
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
 
         public override Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
             TimeExpression.Evaluate();
@@ -80,11 +69,5 @@ namespace NINA.Sequencer.SequenceItem.Utility {
             Validate();
         }
 
-        public bool Validate() {
-            Issues.Clear();
-            Expression.ValidateExpressions(Issues, TimeExpression);
-            RaisePropertyChanged("Issues");
-            return Issues.Count == 0;
-        }
     }
 }

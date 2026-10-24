@@ -73,6 +73,21 @@ namespace NINA.Test.Sequencer.SequenceItem {
             profile?.Dispose();
         }
 
+        [TestCase(CenterInstruction)]
+        [TestCase(CenterAndRotateInstruction)]
+        [TestCase(SlewScopeToRaDecInstruction)]
+        [TestCase(WaitForAltitudeInstruction)]
+        [TestCase(WaitUntilAboveHorizonInstruction)]
+        public void Clone_BindsInheritedExpressionsBeforeAttachment(string instructionName) {
+            var instruction = CreateInstruction(instructionName);
+            var clone = (CoordinatesInstruction)instruction.Clone();
+
+            clone.Parent.Should().BeNull();
+            foreach (var expression in new[] { clone.RaExpression, clone.DecExpression, clone.PositionAngleExpression, clone.OffsetExpression }) {
+                expression.Context.Should().BeSameAs(clone, "the generated setter must rebind expressions copied by UpdateExpressions before attachment");
+            }
+        }
+
         /// <summary>
         /// Verifies a coordinate-inheriting instruction remains attached to its target context and updates when that target's coordinates change.
         /// </summary>
@@ -246,7 +261,7 @@ namespace NINA.Test.Sequencer.SequenceItem {
                 epoch: Epoch.J2000);
             (SlewScopeToRaDec instruction, Mock<ITelescopeMediator> telescopeMediatorMock) = CreateExecutableSlewScopeToRaDec();
             CustomTrigger customTrigger = CreateCustomTrigger();
-            Coordinates slewedCoordinates = null;
+            Coordinates? slewedCoordinates = null;
 
             telescopeMediatorMock
                 .Setup(x => x.SlewToCoordinatesAsync(It.IsAny<Coordinates>(), It.IsAny<CancellationToken>()))
@@ -260,9 +275,9 @@ namespace NINA.Test.Sequencer.SequenceItem {
             await customTrigger.Execute(target, progress: new Progress<ApplicationStatus>(), token: CancellationToken.None);
 
             instruction.Inherited.Should().BeTrue();
-            slewedCoordinates.Should().NotBeNull();
-            slewedCoordinates.RADegrees.Should().BeApproximately(targetCoordinates.RADegrees, Tolerance);
-            slewedCoordinates.Dec.Should().BeApproximately(targetCoordinates.Dec, Tolerance);
+            Coordinates actualCoordinates = slewedCoordinates.Should().BeOfType<Coordinates>().Which;
+            actualCoordinates.RADegrees.Should().BeApproximately(targetCoordinates.RADegrees, Tolerance);
+            actualCoordinates.Dec.Should().BeApproximately(targetCoordinates.Dec, Tolerance);
             AssertTriggerRunnerContext(
                 customTrigger: customTrigger,
                 sourceCoordinates: targetCoordinates,
@@ -331,7 +346,7 @@ namespace NINA.Test.Sequencer.SequenceItem {
             (SlewScopeToRaDec instruction, Mock<ITelescopeMediator> telescopeMediatorMock) = CreateExecutableSlewScopeToRaDec();
             TriggerOnUnsafe triggerOnUnsafe = CreateTriggerOnUnsafe();
             SequentialContainer instructionSet = useBeforeWaitForSafe ? triggerOnUnsafe.BeforeWaitForSafe : triggerOnUnsafe.AfterWaitForSafe;
-            Coordinates slewedCoordinates = null;
+            Coordinates? slewedCoordinates = null;
 
             telescopeMediatorMock
                 .Setup(x => x.SlewToCoordinatesAsync(It.IsAny<Coordinates>(), It.IsAny<CancellationToken>()))
@@ -345,9 +360,9 @@ namespace NINA.Test.Sequencer.SequenceItem {
             await triggerOnUnsafe.Execute(target, progress: new Progress<ApplicationStatus>(), token: CancellationToken.None);
 
             instruction.Inherited.Should().BeTrue();
-            slewedCoordinates.Should().NotBeNull();
-            slewedCoordinates.RADegrees.Should().BeApproximately(targetCoordinates.RADegrees, Tolerance);
-            slewedCoordinates.Dec.Should().BeApproximately(targetCoordinates.Dec, Tolerance);
+            Coordinates actualCoordinates = slewedCoordinates.Should().BeOfType<Coordinates>().Which;
+            actualCoordinates.RADegrees.Should().BeApproximately(targetCoordinates.RADegrees, Tolerance);
+            actualCoordinates.Dec.Should().BeApproximately(targetCoordinates.Dec, Tolerance);
             AssertTriggerRunnerContext(
                 container: instructionSet,
                 sourceCoordinates: targetCoordinates,

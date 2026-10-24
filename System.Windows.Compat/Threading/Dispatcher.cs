@@ -36,6 +36,13 @@ namespace System.Windows.Threading {
 
         public static Dispatcher CurrentDispatcher => _currentDispatcher;
 
+        /// <summary>
+        /// Headless there are no per-thread dispatchers, only the shared one, so no thread owns a
+        /// dispatcher. Returning null (WPF's answer for such a thread) also keeps callers that shut
+        /// down "their" thread's dispatcher from shutting down the shared one.
+        /// </summary>
+        public static Dispatcher FromThread(System.Threading.Thread thread) => null;
+
         public T Invoke<T>(Func<T> callback) {
             // In headless mode, just execute the callback directly
             return callback();
@@ -50,9 +57,9 @@ namespace System.Windows.Threading {
             return method?.DynamicInvoke(args);
         }
 
-        public System.Threading.Tasks.Task InvokeAsync(Action callback) {
+        public DispatcherOperation InvokeAsync(Action callback) {
             callback();
-            return System.Threading.Tasks.Task.CompletedTask;
+            return new DispatcherOperation { Dispatcher = this };
         }
 
         public DispatcherOperation<T> InvokeAsync<T>(Func<T> callback) {
@@ -66,6 +73,14 @@ namespace System.Windows.Threading {
             }
             callback();
             return System.Threading.Tasks.Task.CompletedTask;
+        }
+
+        public DispatcherOperation<T> InvokeAsync<T>(Func<T> callback, DispatcherPriority priority, System.Threading.CancellationToken cancellationToken = default) {
+            // Ignore priority in headless mode
+            if (cancellationToken.IsCancellationRequested) {
+                return new DispatcherOperation<T>(System.Threading.Tasks.Task.FromCanceled<T>(cancellationToken));
+            }
+            return new DispatcherOperation<T>(System.Threading.Tasks.Task.FromResult(callback()));
         }
 
         public System.Threading.Tasks.Task BeginInvoke(Action callback) {

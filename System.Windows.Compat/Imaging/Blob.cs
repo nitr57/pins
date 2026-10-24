@@ -122,7 +122,6 @@ namespace Accord.Imaging {
     /// </summary>
     public class BlobCounter : System.IDisposable {
         private List<Blob> blobs = new List<Blob>();
-        private Mat processedImage;
 
         /// <summary>
         /// Minimum width of a blob to be included
@@ -155,16 +154,17 @@ namespace Accord.Imaging {
         /// <param name="image">Binary image to process</param>
         public void ProcessImage(Bitmap image) {
             blobs.Clear();
-            processedImage?.Dispose();
 
             // Convert Bitmap to Mat (Bitmap has implicit conversion to Mat in our implementation)
             Mat mat = image;
-            processedImage = mat.Clone();
 
-            // Find contours using OpenCV
+            // Find contours using OpenCV. The input is read-only for FindContours (it works on a
+            // bordered copy internally since OpenCV 3.2), so the image needs no copy of its own -
+            // keeping one here pinned a full frame per detection until the counter was disposed,
+            // which NINA's star detection never does.
             CVPoint[][] contours;
             HierarchyIndex[] hierarchy;
-            Cv2.FindContours(processedImage, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
+            Cv2.FindContours(mat, out contours, out hierarchy, RetrievalModes.External, ContourApproximationModes.ApproxSimple);
 
             // Convert contours to blobs
             int id = 0;
@@ -212,9 +212,11 @@ namespace Accord.Imaging {
         /// </summary>
         public int ObjectsCount => blobs.Count;
 
+        /// <summary>
+        /// Nothing to release any more - the counter holds only managed contour data. Kept so
+        /// existing `using` call sites keep compiling.
+        /// </summary>
         public void Dispose() {
-            processedImage?.Dispose();
-            processedImage = null;
         }
     }
 }

@@ -29,10 +29,41 @@ using NINA.WPF.Base.Interfaces.Mediator;
 using NUnit.Framework;
 using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace NINA.Test.Sequencer.Editing {
     [TestFixture, Apartment(ApartmentState.STA), NonParallelizable]
     public class SequenceEditLifecycleTest {
+        [Test]
+        public void RootReplacement_ReleasesPreviousRootChildrenAndHistory() {
+            using var profile = new NINA.Profile.Profile();
+            var profiles = new Mock<IProfileService>();
+            profiles.SetupGet(x => x.ActiveProfile).Returns(profile);
+            using var vm = new Sequence2VM(profiles.Object, Mock.Of<ICommandLineOptions>(), Mock.Of<ISequenceMediator>(),
+                Mock.Of<IApplicationMediator>(), Mock.Of<IApplicationStatusMediator>(), Mock.Of<ICameraMediator>(),
+                Mock.Of<ISequencerFactory>(), Mock.Of<ISymbolBroker>(), Mock.Of<ITemplateLinkResolver>());
+            var references = ReplaceRootWithHistory(vm);
+
+            SequencerLifetimeTest.AssertCollected(references);
+            GC.KeepAlive(vm);
+            GC.KeepAlive(profiles);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static (string, WeakReference)[] ReplaceRootWithHistory(Sequence2VM vm) {
+            var root = new SequenceRootContainer();
+            var item = new NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan();
+            root.Add(item);
+            var sequencer = new NINA.Sequencer.Sequencer(root);
+            typeof(Sequence2VM).GetProperty(nameof(vm.Sequencer))!.SetValue(vm, sequencer);
+            var history = vm.EditHistory;
+            item.DetachCommand.Execute(null);
+            history.Position.Should().Be(1);
+            sequencer.MainContainer = new SequenceRootContainer();
+            return new[] { ("previous root", new WeakReference(root)), ("deleted item", new WeakReference(item)),
+                ("previous history", new WeakReference(history)) };
+        }
+
         [Test]
         public void RootReplacementAndLocking_ManageOneSessionWhileRunAndViewChangesPreserveIt() {
             using var profile = new NINA.Profile.Profile();
@@ -67,6 +98,54 @@ namespace NINA.Test.Sequencer.Editing {
             vm.SavePath = "replacement.json";
             replacement.SequenceTitle = "Changed";
             vm.SavePath.Should().BeEmpty("the replacement root must retain the existing title listener");
+        }
+
+        [Test]
+        public void LoadFromFile_DoesNotAllocateTheWholeFileAsText() {
+            using var profile = new NINA.Profile.Profile();
+            var profiles = new Mock<IProfileService>();
+            profiles.SetupGet(x => x.ActiveProfile).Returns(profile);
+            var factory = new Mock<ISequencerFactory>();
+            factory.SetupGet(x => x.Upgraders).Returns(new List<ISequenceEntityUpgrader>());
+            factory.Setup(x => x.GetContainer<SequenceRootContainer>()).Returns(() => new SequenceRootContainer());
+            factory.Setup(x => x.GetContainer<SequentialContainer>()).Returns(() => new SequentialContainer());
+            using var vm = new Sequence2VM(profiles.Object, Mock.Of<ICommandLineOptions>(), Mock.Of<ISequenceMediator>(),
+                Mock.Of<IApplicationMediator>(), Mock.Of<IApplicationStatusMediator>(), Mock.Of<ICameraMediator>(),
+                factory.Object, Mock.Of<ISymbolBroker>(), Mock.Of<ITemplateLinkResolver>());
+            typeof(Sequence2VM).GetProperty(nameof(vm.Sequencer))!.SetValue(vm, new NINA.Sequencer.Sequencer(new SequenceRootContainer()));
+            var converter = new SequenceJsonConverter(factory.Object);
+            typeof(Sequence2VM).GetProperty(nameof(vm.SequenceJsonConverter))!.SetValue(vm, converter);
+            var load = typeof(Sequence2VM).GetMethod("LoadSequenceFromFile", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var source = new SequenceRootContainer();
+            source.Add(new SequentialContainer { Name = "Target \u03b1", IsExpanded = false });
+            string json = converter.Serialize(source);
+            string file = Path.Combine(Path.GetTempPath(), "NINA-stream-load-" + Guid.NewGuid().ToString("N") + ".json");
+            object[] arguments = { file };
+            try {
+                File.WriteAllText(file, json);
+                load.Invoke(vm, arguments); // Warm up serializer contracts and the view-model load path.
+                var previousRoot = vm.Sequencer.MainContainer;
+                using (var writer = new StreamWriter(file, false, new System.Text.UTF8Encoding(true))) {
+                    writer.Write(json);
+                    string padding = new string(' ', 4096);
+                    for (int i = 0; i < 1024; i++) writer.Write(padding);
+                }
+
+                long before = GC.GetAllocatedBytesForCurrentThread();
+                load.Invoke(vm, arguments);
+                long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+                vm.Sequencer.MainContainer.Should().NotBeSameAs(previousRoot);
+                vm.Sequencer.MainContainer.Items.Should().ContainSingle();
+                var target = vm.Sequencer.MainContainer.Items[0].Should().BeOfType<SequentialContainer>().Subject;
+                target.Name.Should().Be("Target \u03b1");
+                target.IsExpanded.Should().BeFalse();
+                target.Parent.Should().BeSameAs(vm.Sequencer.MainContainer);
+                vm.SavePath.Should().Be(file);
+                vm.EditHistory.Root.Should().BeSameAs(vm.Sequencer.MainContainer);
+                allocated.Should().BeLessThan(4 * 1024 * 1024,
+                    "reading a padded sequence should use bounded buffers, not allocate a string for the complete file");
+            } finally { File.Delete(file); }
         }
 
         [Test]

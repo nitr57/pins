@@ -28,6 +28,10 @@ using NINA.WPF.Base.Interfaces.Mediator;
 using NINA.Core.Model.Equipment;
 using NINA.WPF.Base.Interfaces.ViewModel;
 using NINA.Core.Locale;
+using Newtonsoft.Json;
+using NINA.Sequencer.Container;
+using NINA.Sequencer.Logic;
+using NINA.Sequencer.SequenceItem.Expressions;
 
 namespace NINA.Test.Sequencer.SequenceItem.Imaging {
 
@@ -84,6 +88,145 @@ namespace NINA.Test.Sequencer.SequenceItem.Imaging {
             item2.WidthExpression.Definition.Should().Be(sut.WidthExpression.Definition);   
             item2.HeightExpression.Definition.Should().Be(sut.HeightExpression.Definition);
             item2.ROIOption.Should().Be(sut.ROIOption);
+        }
+
+        [TestCase("1 +")]
+        [TestCase("missingRoiPercent")]
+        [TestCase("0.99")]
+        [TestCase("100.01")]
+        public void ContainerValidation_ValidatesRoiOnlyInPercentageMode(string definition) {
+            TakeSubframeExposure sut = CreateExpressionItem();
+            var root = new SequenceRootContainer();
+            root.Add(sut);
+            try {
+                sut.ROIPctExpression.Definition = definition;
+                root.Validate().Should().BeFalse();
+                sut.Issues.Should().Contain(sut.ROIPctExpression.Error);
+
+                sut.ROIOption = SubframeType.DIMENSIONS;
+                root.Validate().Should().BeTrue();
+                sut.Issues.Should().BeEmpty();
+                sut.ROIOption = SubframeType.ROI;
+                root.Validate().Should().BeFalse();
+
+                sut.ROIPctExpression.Definition = "50";
+                root.Validate().Should().BeTrue();
+                sut.Issues.Should().BeEmpty();
+            } finally {
+                sut.Detach();
+            }
+        }
+
+        [TestCase(0.01)]
+        [TestCase(0.5)]
+        [TestCase(1.0)]
+        public void LegacyNumericRoi_LoadsAsPercentage(double roi) {
+            TakeSubframeExposure sut = CreateExpressionItem();
+            JsonConvert.PopulateObject(JsonConvert.SerializeObject(new { ROI = roi }), sut);
+
+            sut.ROI.Should().Be(roi);
+            sut.ROIPct.Should().Be(roi * 100);
+            sut.Validate().Should().BeTrue();
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [NonParallelizable]
+        public async Task Capture_VariableRoiProducesRequestedRectangle(bool throughRun) {
+            UserSymbol.SymbolCache.Clear();
+            UserSymbol.ClearUserSymbols();
+            var root = new SequenceRootContainer();
+            TakeSubframeExposure sut = CreateExpressionItem();
+            var variable = new GlobalVariable();
+            variable.Expr = new Expression("", variable);
+            variable.OriginalExpr = new Expression("50", variable);
+            root.Add(variable);
+            variable.Identifier = "roiPercent";
+            sut.ROIPctExpression.Definition = "roiPercent";
+            root.Add(sut);
+            CaptureSequence? captured = null;
+            var exposure = new Mock<IExposureData>();
+            var image = new Mock<IImageData>();
+            var metadata = new ImageMetaData();
+            image.SetupGet(i => i.MetaData).Returns(metadata);
+            exposure.SetupGet(e => e.MetaData).Returns(metadata);
+            exposure.Setup(e => e.ToImageData(It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>())).ReturnsAsync(image.Object);
+            imagingMediatorMock.Setup(i => i.CaptureImage(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<string>()))
+                .Callback<CaptureSequence, CancellationToken, IProgress<ApplicationStatus>, string>((sequence, token, progress, title) => captured = sequence)
+                .ReturnsAsync(exposure.Object);
+            imagingMediatorMock.Setup(i => i.PrepareImage(It.IsAny<IImageData>(), It.IsAny<PrepareImageParameters>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Mock.Of<IRenderedImage>());
+            try {
+                await variable.Execute(null, CancellationToken.None);
+                if (throughRun) {
+                    await sut.Run(null, CancellationToken.None);
+                } else {
+                    await sut.Execute(null, CancellationToken.None);
+                }
+
+                captured.Should().NotBeNull();
+                captured!.EnableSubSample.Should().BeTrue();
+                captured.SubSambleRectangle.X.Should().Be(25);
+                captured.SubSambleRectangle.Y.Should().Be(12.5);
+                captured.SubSambleRectangle.Width.Should().Be(50);
+                captured.SubSambleRectangle.Height.Should().Be(25);
+                sut.ROIPctExpression.Definition.Should().Be("roiPercent");
+            } finally {
+                sut.Detach();
+                variable.Detach();
+                UserSymbol.SymbolCache.Clear();
+                UserSymbol.ClearUserSymbols();
+            }
+        }
+
+        private TakeSubframeExposure CreateExpressionItem() {
+            cameraMediatorMock.Setup(x => x.GetInfo()).Returns(new CameraInfo { Connected = true, CanSubSample = true, XSize = 100, YSize = 50 });
+            profileServiceMock.SetupGet(x => x.ActiveProfile.ImageFileSettings.FilePath).Returns(TestContext.CurrentContext.TestDirectory);
+            var item = new TakeSubframeExposure(profileServiceMock.Object, cameraMediatorMock.Object, imagingMediatorMock.Object, imageSaveMediatorMock.Object, historyMock.Object) {
+                ImageType = CaptureSequence.ImageTypes.FLAT,
+                Binning = new BinningMode(1, 1),
+                ExposureTime = 1,
+                Left = 0,
+                Top = 0,
+                Width = 10,
+                Height = 10
+            };
+            return item;
+        }
+
+        [Test]
+        public async Task Capture_DimensionsUseCurrentSymbolsWithoutBackgroundValidation() {
+            var sut = CreateExpressionItem();
+            sut.ROIOption = SubframeType.DIMENSIONS;
+            double size = 5;
+            var broker = new Mock<ISymbolBroker>();
+            broker.Setup(b => b.TryGetValue("liveSize", out It.Ref<object>.IsAny))
+                .Returns((string name, out object value) => { value = size; return true; });
+            foreach (var expression in new[] { sut.LeftExpression, sut.TopExpression, sut.WidthExpression, sut.HeightExpression }) {
+                expression.SymbolBroker = broker.Object;
+                expression.Definition = "liveSize";
+            }
+            var exposure = new Mock<IExposureData>();
+            var image = new Mock<IImageData>();
+            var metadata = new ImageMetaData();
+            image.SetupGet(i => i.MetaData).Returns(metadata);
+            exposure.SetupGet(e => e.MetaData).Returns(metadata);
+            exposure.Setup(e => e.ToImageData(It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>())).ReturnsAsync(image.Object);
+            CaptureSequence? captured = null;
+            imagingMediatorMock.Setup(i => i.CaptureImage(It.IsAny<CaptureSequence>(), It.IsAny<CancellationToken>(), It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<string>()))
+                .Callback<CaptureSequence, CancellationToken, IProgress<ApplicationStatus>, string>((sequence, token, progress, title) => captured = sequence)
+                .ReturnsAsync(exposure.Object);
+            imagingMediatorMock.Setup(i => i.PrepareImage(It.IsAny<IImageData>(), It.IsAny<PrepareImageParameters>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(Mock.Of<IRenderedImage>());
+            foreach (double next in new[] { 5.0, 10.0, 3.0 }) {
+                size = next;
+                await sut.Execute(null, CancellationToken.None);
+                captured.Should().NotBeNull();
+                captured!.SubSambleRectangle.X.Should().Be(next);
+                captured.SubSambleRectangle.Y.Should().Be(next);
+                captured.SubSambleRectangle.Width.Should().Be(next);
+                captured.SubSambleRectangle.Height.Should().Be(next);
+            }
         }
 
         [Test]

@@ -71,7 +71,7 @@ namespace NINA.Sequencer.Container {
             if (string.IsNullOrWhiteSpace(PredicateExpression.Definition)) {
                 issues.Add(Loc.Instance["Lbl_SequenceContainer_ConditionalContainer_ExpressionRequired"]);
             } else {
-                Expression.ValidateExpressions(issues, PredicateExpression);
+                ValidateOwnExpressions(issues);
             }
 
             Issues = issues;

@@ -34,7 +34,7 @@ namespace NINA.Sequencer.Conditions {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Condition")]
     [Export(typeof(ISequenceCondition))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class LoopCondition : SequenceCondition, IValidatable {
 
@@ -56,8 +56,6 @@ namespace NINA.Sequencer.Conditions {
                 RaisePropertyChanged();
             }
         }
-
-        public IList<string> Issues { get; private set; }
 
         [IsExpression(Default = 2, Range = [1, ExpressionRange.NO_MAXIMUM], HasValidator = true)]
         public partial int Iterations { get; set; }
@@ -87,11 +85,5 @@ namespace NINA.Sequencer.Conditions {
             return $"Condition: {nameof(LoopCondition)}, Iterations: {CompletedIterations}/{Iterations}";
         }
 
-        public bool Validate() {
-            IList<string> issues = new List<string>();
-            Expression.ValidateExpressions(issues, IterationsExpression);
-            Issues = issues;
-            return Issues.Count == 0;
-        }
     }
 }

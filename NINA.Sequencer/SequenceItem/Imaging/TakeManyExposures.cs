@@ -161,11 +161,11 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
             var valid = item.Validate();
 
 
-            Issues = item.Issues;
-            Expression.ValidateExpressions(Issues, IterationsExpression);
+            Issues = new List<string>(item.Issues);
+            ValidateOwnExpressions(Issues);
 
             RaisePropertyChanged(nameof(Issues));
-            return valid;
+            return valid && Issues.Count == 0;
         }
 
         public override TimeSpan GetEstimatedDuration() {

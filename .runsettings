@@ -12,6 +12,7 @@
                 <ModulePath>.*[\\/]NINA\.Core\.dll$</ModulePath>
                 <ModulePath>.*[\\/]NINA\.CustomControlLibrary\.dll$</ModulePath>
                 <ModulePath>.*[\\/]NINA\.Equipment\.dll$</ModulePath>
+                <ModulePath>.*[\\/]NINA\.GuideEngine\.dll$</ModulePath>
                 <ModulePath>.*[\\/]NINA\.Image\.dll$</ModulePath>
                 <ModulePath>.*[\\/]NINA\.MGEN\.dll$</ModulePath>
                 <ModulePath>.*[\\/]NINA\.PlateSolving\.dll$</ModulePath>

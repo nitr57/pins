@@ -99,5 +99,21 @@ namespace NINA.Test.Sequencer.SequenceItem.Focuser {
 
             duration.Should().Be(TimeSpan.Zero);
         }
+
+        [Test]
+        public async Task Execute_UsesCurrentSymbolValueWithoutBackgroundValidation() {
+            var broker = new Mock<NINA.Sequencer.Logic.ISymbolBroker>();
+            int position = 100;
+            broker.Setup(b => b.TryGetValue("livePosition", out It.Ref<object>.IsAny))
+                .Returns((string name, out object value) => { value = position; return true; });
+            var sut = new MoveFocuserAbsolute(focuserMediatorMock.Object);
+            sut.PositionExpression.SymbolBroker = broker.Object;
+            sut.PositionExpression.Definition = "livePosition";
+            foreach (int next in new[] { 100, 200, 50 }) {
+                position = next;
+                await sut.Execute(default, default);
+                focuserMediatorMock.Verify(f => f.MoveFocuser(next, It.IsAny<CancellationToken>()), Times.Once);
+            }
+        }
     }
 }

@@ -41,7 +41,7 @@ namespace NINA.Sequencer.Conditions {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Condition")]
     [Export(typeof(ISequenceCondition))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class MoonIlluminationCondition : SequenceCondition, IValidatable {
         private double currentMoonIllumination;
@@ -106,8 +106,6 @@ namespace NINA.Sequencer.Conditions {
             .Where(p => p != ComparisonOperatorEnum.NOT_EQUAL)
             .ToArray();
 
-        public IList<string> Issues { get; protected set; } = new ObservableCollection<string>();
-
         public override void AfterParentChanged() {
             Validate();
             RunWatchdogIfInsideSequenceRoot();
@@ -152,12 +150,5 @@ namespace NINA.Sequencer.Conditions {
             CurrentMoonIllumination = AstroUtil.GetMoonIllumination(now) * 100;
         }
 
-        public bool Validate() {
-            IList<string> i = new List<string>();
-            Expression.ValidateExpressions(i, UserMoonIlluminationExpression);
-            Issues = i;
-            RaisePropertyChanged("Issues");
-            return i.Count == 0;
-        }
     }
 }

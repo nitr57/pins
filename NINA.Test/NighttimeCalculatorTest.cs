@@ -89,16 +89,87 @@ namespace NINA.Test {
             data.ReferenceDate.Should().Be(new DateTime(2024, 3, 20, 12, 0, 0, DateTimeKind.Utc));
             data.SunRiseAndSet.Set.Should().NotBeNull();
             data.SunRiseAndSet.Rise.Should().NotBeNull();
-            data.CivilTwilightRiseAndSet.Set.Should().BeBefore(data.NauticalTwilightRiseAndSet.Set.Value);
-            data.NauticalTwilightRiseAndSet.Set.Should().BeBefore(data.TwilightRiseAndSet.Set.Value);
-            data.TwilightRiseAndSet.Rise.Should().BeBefore(data.NauticalTwilightRiseAndSet.Rise.Value);
-            data.NauticalTwilightRiseAndSet.Rise.Should().BeBefore(data.CivilTwilightRiseAndSet.Rise.Value);
+            data.CivilTwilightRiseAndSet.Set.Should().BeBefore(data.NauticalTwilightRiseAndSet.Set ?? throw new AssertionException("Expected nautical sunset."));
+            data.NauticalTwilightRiseAndSet.Set.Should().BeBefore(data.TwilightRiseAndSet.Set ?? throw new AssertionException("Expected astronomical sunset."));
+            data.TwilightRiseAndSet.Rise.Should().BeBefore(data.NauticalTwilightRiseAndSet.Rise ?? throw new AssertionException("Expected nautical sunrise."));
+            data.NauticalTwilightRiseAndSet.Rise.Should().BeBefore(data.CivilTwilightRiseAndSet.Rise ?? throw new AssertionException("Expected civil sunrise."));
             data.Illumination.Should().BeInRange(0.0, 1.0);
             data.ReferenceDateSpan.Should().HaveCount(2);
             data.NightDuration.Should().HaveCount(2);
             data.TwilightDuration.Should().HaveCount(6);
             data.NauticalTwilightDuration.Should().HaveCount(6);
             data.CivilTwilightDuration.Should().HaveCount(6);
+        }
+
+        [Test]
+        public void Calculate_ElevationChanges_UsesMatchingObserverAndReusesOriginalNight() {
+            var profile = CreateProfileService(52, 13, 0);
+            var settings = Mock.Get(profile.Object.ActiveProfile.AstrometrySettings);
+            var elevation = 0.0;
+            settings.SetupGet(x => x.Elevation).Returns(() => elevation);
+            var calculator = new NighttimeCalculator(profile.Object);
+            var date = new DateTime(2026, 3, 20, 12, 0, 0, DateTimeKind.Utc);
+            var seaLevel = calculator.Calculate(date);
+            elevation = 3000;
+            var mountain = calculator.Calculate(date);
+            try {
+                mountain.Should().NotBeSameAs(seaLevel);
+                mountain.SunRiseAndSet.Elevation.Should().Be(3000);
+                var expected = AstroUtil.GetSunRiseAndSet(date, 52, 13, 3000);
+                mountain.SunRiseAndSet.Rise.Should().Be(expected.Rise);
+                mountain.SunRiseAndSet.Set.Should().Be(expected.Set);
+                elevation = 0;
+                calculator.Calculate(date).Should().BeSameAs(seaLevel);
+            } finally {
+                seaLevel.Ticker.Stop();
+                mountain.Ticker.Stop();
+            }
+        }
+
+        [TestCase(52, 3, 20)]
+        [TestCase(52, 6, 21)]
+        [TestCase(69.65, 6, 21)]
+        [TestCase(-69.65, 12, 21)]
+        [TestCase(90, 6, 21)]
+        [TestCase(-90, 12, 21)]
+        public void Calculate_SharedPositions_PreserveLunarResultsAndEventRecomputation(double latitude, int month, int day) {
+            var date = new DateTime(2026, month, day, 12, 0, 0, DateTimeKind.Utc);
+            var observer = new ObserverInfo { Latitude = latitude, Longitude = 13, Elevation = 100 };
+            var calculator = new NighttimeCalculator(CreateProfileService(latitude, 13, 100).Object);
+            var night = calculator.Calculate(date);
+            night.Ticker.Stop();
+            night.MoonPhase.Should().Be(AstroUtil.GetMoonPhase(date, observer));
+            night.Illumination.Should().Be(AstroUtil.GetMoonIllumination(date, observer));
+            foreach (var events in new[] { night.SunRiseAndSet, night.TwilightRiseAndSet,
+                night.CivilTwilightRiseAndSet, night.NauticalTwilightRiseAndSet }) {
+                var rise = events.Rise;
+                var set = events.Set;
+                events.Compute();
+                AssertSameEvent(events.Rise, rise);
+                AssertSameEvent(events.Set, set);
+            }
+        }
+
+        [TestCase(DateTimeKind.Local)]
+        [TestCase(DateTimeKind.Unspecified)]
+        public void Calculate_DateKindChanges_DoesNotReuseUtcEventRepresentation(DateTimeKind kind) {
+            var calculator = new NighttimeCalculator(CreateProfileService(52, 13, 0).Object);
+            var date = new DateTime(2026, 3, 20, 12, 0, 0, DateTimeKind.Utc);
+            var utc = calculator.Calculate(date);
+            var other = calculator.Calculate(DateTime.SpecifyKind(date, kind));
+            utc.Ticker.Stop();
+            other.Ticker.Stop();
+            other.Should().NotBeSameAs(utc);
+            (other.SunRiseAndSet.Rise ?? throw new AssertionException("Expected sunrise.")).Kind.Should().Be(kind);
+            (other.SunRiseAndSet.Set ?? throw new AssertionException("Expected sunset.")).Kind.Should().Be(kind);
+            calculator.Calculate(date).Should().BeSameAs(utc);
+        }
+
+        private static void AssertSameEvent(DateTime? actual, DateTime? expected) {
+            actual.HasValue.Should().Be(expected.HasValue);
+            if (expected.HasValue) {
+                (actual ?? throw new AssertionException("Expected event.")).Should().BeCloseTo(expected.Value, TimeSpan.FromSeconds(0.1));
+            }
         }
 
         private static Mock<IProfileService> CreateProfileService(double latitude, double longitude, double elevation) {

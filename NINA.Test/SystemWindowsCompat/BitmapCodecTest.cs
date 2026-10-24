@@ -53,6 +53,28 @@ namespace NINA.Test.SystemWindowsCompat {
             }
         }
 
+        // The encoders read the frame without copying it first, so saving must leave the frame
+        // (and the bitmap it was created from) intact and reusable.
+        [Test]
+        public void Encoders_LeaveFrameUsableAfterSave() {
+            var pixels = new byte[] { 0, 64, 128, 255 };
+            using var source = CreateGray8(2, 2, pixels);
+            var frame = BitmapFrame.Create(source);
+
+            foreach (var encoder in new BitmapEncoder[] { new PngBitmapEncoder(), new JpegBitmapEncoder(), new TiffBitmapEncoder() }) {
+                encoder.Frames.Add(frame);
+                using var stream = new MemoryStream();
+                encoder.Save(stream);
+                Assert.That(stream.Length, Is.GreaterThan(0));
+            }
+
+            using (frame) {
+                var output = new byte[4];
+                frame.CopyPixels(output, 2, 0);
+                Assert.That(output, Is.EqualTo(pixels));
+            }
+        }
+
         [Test]
         public void Png_Gray16_RoundTripsLosslessly() {
             var input = new ushort[] { 0, 1000, 40000, 65535 };

@@ -130,6 +130,33 @@ namespace NINA.Test {
         }
 
         [Test]
+        public async System.Threading.Tasks.Task FITSLoadFromMemoryMatchesLoadFromFile() {
+            var width = 6;
+            var height = 4;
+            var data = Enumerable.Range(0, width * height).Select(i => (ushort)(i * 2000 + 7)).ToArray();
+            byte[] bytes;
+            using (var ms = new MemoryStream()) {
+                new FITS(data, width, height).Write(ms);
+                bytes = ms.ToArray();
+            }
+            var path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".fits");
+            File.WriteAllBytes(path, bytes);
+            var factory = new ImageDataFactoryTestUtility().ImageDataFactory;
+
+            try {
+                var fromMemory = await FITS.Load(bytes, isBayered: false, factory, System.Threading.CancellationToken.None);
+                var fromFile = await FITS.Load(new Uri(path), isBayered: false, factory, System.Threading.CancellationToken.None);
+
+                Assert.That(fromMemory.Properties.Width, Is.EqualTo(width));
+                Assert.That(fromMemory.Properties.Height, Is.EqualTo(height));
+                Assert.That(fromMemory.Data.FlatArray, Is.EqualTo(data));
+                Assert.That(fromMemory.Data.FlatArray, Is.EqualTo(fromFile.Data.FlatArray));
+            } finally {
+                File.Delete(path);
+            }
+        }
+
+        [Test]
         public void FITSDefaultMetaDataPopulated() {
             //Arrange
             var metaData = new ImageMetaData();

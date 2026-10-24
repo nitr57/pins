@@ -25,6 +25,13 @@ using System.Threading.Tasks;
 
 namespace NINA.Equipment.Utility {
     public class AlpacaInteraction {
+
+        /// <summary>The Id of the imaging camera's Alpaca Direct ("Static IP") entry, which also keys its address in the profile.</summary>
+        public const string AlpacaDirectCameraId = "01E42001-1A8B-44AA-AD7E-CE8F5250F1F4";
+
+        /// <summary>The Id of pins' guide camera's Alpaca Direct entry, so its address is kept apart from the imaging camera's.</summary>
+        public const string GuideAlpacaDirectCameraId = "6C9035BF-9F7E-4FA2-8743-8D29026BCC5D";
+
         private readonly IProfileService profileService;        
 
         public AlpacaInteraction(IProfileService profileService) {
@@ -32,7 +39,8 @@ namespace NINA.Equipment.Utility {
             
         }
 
-        public async Task<List<ICamera>> GetCameras(IExposureDataFactory exposureDataFactory, CancellationToken token) {
+        /// <param name="alpacaDirectCameraId">Which Alpaca Direct entry the list gets: <see cref="AlpacaDirectCameraId"/> or <see cref="GuideAlpacaDirectCameraId"/>.</param>
+        public async Task<List<ICamera>> GetCameras(IExposureDataFactory exposureDataFactory, CancellationToken token, string alpacaDirectCameraId = AlpacaDirectCameraId) {
             var l = new List<ICamera>();
             var devices = await AlpacaDiscovery.GetAscomDevicesAsync(DeviceTypes.Camera,
                                                                      numberOfPolls: profileService.ActiveProfile.AlpacaSettings.NumberOfPolls,
@@ -53,7 +61,7 @@ namespace NINA.Equipment.Utility {
                 }
             }
 
-            l.Add(new AlpacaDirectCamera(profileService, exposureDataFactory));
+            l.Add(new AlpacaDirectCamera(profileService, exposureDataFactory, alpacaDirectCameraId));
 
             return l;
         }

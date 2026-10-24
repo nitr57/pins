@@ -26,6 +26,8 @@ namespace NINA.Test.ProfileTest {
             profile.ApplicationSettings.Should().NotBeNull();
             profile.AstrometrySettings.Should().NotBeNull();
             profile.CameraSettings.Should().NotBeNull();
+            profile.GuideCameraSettings.Should().NotBeNull();
+            profile.GuideCameraSettings.Should().NotBeSameAs(profile.CameraSettings);
             profile.ColorSchemaSettings.Should().NotBeNull();
             profile.DomeSettings.Should().NotBeNull();
             profile.FilterWheelSettings.Should().NotBeNull();
@@ -59,7 +61,7 @@ namespace NINA.Test.ProfileTest {
         [Test]
         public void NameAndDescription_RaiseOwnPropertyAndSettingsOnlyWhenValueChanges() {
             ProfileModel profile = new ProfileModel("Original");
-            List<string> propertyNames = CapturePropertyChanges(profile);
+            List<string?> propertyNames = CapturePropertyChanges(profile);
 
             profile.Name = "Science Rig";
             profile.Description = "Backyard narrowband profile";
@@ -79,7 +81,7 @@ namespace NINA.Test.ProfileTest {
         [Test]
         public void ChildSettingChange_RaisesProfileSettingsNotification() {
             ProfileModel profile = new ProfileModel("Observatory");
-            List<string> propertyNames = CapturePropertyChanges(profile);
+            List<string?> propertyNames = CapturePropertyChanges(profile);
 
             profile.CameraSettings.PixelSize = 4.63d;
             profile.FilterWheelSettings.FilterWheelFilters.Add(new FilterInfo("Ha", -20, 3));
@@ -88,6 +90,20 @@ namespace NINA.Test.ProfileTest {
             propertyNames.Should().Contain("Settings");
             propertyNames.Should().OnlyContain(propertyName => propertyName == "Settings");
             propertyNames.Should().HaveCount(3);
+        }
+
+        /// <summary>
+        /// Verifies that a guide camera setting change triggers the autosave marker like any other section.
+        /// </summary>
+        [Test]
+        public void GuideCameraSettingChange_RaisesProfileSettingsNotification() {
+            ProfileModel profile = new ProfileModel("Observatory");
+            List<string?> propertyNames = CapturePropertyChanges(profile);
+
+            profile.GuideCameraSettings.Gain = 300;
+
+            propertyNames.Should().Equal("Settings");
+            profile.CameraSettings.Gain.Should().BeNull();
         }
 
         /// <summary>
@@ -101,6 +117,7 @@ namespace NINA.Test.ProfileTest {
             };
             original.CameraSettings.PixelSize = 3.76d;
             original.CameraSettings.MinFlatExposureTime = 0.4d;
+            original.GuideCameraSettings.PixelSize = 2.9d;
             original.FilterWheelSettings.FilterWheelFilters.Add(new FilterInfo("L", 0, 0));
             original.FilterWheelSettings.FilterWheelFilters.Add(new FilterInfo("OIII", 15, 2));
             original.PluginSettings.SetValue(pluginId, "calibrationFrames", 25);
@@ -113,6 +130,8 @@ namespace NINA.Test.ProfileTest {
             clone.CameraSettings.Should().NotBeSameAs(original.CameraSettings);
             clone.CameraSettings.PixelSize.Should().Be(3.76d);
             clone.CameraSettings.MinFlatExposureTime.Should().Be(0.4d);
+            clone.GuideCameraSettings.Should().NotBeSameAs(original.GuideCameraSettings);
+            clone.GuideCameraSettings.PixelSize.Should().Be(2.9d);
             clone.FilterWheelSettings.FilterWheelFilters.Should().NotBeSameAs(original.FilterWheelSettings.FilterWheelFilters);
             clone.FilterWheelSettings.FilterWheelFilters.Should().HaveCount(2);
             clone.PluginSettings.TryGetValue(pluginId, "calibrationFrames", out int calibrationFrames).Should().BeTrue();
@@ -128,9 +147,9 @@ namespace NINA.Test.ProfileTest {
             originalCalibrationFrames.Should().Be(25);
         }
 
-        private static List<string> CapturePropertyChanges(INotifyPropertyChanged source) {
-            List<string> propertyNames = new List<string>();
-            source.PropertyChanged += (object sender, PropertyChangedEventArgs args) => propertyNames.Add(args.PropertyName);
+        private static List<string?> CapturePropertyChanges(INotifyPropertyChanged source) {
+            List<string?> propertyNames = new List<string?>();
+            source.PropertyChanged += (object? sender, PropertyChangedEventArgs args) => propertyNames.Add(args.PropertyName);
             return propertyNames;
         }
     }

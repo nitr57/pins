@@ -19,6 +19,7 @@ using NINA.INDI.Protocol;
 using System;
 using System.Collections.Concurrent;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -55,6 +56,20 @@ namespace NINA.INDI.Devices {
         public INDICamera(INDIDeviceInfo device) : base(device) {
         }
 
+        /// <summary>
+        /// Log the messages that repeat for every frame at Debug instead of Info: a guide camera takes a frame every few
+        /// seconds all night.
+        /// </summary>
+        public bool LogFramesAtDebug { get; init; }
+
+        private void LogFrame(string message, [CallerMemberName] string memberName = "", [CallerFilePath] string sourceFilePath = "", [CallerLineNumber] int lineNumber = 0) {
+            if (LogFramesAtDebug) {
+                Logger.Debug(message, memberName, sourceFilePath, lineNumber);
+            } else {
+                Logger.Info(message, memberName, sourceFilePath, lineNumber);
+            }
+        }
+
         protected override string[] GetRequiredConnectionProperties() {
             return ["CCD_INFO"];
         }
@@ -63,7 +78,7 @@ namespace NINA.INDI.Devices {
             base.OnBlobPropertyUpdated(p);
             if (p.Name == "CCD1") {
                 var blob = p.Blobs.FirstOrDefault();
-                Logger.Info($"[{DeviceName}] BLOB received: name={p.Name} format={blob?.Format} size={blob?.Data?.Length}");
+                LogFrame($"[{DeviceName}] BLOB received: name={p.Name} format={blob?.Format} size={blob?.Data?.Length}");
                 if (blob != null && blob.Data?.Length > 0) {
                     // Residual-risk diagnostic: even after StartExposure's debounce, a BLOB
                     // arriving very shortly after an abort could still be leftover data from
@@ -147,7 +162,7 @@ namespace NINA.INDI.Devices {
         }
 
         public void StartExposure(double exposureTime, short binX, short binY, bool enableSubSample, int subSampleX, int subSampleY, int subSampleWidth, int subSampleHeight, int gain, int offset) {
-            Logger.Info($"[{DeviceName}] StartExposure called: {exposureTime}s");
+            LogFrame($"[{DeviceName}] StartExposure called: {exposureTime}s");
 
             // See StaleBlobDebounce: if we just aborted, wait out the remainder of the debounce
             // window before arming so an already-buffered stale BLOB from the aborted exposure
@@ -209,7 +224,7 @@ namespace NINA.INDI.Devices {
             // Send exposure duration — this triggers the capture
             try {
                 SetNumberValue("CCD_EXPOSURE", "CCD_EXPOSURE_VALUE", exposureTime);
-                Logger.Info($"[{DeviceName}] Started INDI exposure: {exposureTime}s bin={binX}x{binY}");
+                LogFrame($"[{DeviceName}] Started INDI exposure: {exposureTime}s bin={binX}x{binY}");
             } catch (Exception ex) {
                 Logger.Error($"[{DeviceName}] Failed to set CCD_EXPOSURE: {ex.Message}");
                 // Fail fast, mirroring AbortExposure: no BLOB will ever arrive, so wake any

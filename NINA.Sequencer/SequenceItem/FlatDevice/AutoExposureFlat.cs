@@ -354,7 +354,7 @@ namespace NINA.Sequencer.SequenceItem.FlatDevice {
 
                 var mean = statistics.Mean;
 
-                var check = HistogramMath.GetExposureAduState(mean, HistogramTargetPercentage, image.BitDepth, HistogramTolerancePercentage);
+                var check = HistogramMath.GetExposureAduState(mean, HistogramTargetPercentage, imageData.Properties.BitDepth, HistogramTolerancePercentage);
 
                 DeterminedHistogramADU = mean;
                 determinedHistogramADUpercentage = (mean / (Math.Pow(2, imageData.Properties.BitDepth) - 1));
@@ -550,7 +550,7 @@ namespace NINA.Sequencer.SequenceItem.FlatDevice {
             }
 
             Issues = issues.Concat(takeExposure.Issues).Concat(switchFilter.Issues).Distinct().ToList();
-            Expression.ValidateExpressions(Issues, MinExposureExpression, MaxExposureExpression);
+            ValidateOwnExpressions(Issues);
             RaisePropertyChanged(nameof(Issues));
 
             return Issues.Count == 0;

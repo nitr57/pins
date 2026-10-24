@@ -34,6 +34,7 @@ using NUnit.Framework;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -42,7 +43,7 @@ using SequenceItemBase = NINA.Sequencer.SequenceItem.SequenceItem;
 namespace NINA.Test.Sequencer.Container {
 
     [TestFixture]
-    public class LinkedTemplateContainerTest {
+    public partial class LinkedTemplateContainerTest {
         private NINA.Profile.Profile profile;
         private Mock<IProfileService> profileServiceMock;
 
@@ -191,6 +192,58 @@ namespace NINA.Test.Sequencer.Container {
             sut.LinkState.Should().Be(TemplateLinkState.Resolved);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task IsExpanded_DuringRunPreservesExecutingContent(bool nested) {
+            TemplateLinkResolver resolver = new TemplateLinkResolver();
+            TemplateReference reference = CreateReference("Running.template.json", "Running");
+            BlockingProbe probe = new BlockingProbe();
+            TemplatedSequenceContainer template = CreateTemplate(reference, "Running", new BlockingInstruction(probe));
+            List<TemplatedSequenceContainer> templates = new List<TemplatedSequenceContainer> { template };
+            if (nested) {
+                TemplateReference outerReference = CreateReference("Outer.template.json", "Outer");
+                templates.Add(CreateTemplate(outerReference, "Outer", new LinkedTemplateContainer(resolver) {
+                    TemplateReference = reference
+                }));
+                reference = outerReference;
+            }
+            resolver.UpdateTemplates(templates, true, null);
+            LinkedTemplateContainer sut = new LinkedTemplateContainer(resolver) { TemplateReference = reference };
+            Task run = sut.Run(Mock.Of<IProgress<ApplicationStatus>>(), CancellationToken.None);
+            try {
+                BlockingInstruction executing = await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                ISequenceContainer content = (ISequenceContainer)sut.Items.Single();
+                ISequenceContainer executingParent = executing.Parent;
+                LinkedTemplateContainer inner = nested ? (LinkedTemplateContainer)content.Items.Single() : sut;
+                IList<ISequenceItem> items = sut.Items;
+                bool sameContent = true;
+                for (int i = 0; i < 3; i++) {
+                    sut.IsExpanded = true;
+                    inner.IsExpanded = true;
+                    sameContent &= ReferenceEquals(sut.Items, items)
+                        && ReferenceEquals(sut.Items.Single(), content)
+                        && ReferenceEquals(inner.Items.Single(), executingParent)
+                        && ReferenceEquals(executingParent.Items.Single(), executing);
+                    sut.IsExpanded = false;
+                    inner.IsExpanded = false;
+                }
+                using (new FluentAssertions.Execution.AssertionScope()) {
+                    sameContent.Should().BeTrue("view expansion must keep the executing objects displayed");
+                    executing.Status.Should().Be(SequenceEntityStatus.RUNNING);
+                    executingParent.Status.Should().Be(SequenceEntityStatus.RUNNING);
+                    sut.Status.Should().Be(SequenceEntityStatus.RUNNING);
+                    probe.Release.TrySetResult(true);
+                    await run.WaitAsync(TimeSpan.FromSeconds(5));
+                    probe.Executions.Should().Be(1);
+                    executing.Status.Should().Be(SequenceEntityStatus.FINISHED);
+                    sut.Items.Single().Should().BeSameAs(content);
+                }
+            } finally {
+                probe.Release.TrySetResult(true);
+                await run.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+
         [Test]
         public void SequenceJsonConverter_RoundTripsLinkedTemplateReferenceWithoutPreviewContent() {
             TemplateReference reference = CreateReference("RoundTrip.template.json", "RoundTrip");
@@ -224,8 +277,9 @@ namespace NINA.Test.Sequencer.Container {
             linkedTemplateContainer.Items.OfType<ISequenceContainer>().Single().Name.Should().Be("RoundTrip");
         }
 
-        [Test]
-        public void SequenceJsonConverter_IgnoresLegacyLinkedTemplatePreviewContent() {
+        [TestCase(false)]
+        [TestCase(true)]
+        public void SequenceJsonConverter_IgnoresLegacyLinkedTemplatePreviewContent(bool loadFromFile) {
             TemplateReference reference = CreateReference("LegacyRoundTrip.template.json", "LegacyRoundTrip");
             TemplateLinkResolver resolver = new TemplateLinkResolver();
             resolver.UpdateTemplates(new[] { CreateTemplate(reference, "LegacyRoundTrip", "Current item") }, true, null);
@@ -248,7 +302,18 @@ namespace NINA.Test.Sequencer.Container {
             });
             legacyJson.Should().Contain(nameof(NamedInstruction));
 
-            ISequenceContainer roundTripped = converter.Deserialize(legacyJson);
+            ISequenceContainer roundTripped;
+            if (loadFromFile) {
+                string path = Path.GetTempFileName();
+                try {
+                    File.WriteAllText(path, legacyJson);
+                    roundTripped = converter.DeserializeFromFile(path);
+                } finally {
+                    File.Delete(path);
+                }
+            } else {
+                roundTripped = converter.Deserialize(legacyJson);
+            }
 
             LinkedTemplateContainer linkedTemplateContainer = roundTripped.Should().BeOfType<LinkedTemplateContainer>().Subject;
             linkedTemplateContainer.Items.Should().BeEmpty();
@@ -557,6 +622,88 @@ namespace NINA.Test.Sequencer.Container {
             public int Executions { get; set; }
         }
 
+        [Test]
+        public async Task Run_RejectsEditingUntilExecutionEnds() {
+            var reference = CreateReference("RunningEdit.template.json", "Running edit");
+            var resolver = new TemplateLinkResolver();
+            var probe = new BlockingProbe();
+            resolver.UpdateTemplates(new[] { CreateTemplate(reference, "Running edit", new BlockingInstruction(probe)) }, true, null);
+            var linked = new LinkedTemplateContainer(resolver) { TemplateReference = reference };
+            Task run = linked.Run(Mock.Of<IProgress<ApplicationStatus>>(), CancellationToken.None);
+            try {
+                await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                linked.BeginEditTemplateCommand.CanExecute(null).Should().BeFalse();
+                linked.BeginEditTemplateCommand.Execute(null);
+                linked.IsEditing.Should().BeFalse();
+            } finally {
+                probe.Release.TrySetResult(true);
+                await run.WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            linked.BeginEditTemplateCommand.CanExecute(null).Should().BeTrue();
+            probe.Executions.Should().Be(1);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public async Task Run_OpenEditorWaitsForSaveOrCancel(bool save) {
+            var reference = CreateReference("WaitingEdit.template.json", "Waiting edit");
+            var resolver = new TemplateLinkResolver();
+            var probe = new BlockingProbe();
+            resolver.UpdateTemplates(new[] { CreateTemplate(reference, "Waiting edit", new BlockingInstruction(probe)) }, true,
+                (_, content, _) => {
+                    resolver.UpdateTemplates(new[] { CreateTemplate(reference, (ISequenceContainer)content.Clone()) }, true, null);
+                    return Task.CompletedTask;
+                });
+            var linked = new LinkedTemplateContainer(resolver) { TemplateReference = reference };
+            linked.TryResolveTemplate();
+            linked.BeginEditTemplateCommand.Execute(null);
+            ((ISequenceContainer)linked.Items.Single()).Items.Single().Name = "Edited";
+            using var cancellation = new CancellationTokenSource();
+            Task run = linked.Run(Mock.Of<IProgress<ApplicationStatus>>(), cancellation.Token);
+            try {
+                await LinkedTemplateTestClock.Until(() => linked.IsWaitingForEdits || probe.Started.Task.IsCompleted);
+                probe.Started.Task.IsCompleted.Should().BeFalse("execution must wait for the open editor");
+                linked.IsEditing.Should().BeTrue();
+                linked.SaveTemplateCommand.CanExecute(null).Should().BeTrue();
+                linked.CancelEditTemplateCommand.CanExecute(null).Should().BeTrue();
+                if (save) await linked.SaveTemplateCommand.ExecuteAsync(null);
+                else linked.CancelEditTemplateCommand.Execute(null);
+                var executing = await probe.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                executing.Name.Should().Be(save ? "Edited" : "Blocking instruction");
+                linked.IsEditing.Should().BeFalse();
+                probe.Release.TrySetResult(true);
+                await run.WaitAsync(TimeSpan.FromSeconds(5));
+                probe.Executions.Should().Be(1);
+            } finally {
+                cancellation.Cancel();
+                probe.Release.TrySetResult(true);
+                try { await run.WaitAsync(TimeSpan.FromSeconds(5)); } catch (OperationCanceledException) { }
+            }
+        }
+
+        private sealed class BlockingProbe {
+            public readonly TaskCompletionSource<BlockingInstruction> Started = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public readonly TaskCompletionSource<bool> Release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            public int Executions;
+        }
+
+        private sealed class BlockingInstruction : SequenceItemBase {
+            private readonly BlockingProbe probe;
+
+            public BlockingInstruction(BlockingProbe probe) {
+                this.probe = probe;
+                Name = "Blocking instruction";
+            }
+
+            public override object Clone() => new BlockingInstruction(probe) { Name = Name };
+
+            public override async Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
+                Interlocked.Increment(ref probe.Executions);
+                probe.Started.TrySetResult(this);
+                await probe.Release.Task.WaitAsync(token);
+            }
+        }
+
         private sealed class ProbeInstruction : SequenceItemBase {
             private readonly ExecutionProbe executionProbe;
 
@@ -600,7 +747,7 @@ namespace NINA.Test.Sequencer.Container {
                 }
             }
 
-            public NighttimeData NighttimeData => null;
+            public NighttimeData? NighttimeData => null;
 
             private void Target_OnCoordinatesChanged(object? sender, EventArgs e) {
                 AfterParentChanged();
@@ -612,9 +759,9 @@ namespace NINA.Test.Sequencer.Container {
                     Name = Name,
                     Category = Category,
                     Description = Description,
-                    Items = new ObservableCollection<ISequenceItem>(Items.Select(i => i.Clone() as ISequenceItem)),
-                    Triggers = new ObservableCollection<ISequenceTrigger>(Triggers.Select(t => t.Clone() as ISequenceTrigger)),
-                    Conditions = new ObservableCollection<ISequenceCondition>(Conditions.Select(c => c.Clone() as ISequenceCondition)),
+                    Items = new ObservableCollection<ISequenceItem>(Items.Select(i => (ISequenceItem)i.Clone())),
+                    Triggers = new ObservableCollection<ISequenceTrigger>(Triggers.Select(t => (ISequenceTrigger)t.Clone())),
+                    Conditions = new ObservableCollection<ISequenceCondition>(Conditions.Select(c => (ISequenceCondition)c.Clone())),
                     Target = CloneTarget(Target)
                 };
 

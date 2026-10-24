@@ -507,6 +507,19 @@
                         <ColumnDefinition Width="Auto" SharedSizeGroup="Column2" />
                         <ColumnDefinition Width="Auto" SharedSizeGroup="Column3" />
                     </Grid.ColumnDefinitions>
+                    <TextBlock Text="PHD2                   " />
+                    <TextBlock Grid.Column="1" Margin="5,0,0,0"><Hyperlink NavigateUri="https://github.com/OpenPHDGuiding/phd2">https://github.com/OpenPHDGuiding/phd2</Hyperlink></TextBlock>
+                    <TextBlock Grid.Column="2" Margin="5,0,0,0"><Hyperlink NavigateUri="https://opensource.org/licenses/BSD-3-Clause">The 3-Clause BSD License</Hyperlink></TextBlock>
+                </Grid>
+                <Grid Margin="5,5,5,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition
+                            Width="Auto"
+                            MinWidth="150"
+                            SharedSizeGroup="Column1" />
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="Column2" />
+                        <ColumnDefinition Width="Auto" SharedSizeGroup="Column3" />
+                    </Grid.ColumnDefinitions>
                     <TextBlock Text="Serilog                " />
                     <TextBlock Grid.Column="1" Margin="5,0,0,0"><Hyperlink NavigateUri="https://serilog.net/          ">https://serilog.net/</Hyperlink></TextBlock>
                     <TextBlock Grid.Column="2" Margin="5,0,0,0"><Hyperlink NavigateUri="https://www.apache.org/licenses/LICENSE-2.0">Apache 2.0</Hyperlink></TextBlock>

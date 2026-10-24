@@ -22,6 +22,12 @@ This allows you to safely return to a stable release if needed.
 - The application now runs on .NET 10, bringing performance improvements and access to the latest runtime features.
 
 ## Bugfixes
+- Dropping a saved target onto a DSO container now reliably updates its coordinates and target details, including after the container has been open for some time.
+- Removed symbol containers and replaced sequences now release cached scopes and background condition checks. Symbols also register correctly when restored after deletion.
+- Validation issues for Loop, Loop While and Moon Illumination conditions now start with an empty list and notify the UI when validation results change.
+- Take Many Exposures now rejects invalid iteration expressions. Explicit subframe dimensions and absolute focuser moves now read current expression values when executed.
+- Sky Flats now honors retry and error settings when a predicted exposure exceeds the configured limits, and incomplete captures no longer count as completed frames.
+- Fixed missing synchronization in native QHY, ToupTek-family, FTDI, SBIG and Moravian SDK calls to prevent overlapping operations and premature handle release.
 - Dome parking now checks that the driver reports it is parked after movement stops and reports a failure if it is not. A fixed 10-minute timeout aborts parking if it does not complete.
 - ASCOM and Alpaca cameras now apply their reported Bayer X/Y offsets when automatically debayering previews, so non-RGGB phases display the correct colors while preserving the original image metadata.
 - The Connect All and Disconnect All commands can no longer run at the same time, preventing conflicting device operations during slow connections.
@@ -124,6 +130,7 @@ This allows you to safely return to a stable release if needed.
 - **Plugin support (opt-in)**
   - Expression support for plugin-provided sequence items is **opt-in** and requires plugin updates.
   - Plugins must explicitly adopt the new expression system to expose expression-enabled fields.
+  - The expression generator now reports invalid declarations, missing validator callbacks and malformed ranges at build time. New diagnostics help plugin authors compose validation, avoid discarded issues and prevent recursive proxy access. Cache-read warnings also cover inherited expressions and compound assignments. Generated sources support escaped default labels, special numeric constants and matching class names in different namespaces.
   - Plugins that are not updated continue to function normally, but their sequence items will not offer expression support.
 
 - **Sequencer**

@@ -91,6 +91,26 @@ namespace NINA.Test.Sequencer.Trigger.Autofocus {
             sut.Icon.Should().BeSameAs(initial.Icon);
         }
 
+        [TestCase("1 +")]
+        [TestCase("missingAutofocusInterval")]
+        public void ContainerValidation_RejectsInvalidTimeExpressionAndRecovers(string definition) {
+            var sut = new AutofocusAfterTimeTrigger(profileServiceMock.Object, imagehistory, cameraMediatorMock.Object, filterWheelMediatorMock.Object, focuserMediatorMock.Object, autoFocusVMFactoryMock.Object, safetyMonitorMediatorMock.Object);
+            var root = new NINA.Sequencer.Container.SequenceRootContainer();
+            root.Add(sut);
+            sut.AmountExpression.Definition = definition;
+            try {
+                root.Validate().Should().BeFalse();
+                sut.Issues.Should().Contain(sut.AmountExpression.Error);
+
+                sut.AmountExpression.Definition = "10 + 5";
+                root.Validate().Should().BeTrue();
+                sut.Issues.Should().BeEmpty();
+                sut.Amount.Should().Be(15);
+            } finally {
+                sut.Detach();
+            }
+        }
+
         [Test]
         [TestCase(30, 10, true)]
         [TestCase(10, 10, true)]

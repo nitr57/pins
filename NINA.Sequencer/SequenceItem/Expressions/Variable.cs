@@ -13,7 +13,7 @@ using NINA.Sequencer.Logic;
 
 namespace NINA.Sequencer.SequenceItem.Expressions {
     [ExportMetadata("Name", "Define Scoped Variable")]
-    [ExportMetadata("Description", "Creates a Scoped Variable which can be used in Expressions")]
+    [ExportMetadata("Description", "Lbl_SequenceItem_Symbols_DefineScopedVariable_Description")]
     [ExportMetadata("Icon", "VariableSVG")]
     [ExportMetadata("Category", "Lbl_SequenceCategory_Symbol")]
     [Export(typeof(ISequenceItem))]

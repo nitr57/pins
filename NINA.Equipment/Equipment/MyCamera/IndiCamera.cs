@@ -17,6 +17,7 @@ using NINA.Core.Model.Equipment;
 using NINA.Core.Utility;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Model;
+using NINA.Image.FileFormat.FITS;
 using NINA.Image.ImageData;
 using NINA.Image.Interfaces;
 using NINA.INDI;
@@ -27,6 +28,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -37,6 +39,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private readonly IProfileService profileService;
         private readonly IExposureDataFactory exposureDataFactory;
         private readonly IImageDataFactory imageDataFactory;
+        private readonly bool logFramesAtDebug;
 
         private int _subSampleX;
         private int _subSampleY;
@@ -44,16 +47,29 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private int _subSampleHeight;
         private bool _enableSubSample;
 
-        public IndiCamera(INDIDeviceInfo info, IProfileService profileService, IExposureDataFactory exposureDataFactory, IImageDataFactory imageDataFactory) : base(info) {
+        /// <param name="logFramesAtDebug">
+        /// Log the messages that repeat for every frame at Debug instead of Info: a guide camera takes a frame every few
+        /// seconds all night.
+        /// </param>
+        public IndiCamera(INDIDeviceInfo info, IProfileService profileService, IExposureDataFactory exposureDataFactory, IImageDataFactory imageDataFactory, bool logFramesAtDebug = false) : base(info) {
             this.profileService = profileService;
             this.exposureDataFactory = exposureDataFactory;
             this.imageDataFactory = imageDataFactory;
+            this.logFramesAtDebug = logFramesAtDebug;
         }
 
         protected override string ConnectionLostMessage => "CameraConnectionLost";
 
         protected override IINDICamera GetInstance() {
-            return device ??= new INDICamera(_device);
+            return device ??= new INDICamera(_device) { LogFramesAtDebug = logFramesAtDebug };
+        }
+
+        private void LogFrame(string message, [CallerMemberName] string memberName = "", [CallerFilePath] string sourceFilePath = "", [CallerLineNumber] int lineNumber = 0) {
+            if (logFramesAtDebug) {
+                Logger.Debug(message, memberName, sourceFilePath, lineNumber);
+            } else {
+                Logger.Info(message, memberName, sourceFilePath, lineNumber);
+            }
         }
 
         protected override Task PostConnect() {
@@ -400,37 +416,29 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
                 token.ThrowIfCancellationRequested();
 
-                // Determine file extension — decompress .fits.z on the fly
-                Logger.Info($"INDI camera: processing blob format='{blobFormat}' size={blobData.Length}");
+                // decompress .fits.z in memory; the FITS image is decoded in memory too, no temporary file
+                LogFrame($"INDI camera: processing blob format='{blobFormat}' size={blobData.Length}");
                 bool isCompressed = blobFormat != null && blobFormat.EndsWith(".z", StringComparison.OrdinalIgnoreCase);
-                string tempBase = Path.GetTempFileName();
-                string tempFile = tempBase + ".fits";
-
-                try {
-                    if (isCompressed) {
-                        // INDI drivers compress BLOBs with zlib compress2() (zlib framing,
-                        // 0x78 header) — not gzip, so ZLibStream is required here.
-                        using var ms = new MemoryStream(blobData);
-                        using var zs = new ZLibStream(ms, CompressionMode.Decompress);
-                        using var fs = File.Create(tempFile);
-                        await zs.CopyToAsync(fs, token);
-                    } else {
-                        await File.WriteAllBytesAsync(tempFile, blobData, token);
-                    }
-
-                    token.ThrowIfCancellationRequested();
-
-                    var imageData = await imageDataFactory.CreateFromFile(tempFile, device.BitDepth, isBayered: SensorType != SensorType.Monochrome, token);
-                    if (imageData == null) {
-                        Logger.Error("INDI camera: Failed to create image data from FITS blob");
-                        return null;
-                    }
-
-                    return exposureDataFactory.CreateCachedExposureData(imageData);
-                } finally {
-                    try { File.Delete(tempBase); } catch { }
-                    try { File.Delete(tempFile); } catch { }
+                byte[] fits = blobData;
+                if (isCompressed) {
+                    // INDI drivers compress BLOBs with zlib compress2() (zlib framing,
+                    // 0x78 header) — not gzip, so ZLibStream is required here.
+                    using var ms = new MemoryStream(blobData);
+                    using var zs = new ZLibStream(ms, CompressionMode.Decompress);
+                    using var decompressed = new MemoryStream();
+                    await zs.CopyToAsync(decompressed, token);
+                    fits = decompressed.ToArray();
                 }
+
+                token.ThrowIfCancellationRequested();
+
+                var imageData = await FITS.Load(fits, isBayered: SensorType != SensorType.Monochrome, imageDataFactory, token);
+                if (imageData == null) {
+                    Logger.Error("INDI camera: Failed to create image data from FITS blob");
+                    return null;
+                }
+
+                return exposureDataFactory.CreateCachedExposureData(imageData);
             } catch (OperationCanceledException) {
                 Logger.Info("INDI camera: Download cancelled");
                 return null;

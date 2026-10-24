@@ -40,15 +40,17 @@ namespace NINA.Equipment.Utility {
         // Server readiness is awaited (bounded) inside INDIClient.GetDevices, so the
         // enumeration methods below can call it directly.
 
-        public async Task<List<ICamera>> GetCameras(IExposureDataFactory exposureDataFactory, IImageDataFactory imageDataFactory) {
+        /// <param name="category">The driver slot for INDIClient.GetDevices: "Camera" for the imaging camera,
+        /// "GuideCamera" for the guide camera, so each slot can load its own driver or share one.</param>
+        public async Task<List<ICamera>> GetCameras(IExposureDataFactory exposureDataFactory, IImageDataFactory imageDataFactory, string category = "Camera") {
             var l = new List<ICamera>();
 
             // Fetch the INDI driver that is supposed to be used from profile
             string driver = profileService.ActiveProfile.CameraSettings.IndiDriver;
 
             // Query devices for this driver
-            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.CCD_INTERFACE, driver, "Camera")) {
-                l.Add(new IndiCamera(device, profileService, exposureDataFactory, imageDataFactory));
+            foreach (var device in await INDIClient.Instance.GetDevices(DeviceInterface.CCD_INTERFACE, driver, category)) {
+                l.Add(new IndiCamera(device, profileService, exposureDataFactory, imageDataFactory, logFramesAtDebug: category == "GuideCamera"));
             }
             return l;
         }

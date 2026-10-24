@@ -197,7 +197,7 @@ namespace NINA.Sequencer.Logic {
                     IsExpression = true;
 
                     // Evaluate just so that we can parse the expression
-                    NCalc.Expression e = new NCalc.Expression(value, NCalc.ExpressionOptions.IgnoreCaseAtBuiltInFunctions);
+                    NCalc.Expression e = NCalcExpressionAdapter.Create(value);
                     IsSyntaxError = false;
                     try {
                         e.Evaluate();
@@ -328,7 +328,9 @@ namespace NINA.Sequencer.Logic {
         ///
         /// This field is optional; if null, no range checking occurs.
         /// </summary>
+#nullable enable annotations
         public double[]? Range { get; set; }
+#nullable restore annotations
 
         public IReadOnlyCollection<string> References {
             get {
@@ -444,6 +446,7 @@ namespace NINA.Sequencer.Logic {
             }
         }
 
+#nullable enable annotations
         public string? RangeString(double? value) {
             if (Range?.Length < 3) { return null; }
 
@@ -481,6 +484,7 @@ namespace NINA.Sequencer.Logic {
             }
             return string.Format(CultureInfo.InvariantCulture, Loc.Instance[msgKey], Range[0], Range[1]);
         }
+#nullable restore annotations
         private void ExtensionFunction(string name, FunctionEventArgs args) {
             try {
                 SymbolBroker.InvokeFunction(name, new NCalcSymbolFunctionArguments(args.Parameters), out var result, out var isVolatile);
@@ -586,7 +590,7 @@ namespace NINA.Sequencer.Logic {
 
                     StringValue = null;
 
-                    if (Parameters.Count < Resolved.Count) {
+                    if (parameters.Count < resolved.Count) {
                         parameters.Clear();
                         ReleaseConsumersNoLock();
                     }
@@ -606,7 +610,7 @@ namespace NINA.Sequencer.Logic {
                         //if (!ImageVolatile && symReference.StartsWith("Image_")) {
                         //    ImageVolatile = true;
                         //}
-                        bool found = Resolved.TryGetValue(symReference, out sym);
+                        bool found = resolved.TryGetValue(symReference, out sym);
                         if (!found || sym == null) {
                             // !found -> couldn't find it; sym == null -> it's a DataSymbol
                             if (!found) {
@@ -631,7 +635,7 @@ namespace NINA.Sequencer.Logic {
                                     StringBuilder sb = new StringBuilder("'" + a.Key + "' " + Loc.Instance["LblIsAmbiguous"]);
                                     Symbol[] symbols = a.Symbols;
                                     for (int i = 0; i < symbols.Length; i++) {
-                                        sb.Append(" " + symbols[i].Category + '_' + symReference);
+                                        sb.Append(" " + symbols[i].Category + Logic.SymbolBroker.QUALIFIED_DELIMITER + symbols[i].Key);
                                         if (i < symbols.Length - 1) {
                                             sb.Append("; ");
                                         }
@@ -650,7 +654,7 @@ namespace NINA.Sequencer.Logic {
                     if (_cachedNCalcExpression != null) {
                         e = _cachedNCalcExpression;
                     } else {
-                        e = new NCalc.Expression(Definition, ExpressionOptions.IgnoreCaseAtBuiltInFunctions);
+                        e = NCalcExpressionAdapter.Create(Definition);
                         e.EvaluateFunction += ExtensionFunction;
                         _cachedNCalcExpression = e;
                     }
@@ -659,17 +663,18 @@ namespace NINA.Sequencer.Logic {
                         e.Parameters[parameter.Key] = parameter.Value;
                     }
 
-                    if (e.HasErrors()) {
+                    // HasErrors reparses the text, discarding any restored qualified names.
+                    if (e.LogicalExpression == null && e.HasErrors()) {
                         Error = Loc.Instance["LblSyntaxError"];
                         return;
                     }
 
                     Error = null;
                     try {
-                        if (Parameters.Count != References.Count) {
+                        if (parameters.Count != references.Count) {
                             foreach (string r in References) {
                                 string symReference = r;
-                                if (!Parameters.ContainsKey(symReference)) {
+                                if (!parameters.ContainsKey(symReference)) {
                                     // Not defined or evaluated
                                     UserSymbol s = FindSymbol(symReference, Symbol?.Parent ?? Context.Parent);
                                     if (s is Variable sv && !sv.Executed) {
@@ -812,10 +817,13 @@ namespace NINA.Sequencer.Logic {
         }
 
         private void ReleaseConsumersNoLock() {
-            foreach (UserSymbol symbol in resolved.Values.Where(symbol => symbol != null).Distinct()) {
-                symbol.RemoveConsumer(this);
+            if (resolved.Count > 0) {
+                foreach (UserSymbol symbol in resolved.Values.Where(symbol => symbol != null).Distinct()) {
+                    symbol.RemoveConsumer(this);
+                }
+                resolved.Clear();
             }
-            resolved.Clear();
+            parameters.Clear();
         }
 
         public override string ToString() {
@@ -857,7 +865,7 @@ namespace NINA.Sequencer.Logic {
                 }
             } else if (double.IsNaN(Value) && Definition?.Length > 0) {
                 Error = Loc.Instance["LblNotEvaluated"];
-            } else if (Resolved.Count != References.Count) {
+            } else if (HasUnresolvedReferences()) {
                 // Why would this happen... track down?
                 Evaluate();
             } else if (Definition.Length != 0 && Value == Default && Error == null) {
@@ -868,6 +876,12 @@ namespace NINA.Sequencer.Logic {
 
         public void Validate() {
             Validate(null);
+        }
+
+        private bool HasUnresolvedReferences() {
+            lock (this) {
+                return resolved.Count != references.Count;
+            }
         }
     }
 }

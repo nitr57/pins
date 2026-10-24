@@ -36,7 +36,7 @@ namespace NINA.Sequencer.SequenceItem.Focuser {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Focuser")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class MoveFocuserByTemperature : SequenceItem, IValidatable, IFocuserConsumer {
 
@@ -72,16 +72,6 @@ namespace NINA.Sequencer.SequenceItem.Focuser {
         [IsExpression (Default = 0)]
         public partial double Intercept { get; set; }
 
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
-
         public override Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
             var info = focuserMediator.GetInfo();
             Task<int> result;
@@ -103,19 +93,15 @@ namespace NINA.Sequencer.SequenceItem.Focuser {
             Validate();
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             var info = focuserMediator.GetInfo();
             if (!info.Connected) {
-                i.Add(Loc.Instance["LblFocuserNotConnected"]);
+                issues.Add(Loc.Instance["LblFocuserNotConnected"]);
             } else {
                 if (double.IsNaN(info.Temperature)) {
-                    i.Add(Loc.Instance["Lbl_SequenceItem_Focuser_MoveFocuserByTemperature_Validation_NoTemperature"]);
+                    issues.Add(Loc.Instance["Lbl_SequenceItem_Focuser_MoveFocuserByTemperature_Validation_NoTemperature"]);
                 }
             }
-            Expression.ValidateExpressions(i, SlopeExpression, InterceptExpression);
-            Issues = i;
-            return i.Count == 0;
         }
 
         public string MiniDescription => $"{Slope} * " + (absolute ? $"T + {Intercept}" : "DeltaT");

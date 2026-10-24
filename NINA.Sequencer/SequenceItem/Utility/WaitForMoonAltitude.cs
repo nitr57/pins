@@ -19,6 +19,7 @@ using NINA.Profile.Interfaces;
 using NINA.Core.Utility;
 using NINA.Astrometry;
 using System;
+using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Globalization;
 using System.Threading;
@@ -39,7 +40,7 @@ namespace NINA.Sequencer.SequenceItem.Utility {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Utility")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
     public partial class WaitForMoonAltitude : WaitForAltitudeBase, IValidatable {
 
         [ImportingConstructor]
@@ -94,21 +95,15 @@ namespace NINA.Sequencer.SequenceItem.Utility {
             }
         }
 
-        [IsExpression(Default = 30, Range = [-90, 90], Proxy = "Data.Offset", HasValidator = true)]
+        [IsExpression(Default = 30, Range = [-90, 90], Proxy = "Data.Offset")]
         public partial double Offset { get; set; }
-
-        partial void OffsetExpressionValidator(Expression expr) {
-            if (expr.Error == null) {
-                Data.Offset = expr.Value;
-            }
-        }
 
         private DateTimeOffset lastCalculation = DateTimeOffset.MinValue;
         private double lastCalculationOffset = double.NaN;
         private ComparisonOperatorEnum lastCalculationComparator = ComparisonOperatorEnum.EQUALS;
 
         public override void CalculateExpectedTime() {
-            Data.CurrentAltitude = AstroUtil.GetMoonAltitude(DateTime.Now, Data.Observer);
+            Data.CurrentAltitude = Math.Round(AstroUtil.GetMoonAltitude(DateTime.Now, Data.Observer), 2);
 
             if (!MustWait()) {
                 Data.ExpectedDateTime = DateTime.Now;
@@ -148,15 +143,14 @@ namespace NINA.Sequencer.SequenceItem.Utility {
             Validate();
         }
 
-        public bool Validate() {
+        partial void ValidateAdditional(IList<string> issues) {
             CalculateExpectedTime();
-            Expression.ValidateExpressions(Issues, OffsetExpression);
-            return Issues.Count == 0;
         }
 
         private double GetDataOffset() {
             // Moonrise/Moonset calculations are a special case where we adjust for the upper limp of the Moon touching the horizon including atmospheric refraction.
-            return Data.Offset != 0 ? Data.Offset : -AstroUtil.MoonUpperLimbApparentHorizonAltitude;
+            var offset = Offset;
+            return offset != 0 ? offset : -AstroUtil.MoonUpperLimbApparentHorizonAltitude;
         }
     }
 }

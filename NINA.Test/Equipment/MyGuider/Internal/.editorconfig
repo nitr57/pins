@@ -1,0 +1,10 @@
+# The internal guider's tests keep the layout of its code (Allman braces, file-scoped namespaces, LF).
+# Not root: the pins analyzer severities still apply here.
+
+[*.cs]
+end_of_line = lf
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_style_namespace_declarations = file_scoped:silent

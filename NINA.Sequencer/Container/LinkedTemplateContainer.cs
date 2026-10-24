@@ -18,13 +18,13 @@ using NINA.Astrometry;
 using NINA.Core.Locale;
 using NINA.Core.Model;
 using NINA.Core.Utility;
-using NINA.Core.Utility.Notification;
 using NINA.Sequencer.Conditions;
 using NINA.Sequencer.Container.ExecutionStrategy;
 using NINA.Sequencer.DragDrop;
 using NINA.Sequencer.Interfaces;
 using NINA.Sequencer.SequenceItem;
 using NINA.Sequencer.Trigger;
+using NINA.Sequencer.Utility;
 using NINA.Sequencer.Validations;
 using System;
 using System.Collections.ObjectModel;
@@ -45,7 +45,7 @@ namespace NINA.Sequencer.Container {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Container")]
     [Export(typeof(ISequenceContainer))]
     [JsonObject(MemberSerialization.OptIn)]
-    public class LinkedTemplateContainer : SequenceContainer, ISequenceItemPlacementTarget, ISequenceCustomPropertyEditProvider, ISequenceEditSessionBoundary {
+    public partial class LinkedTemplateContainer : SequenceContainer, ISequenceItemPlacementTarget, ISequenceCustomPropertyEditProvider, ISequenceEditSessionBoundary {
         private const string LinkedTemplateIconResourceKey = "ConnectSVG";
         private readonly ITemplateLinkResolver templateLinkResolver;
         private TemplateReference templateReference = new TemplateReference();
@@ -54,6 +54,7 @@ namespace NINA.Sequencer.Container {
         private LinkedTemplateTargetOverride targetOverride;
         private InputTarget targetEditor;
         private InputTarget observedMaterializedTarget;
+        private readonly EventHandler materializedTargetCoordinatesChangedHandler;
         private bool suppressTargetEditorUpdate;
         private bool suppressMaterializedTargetUpdate;
         private bool isDeserializing;
@@ -62,13 +63,15 @@ namespace NINA.Sequencer.Container {
         [ImportingConstructor]
         public LinkedTemplateContainer(ITemplateLinkResolver templateLinkResolver) : base(new SequentialStrategy()) {
             this.templateLinkResolver = templateLinkResolver;
+            materializedTargetCoordinatesChangedHandler = new InputTargetCoordinatesChangedHandler<LinkedTemplateContainer>(
+                this, static (owner, sender, args) => owner.MaterializedTarget_OnCoordinatesChanged(sender, args)).Handle;
             IsExpanded = false;
             Name = Loc.Instance["Lbl_SequenceContainer_LinkedTemplateContainer_Name"];
             Description = Loc.Instance["Lbl_SequenceContainer_LinkedTemplateContainer_Description"];
             Category = Loc.Instance["Lbl_SequenceCategory_Container"];
             Icon = TryGetDefaultIcon();
             BeginEditTemplateCommand = new GalaSoft.MvvmLight.Command.RelayCommand(BeginEditTemplate, () => CanEditTemplate && !IsEditing);
-            CancelEditTemplateCommand = new GalaSoft.MvvmLight.Command.RelayCommand(CancelEditTemplate, () => IsEditing);
+            CancelEditTemplateCommand = new GalaSoft.MvvmLight.Command.RelayCommand(CancelEditTemplate, () => CanCancelTemplate);
             SaveTemplateCommand = new AsyncCommand<bool>(SaveTemplate, (object o) => CanSaveTemplate);
             DropTargetCommand = new GalaSoft.MvvmLight.Command.RelayCommand<object>(o => Editing.SequenceEditContext.Target(this, () => DropTarget(o), CaptureTargetEdit));
             EnsureTargetEditor();
@@ -138,6 +141,9 @@ namespace NINA.Sequencer.Container {
 
         public string LinkStatusText {
             get {
+                if (IsWaitingForEdits) {
+                    return EditWaitStatusText;
+                }
                 if (IsEditing) {
                     return Loc.Instance["Lbl_SequenceContainer_LinkedTemplateContainer_StatusEditing"];
                 }
@@ -156,11 +162,6 @@ namespace NINA.Sequencer.Container {
             }
         }
 
-        public bool CanEditTemplate => LinkState == TemplateLinkState.Resolved
-            && TemplateReference?.SourceKind == TemplateReferenceSourceKind.User;
-
-        public bool CanSaveTemplate => IsEditing && CanEditTemplate && Items.OfType<ISequenceContainer>().Count() == 1;
-
         public bool IsMaterialized => Items.Count > 0;
 
         [JsonProperty]
@@ -169,7 +170,7 @@ namespace NINA.Sequencer.Container {
             set {
                 bool wasExpanded = base.IsExpanded;
                 base.IsExpanded = value;
-                if (!isDeserializing && value && !wasExpanded && !IsEditing) {
+                if (!isDeserializing && value && !wasExpanded && !IsEditing && !IsMaterialized) {
                     TryResolveTemplate();
                 }
             }
@@ -285,7 +286,7 @@ namespace NINA.Sequencer.Container {
             }
 
             if (templateLinkResolver.TryResolve(TemplateReference, out TemplatedSequenceContainer template)) {
-                if (materialize && !IsEditing) {
+                if (materialize && !HasOpenEdits) {
                     MaterializeFromTemplate(template);
                 } else {
                     UpdateReferenceFromTemplate(template);
@@ -302,8 +303,21 @@ namespace NINA.Sequencer.Container {
         }
 
         public override async Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
-            await EnsureResolved(token);
-            await base.Execute(progress, token);
+            try {
+                await OnEditorThread(() => {
+                    executionReserved = true;
+                    NotifyEditProperties();
+                });
+                await WaitForEditing(progress, token);
+                await EnsureResolved(token);
+                await base.Execute(progress, token);
+            } finally {
+                await OnEditorThread(() => {
+                    executionReserved = false;
+                    lastEditActivity = null;
+                    NotifyEditProperties();
+                });
+            }
         }
 
         public override bool Validate() {
@@ -511,13 +525,13 @@ namespace NINA.Sequencer.Container {
 
         private void ObserveMaterializedTarget(IDeepSkyObjectContainer deepSkyObjectContainer) {
             if (observedMaterializedTarget != null) {
-                WeakEventManager<InputTarget, EventArgs>.RemoveHandler(observedMaterializedTarget, nameof(InputTarget.CoordinatesChanged), MaterializedTarget_OnCoordinatesChanged);
+                observedMaterializedTarget.CoordinatesChanged -= materializedTargetCoordinatesChangedHandler;
                 observedMaterializedTarget = null;
             }
 
             observedMaterializedTarget = deepSkyObjectContainer?.Target;
             if (observedMaterializedTarget != null) {
-                WeakEventManager<InputTarget, EventArgs>.AddHandler(observedMaterializedTarget, nameof(InputTarget.CoordinatesChanged), MaterializedTarget_OnCoordinatesChanged);
+                observedMaterializedTarget.CoordinatesChanged += materializedTargetCoordinatesChangedHandler;
             }
         }
 
@@ -588,44 +602,6 @@ namespace NINA.Sequencer.Container {
             if (!TryResolveTemplate()) {
                 throw new SequenceEntityFailedException(LinkStatusText);
             }
-        }
-
-        private void BeginEditTemplate() {
-            if (!CanEditTemplate) {
-                return;
-            }
-
-            if (!IsMaterialized && !TryResolveTemplate()) {
-                return;
-            }
-
-            IsEditing = true;
-            Editing.SequenceEditContext.Find(this)?.ForContents(this);
-        }
-
-        private async Task<bool> SaveTemplate(object arg) {
-            if (!CanSaveTemplate) {
-                return false;
-            }
-
-            ISequenceContainer templateContainer = Items.OfType<ISequenceContainer>().Single();
-            try {
-                Editing.SequenceEditContext.Find(this)?.Flush();
-                await templateLinkResolver.SaveTemplate(TemplateReference, templateContainer, CancellationToken.None);
-                IsEditing = false;
-                TryResolveTemplate();
-                Notification.ShowSuccess(string.Format(Loc.Instance["LblTemplate_Updated"], SourceTemplateName));
-                return true;
-            } catch (Exception ex) {
-                Logger.Error(ex);
-                Notification.ShowError(ex.Message);
-                return false;
-            }
-        }
-
-        private void CancelEditTemplate() {
-            IsEditing = false;
-            TryResolveTemplate();
         }
 
         private void ClearMaterializedTemplate() {

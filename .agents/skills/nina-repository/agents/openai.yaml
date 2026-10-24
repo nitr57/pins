@@ -1,0 +1,4 @@
+interface:
+  display_name: "NINA Repository"
+  short_description: "Build and test NINA changes on Windows"
+  default_prompt: "Use $nina-repository to select and run verification for this NINA change."

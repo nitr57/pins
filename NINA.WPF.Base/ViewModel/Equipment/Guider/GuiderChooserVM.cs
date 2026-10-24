@@ -25,6 +25,7 @@ using NINA.Equipment.Interfaces;
 using NINA.Equipment.Equipment.MyGuider.SkyGuard;
 using System.Threading.Tasks;
 using NINA.Equipment.Interfaces.ViewModel;
+using NINA.Equipment.Equipment.MyGuider.Internal;
 
 namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
 
@@ -32,16 +33,19 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
         private readonly ICameraMediator cameraMediator;
         private readonly ITelescopeMediator telescopeMediator;
         private readonly IWindowServiceFactory windowServiceFactory;
+        private readonly InternalGuider internalGuider;
 
         public GuiderChooserVM(IProfileService profileService,
                                ICameraMediator cameraMediator,
                                ITelescopeMediator telescopeMediator,
                                IWindowServiceFactory windowServiceFactory,
-                               IEquipmentProviders<IGuider> equipmentProviders) : base(profileService, equipmentProviders) {
+                               IEquipmentProviders<IGuider> equipmentProviders,
+                               InternalGuider internalGuider) : base(profileService, equipmentProviders) {
             this.cameraMediator = cameraMediator;
             this.profileService = profileService;
             this.telescopeMediator = telescopeMediator;
             this.windowServiceFactory = windowServiceFactory;
+            this.internalGuider = internalGuider;
         }
 
         public override async Task GetEquipment() {
@@ -53,6 +57,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Guider {
                 devices.Add(new DirectGuider(profileService, telescopeMediator));
                 devices.Add(new MetaGuideGuider(profileService, windowServiceFactory));
                 devices.Add(new SkyGuardGuider(profileService, windowServiceFactory));
+                // pins: always the same instance, it keeps its connection and state across rescans
+                devices.Add(internalGuider);
 
                 /* Plugin Providers */
                 foreach (var provider in await equipmentProviders.GetProviders()) {

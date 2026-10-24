@@ -30,6 +30,7 @@ using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Equipment.Model;
+using NINA.Equipment.Utility;
 using NINA.Image.Interfaces;
 using NINA.Profile.Interfaces;
 using NINA.WPF.Base.Interfaces.Mediator;
@@ -44,6 +45,9 @@ using System.Windows.Input;
 namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
 
     public partial class CameraVM : DockableVM, ICameraVM {
+
+        /// <summary>Log the messages that repeat for every exposure at Debug instead of Info (the guide camera).</summary>
+        protected virtual bool LogFramesAtDebug => false;
 
         public CameraVM(IProfileService profileService,
                         ICameraMediator cameraMediator,
@@ -76,7 +80,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 return Task.Run(() => WarmCamera(TimeSpan.FromMinutes(WarmingDuration), new Progress<ApplicationStatus>(p => Status = p), _cancelChangeTemperatureCts.Token));
             }, (object o) => !TempChangeRunning);
             CancelCoolCamCommand = new Core.Utility.RelayCommand(CancelCoolCamera);
-            RescanDevicesCommand = new AsyncCommand<bool>(async o => { await Task.Run(Rescan); return true; }, o => !CameraInfo.Connected);
+            RescanDevicesCommand = new AsyncCommand<bool>(async o => { await Rescan(); return true; }, o => !CameraInfo.Connected);
             _ = RescanDevicesCommand.ExecuteAsync(null);
 
             TempChangeRunning = false;
@@ -348,6 +352,13 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                     }
                 );
 
+                // pins: the imaging and guide camera slots must not open the same camera.
+                if (!CameraClaims.TryClaim(this, Title, (ICamera)DeviceChooserVM.SelectedDevice, out var refusal)) {
+                    Notification.ShowError(refusal);
+                    Logger.Warning(refusal);
+                    return false;
+                }
+
                 var cam = new PersistSettingsCameraDecorator(this.profileService, (ICamera)DeviceChooserVM.SelectedDevice);
                 _cancelConnectCameraSource?.Dispose();
                 _cancelConnectCameraSource = new CancellationTokenSource();
@@ -480,6 +491,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                     return false;
                 }
             } finally {
+                if (!CameraInfo.Connected) {
+                    CameraClaims.Release(this);
+                }
                 ss.Release();
                 applicationStatusMediator.StatusUpdate(
                     new ApplicationStatus() {
@@ -650,6 +664,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 TempChangeRunning = false;
                 Cam?.Disconnect();
                 Cam = null;
+                CameraClaims.Release(this);
                 CameraInfo.Reset();
                 BroadcastCameraInfo();
                 await (Disconnected?.InvokeAsync(this, new EventArgs()) ?? Task.CompletedTask);
@@ -750,7 +765,12 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 }
                 this.exposureTime = sequence.ExposureTime;
                 double exposureTime = sequence.ExposureTime;
-                Logger.Info($"Starting Exposure - Exposure Time: {exposureTime}s; Filter: {sequence.FilterType?.Name}; Gain: {CameraInfo.Gain}; Offset {CameraInfo.Offset}; Binning: {CameraInfo.BinX}x{CameraInfo.BinY};");
+                var startingExposure = $"Starting Exposure - Exposure Time: {exposureTime}s; Filter: {sequence.FilterType?.Name}; Gain: {CameraInfo.Gain}; Offset {CameraInfo.Offset}; Binning: {CameraInfo.BinX}x{CameraInfo.BinY};";
+                if (LogFramesAtDebug) {
+                    Logger.Debug(startingExposure);
+                } else {
+                    Logger.Info(startingExposure);
+                }
 
                 Cam.StartExposure(sequence);
 

@@ -20,6 +20,8 @@ using NINA.Equipment.Interfaces.Mediator;
 using QHYCCD;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
 using ZWOptical.ASISDK;
 using NINA.Equipment.SDK.CameraSDKs.AtikSDK;
 using NINA.Equipment.Utility;
@@ -47,8 +49,22 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
             this.imageDataFactory = imageDataFactory;
         }
 
+        // pins: the imaging and guide camera lists never scan at the same time. Scanning opens and closes
+        // cameras (ASI does to read the alias), which must not interleave between two lists.
+        private static readonly SemaphoreSlim scanLock = new(1, 1);
+
+        /// <summary>pins: the INDI driver slot this list loads its driver under.</summary>
+        protected virtual string IndiCategory => "Camera";
+
+        /// <summary>pins: whether to look for libgphoto2 cameras (DSLRs) at all.</summary>
+        protected virtual bool IncludeGPhotoCameras => true;
+
+        /// <summary>pins: which Alpaca Direct ("Static IP") entry this list offers; each slot keeps its own address.</summary>
+        protected virtual string AlpacaDirectCameraId => AlpacaInteraction.AlpacaDirectCameraId;
+
         public override async Task GetEquipment() {
             await lockObj.WaitAsync();
+            await scanLock.WaitAsync();
             try {
 
                 var devices = new List<IDevice>();
@@ -242,7 +258,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 /* INDI cameras */
                 try {
                     var indiInteraction = new INDIInteraction(profileService);
-                    var indiCameras = await indiInteraction.GetCameras(exposureDataFactory, imageDataFactory);
+                    var indiCameras = await indiInteraction.GetCameras(exposureDataFactory, imageDataFactory, IndiCategory);
                     devices.AddRange(indiCameras);
                     Logger.Info($"Found {indiCameras.Count} INDI Cameras");
                 } catch (Exception ex) {
@@ -252,7 +268,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 /* Alpaca */
                 try {
                     var alpacaInteraction = new AlpacaInteraction(profileService);
-                    var alpacaCameras = await alpacaInteraction.GetCameras(exposureDataFactory, default);
+                    var alpacaCameras = await alpacaInteraction.GetCameras(exposureDataFactory, default, AlpacaDirectCameraId);
                     foreach (ICamera cam in alpacaCameras) {
                         devices.Add(cam);
                     }
@@ -262,18 +278,20 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 }
 
                 /* libgphoto2 */
-                try {
-                    var gpCameras = GPSDK.GPSDK.Enum();
-                    Logger.Info($"Found {gpCameras.Count} libgphoto2 Cameras");
-                    foreach (var cam in gpCameras) {
-                        try {
-                            devices.Add(new GPCamera(cam.Key, cam.Value, profileService, exposureDataFactory));
-                        } catch (Exception ex) {
-                            Logger.Error($"Failed to initialize libgphoto2 camera '{cam.Key}': {ex.Message}");
+                if (IncludeGPhotoCameras) {
+                    try {
+                        var gpCameras = GPSDK.GPSDK.Enum();
+                        Logger.Info($"Found {gpCameras.Count} libgphoto2 Cameras");
+                        foreach (var cam in gpCameras) {
+                            try {
+                                devices.Add(new GPCamera(cam.Key, cam.Value, profileService, exposureDataFactory));
+                            } catch (Exception ex) {
+                                Logger.Error($"Failed to initialize libgphoto2 camera '{cam.Key}': {ex.Message}");
+                            }
                         }
+                    } catch (Exception ex) {
+                        Logger.Error(ex);
                     }
-                } catch (Exception ex) {
-                    Logger.Error(ex);
                 }
 
                 //                devices.Add(new FileCamera(profileService, telescopeMediator, imageDataFactory, exposureDataFactory));
@@ -282,6 +300,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 DetermineSelectedDevice(devices, profileService.ActiveProfile.CameraSettings.Id, profileService.ActiveProfile.CameraSettings.LastDeviceName);
 
             } finally {
+                scanLock.Release();
                 lockObj.Release();
             }
         }

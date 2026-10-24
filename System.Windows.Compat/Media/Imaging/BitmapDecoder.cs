@@ -65,7 +65,7 @@ namespace System.Windows.Media.Imaging {
             // Decode using OpenCV
             Mat mat = Cv2.ImDecode(buffer, ImreadModes.Unchanged);
             if (mat != null && !mat.Empty()) {
-                var frame = new BitmapFrame(mat);
+                var frame = new BitmapFrame(mat, foreignMat: false);
                 Frames.Add(frame);
             }
         }
@@ -73,7 +73,7 @@ namespace System.Windows.Media.Imaging {
         private void LoadFromFile(string filePath) {
             Mat mat = Cv2.ImRead(filePath, ImreadModes.Unchanged);
             if (mat != null && !mat.Empty()) {
-                var frame = new BitmapFrame(mat);
+                var frame = new BitmapFrame(mat, foreignMat: false);
                 Frames.Add(frame);
             }
         }
@@ -87,7 +87,7 @@ namespace System.Windows.Media.Imaging {
             if (uri.IsFile) {
                 Mat mat = Cv2.ImRead(uri.LocalPath, ImreadModes.Unchanged);
                 if (mat != null && !mat.Empty()) {
-                    var frame = new BitmapFrame(mat);
+                    var frame = new BitmapFrame(mat, foreignMat: false);
                     Frames.Add(frame);
                 }
             }
@@ -102,7 +102,7 @@ namespace System.Windows.Media.Imaging {
             if (uri.IsFile) {
                 Mat mat = Cv2.ImRead(uri.LocalPath, ImreadModes.Unchanged);
                 if (mat != null && !mat.Empty()) {
-                    var frame = new BitmapFrame(mat);
+                    var frame = new BitmapFrame(mat, foreignMat: false);
                     Frames.Add(frame);
                 }
             }
@@ -119,7 +119,7 @@ namespace System.Windows.Media.Imaging {
             }
             Mat mat = Cv2.ImDecode(data, ImreadModes.Unchanged);
             if (mat != null && !mat.Empty()) {
-                var frame = new BitmapFrame(mat);
+                var frame = new BitmapFrame(mat, foreignMat: false);
                 Frames.Add(frame);
             }
         }
@@ -133,7 +133,7 @@ namespace System.Windows.Media.Imaging {
             if (uri.IsFile) {
                 Mat mat = Cv2.ImRead(uri.LocalPath, ImreadModes.Unchanged);
                 if (mat != null && !mat.Empty()) {
-                    var frame = new BitmapFrame(mat);
+                    var frame = new BitmapFrame(mat, foreignMat: false);
                     Frames.Add(frame);
                 }
             }
@@ -147,20 +147,34 @@ namespace System.Windows.Media.Imaging {
         public BitmapFrame(Mat mat) : base(mat) { }
 
         /// <summary>
+        /// For Mats this assembly allocated itself (decoded images, clones, shared headers over an
+        /// OpenCV-owned buffer); see BitmapSource(Mat, bool).
+        /// </summary>
+        internal BitmapFrame(Mat mat, bool foreignMat) : base(mat, foreignMat) { }
+
+        /// <summary>
         /// Metadata associated with the frame
         /// </summary>
         public BitmapMetadata Metadata { get; set; }
 
         public static BitmapFrame Create(BitmapSource source) {
-            // Implicit operator already clones — take ownership directly
-            Mat mat = (Mat)source ?? new Mat();
-            return new BitmapFrame(mat);
+            return new BitmapFrame(ShareOrCloneMat(source), foreignMat: false);
         }
 
         public static BitmapFrame Create(BitmapSource source, BitmapSource thumbnail, BitmapMetadata metadata, System.Collections.ObjectModel.ReadOnlyCollection<ColorContext> colorContexts) {
-            var frame = new BitmapFrame((Mat)source ?? new Mat());
+            var frame = new BitmapFrame(ShareOrCloneMat(source), foreignMat: false);
             frame.Metadata = metadata;
             return frame;
+        }
+
+        /// <summary>
+        /// Shares a frozen source's pixel buffer when that is safe (see BitmapSource.TryShareMat),
+        /// otherwise takes a copy through the implicit conversion as before. Either way the frame
+        /// stays valid after the source is disposed. A null source still throws
+        /// NullReferenceException, as the implicit conversion always did.
+        /// </summary>
+        private static Mat ShareOrCloneMat(BitmapSource source) {
+            return source.TryShareMat() ?? (Mat)source ?? new Mat();
         }
     }
 

@@ -35,7 +35,7 @@ namespace NINA.Sequencer.SequenceItem.Dome {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Dome")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class SlewDomeAzimuth : SequenceItem, IValidatable {
 
@@ -49,15 +49,6 @@ namespace NINA.Sequencer.SequenceItem.Dome {
         }
 
         private IDomeMediator domeMediator;
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
 
         [IsExpression (Default = 0, Range = [0, 359.99])]
         public partial double AzimuthDegrees { get; set; }
@@ -66,19 +57,15 @@ namespace NINA.Sequencer.SequenceItem.Dome {
             return domeMediator.SlewToAzimuth(AzimuthDegrees, token);
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             var domeInfo = domeMediator.GetInfo();
             if (!domeInfo.Connected) {
-                i.Add(Loc.Instance["LblDomeNotConnected"]);
+                issues.Add(Loc.Instance["LblDomeNotConnected"]);
             } else {
                 if (!domeInfo.CanSetAzimuth) {
-                    i.Add(Loc.Instance["LblDomeCannotSetAzimuth"]);
+                    issues.Add(Loc.Instance["LblDomeCannotSetAzimuth"]);
                 }
             }
-            Expression.ValidateExpressions(i, AzimuthDegreesExpression);
-            Issues = i;
-            return i.Count == 0;
         }
 
         public override void AfterParentChanged() {

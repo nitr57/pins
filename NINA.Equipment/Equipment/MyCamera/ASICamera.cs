@@ -43,11 +43,21 @@ namespace NINA.Equipment.Equipment.MyCamera {
             _info = ASICameraDll.GetCameraProperties(cameraIndex);
             _cameraId = _info.CameraID;
 
-            ASICameraDll.OpenCamera(_cameraId);
+            // pins: a camera this process has open (connected in either camera slot) can be read as it is;
+            // closing it here would close it for the slot using it.
+            bool alreadyOpen;
+            lock (openCameraIds) {
+                alreadyOpen = openCameraIds.Contains(_cameraId);
+            }
+            if (!alreadyOpen) {
+                ASICameraDll.OpenCamera(_cameraId);
+            }
             // We must connect to the camera to get its ID. Quickly do this if we are not (such as during building the CameraChooser list)
             cameraAlias = ASICameraDll.GetId(_cameraId);
             Logger.Debug($"ASI: Camera ID/Alias: {cameraAlias}");
-            ASICameraDll.CloseCamera(_cameraId);
+            if (!alreadyOpen) {
+                ASICameraDll.CloseCamera(_cameraId);
+            }
 
             SetId();
         }
@@ -55,6 +65,12 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private readonly IProfileService profileService;
         private readonly IExposureDataFactory exposureDataFactory;
         private readonly int _cameraId;
+
+        // pins: the SDK's number for this camera, unique per physical camera while it is plugged in.
+        internal int CameraId => _cameraId;
+
+        // pins: the cameras this process has opened through Connect and not closed yet.
+        private static readonly HashSet<int> openCameraIds = [];
         private bool _liveViewEnabled = false;
 
         public string Category { get; } = "ZWOptical";
@@ -361,6 +377,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
             _controls = null;
             Connected = false;
             ASICameraDll.CloseCamera(_cameraId);
+            lock (openCameraIds) {
+                openCameraIds.Remove(_cameraId);
+            }
         }
 
         public CaptureAreaInfo CaptureAreaInfo {
@@ -669,6 +688,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 var success = false;
                 try {
                     ASICameraDll.OpenCamera(_cameraId);
+                    lock (openCameraIds) {
+                        openCameraIds.Add(_cameraId);
+                    }
                     ASICameraDll.InitCamera(_cameraId);
                     RefreshCameraInfoCache();
                     Connected = true;

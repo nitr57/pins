@@ -42,6 +42,26 @@ namespace NINA.Test.SystemWindowsCompat {
             Assert.That(blobs[0].Rectangle, Is.EqualTo(new Rectangle(5, 5, 6, 6)));
         }
 
+        // ProcessImage runs FindContours on the caller's image without copying it first, so it
+        // must leave that image untouched and give the same blobs when run again.
+        [Test]
+        public void ProcessImage_LeavesInputUnchanged_AndIsRepeatable() {
+            using var image = BinaryImageWithSquare(20, new Rectangle(5, 5, 6, 6));
+            OpenCvSharp.Mat imageMat = image;
+            using var before = imageMat.Clone();
+            using var counter = new BlobCounter();
+
+            counter.ProcessImage(image);
+            using (var diff = new OpenCvSharp.Mat()) {
+                OpenCvSharp.Cv2.Absdiff(imageMat, before, diff);
+                Assert.That(OpenCvSharp.Cv2.CountNonZero(diff), Is.EqualTo(0));
+            }
+
+            counter.ProcessImage(image);
+            Assert.That(counter.ObjectsCount, Is.EqualTo(1));
+            Assert.That(counter.GetObjectsInformation()[0].Rectangle, Is.EqualTo(new Rectangle(5, 5, 6, 6)));
+        }
+
         [Test]
         public void SingleSquare_CenterOfGravity_IsGeometricCenter() {
             using var image = BinaryImageWithSquare(20, new Rectangle(5, 5, 6, 6));

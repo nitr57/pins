@@ -101,7 +101,9 @@ namespace NINA.Plugin {
                               ITwilightCalculator twilightCalculator,
                               IMessageBroker messageBroker,
                               ISymbolBroker symbolBroker,
-                              ITemplateLinkResolver templateLinkResolver) {
+                              ITemplateLinkResolver templateLinkResolver,
+                              IGuideCameraMediator guideCameraMediator,
+                              IAdvancedGuider internalGuider) {
             this.profileService = profileService;
             this.cameraMediator = cameraMediator;
             this.telescopeMediator = telescopeMediator;
@@ -142,6 +144,8 @@ namespace NINA.Plugin {
             this.messageBroker = messageBroker;
             this.symbolBroker = symbolBroker;
             this.templateLinkResolver = templateLinkResolver;
+            this.guideCameraMediator = guideCameraMediator;
+            this.internalGuider = internalGuider;
             DateTimeProviders = new List<IDateTimeProvider>() {
                 new Sequencer.Utility.DateTimeProvider.TimeProvider(nighttimeCalculator),
                 new SunsetProvider(nighttimeCalculator),
@@ -607,6 +611,10 @@ namespace NINA.Plugin {
             container.ComposeExportedValue(messageBroker);
             container.ComposeExportedValue(symbolBroker);
             container.ComposeExportedValue(templateLinkResolver);
+            // pins: exported under its own contract only; ICameraMediator stays the imaging camera.
+            container.ComposeExportedValue<IGuideCameraMediator>(guideCameraMediator);
+            // pins: the internal guider, also while another guider is selected (e.g. for its incidents)
+            container.ComposeExportedValue<IAdvancedGuider>(internalGuider);
 
             return container;
         }
@@ -627,6 +635,8 @@ namespace NINA.Plugin {
 
         private readonly IProfileService profileService;
         private readonly ICameraMediator cameraMediator;
+        private readonly IGuideCameraMediator guideCameraMediator;
+        private readonly IAdvancedGuider internalGuider;
         private readonly ITelescopeMediator telescopeMediator;
         private readonly IFocuserMediator focuserMediator;
         private readonly IFilterWheelMediator filterWheelMediator;

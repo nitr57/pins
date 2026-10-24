@@ -3,11 +3,9 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 #if !(NETFX_CORE || NETCOREAPP || WINDOWS_UWP)
 using System.Security.Permissions;
-using System.Runtime.ConstrainedExecution;
 #endif
 using System.Collections.Generic;
 using System.Threading;
-using System.Runtime.ConstrainedExecution;
 using NINA.Core.Utility;
 using System.IO;
 
@@ -3695,9 +3693,7 @@ namespace ToupTek {
                 : base(true) {
             }
 
-            [ReliabilityContract(Consistency.WillNotCorruptState, Cer.MayFail)]
             override protected bool ReleaseHandle() {
-                // Here, we must obey all rules for constrained execution regions.
                 Toupcam_Close(handle);
                 return true;
             }

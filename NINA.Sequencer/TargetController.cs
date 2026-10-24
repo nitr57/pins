@@ -200,10 +200,11 @@ namespace NINA.Sequencer {
                     TargetsLoadingTotalCount = files.Length;
                     foreach (var file in files) {
                         try {
-                            var container = sequenceJsonConverter.Deserialize(File.ReadAllText(file));
+                            var container = sequenceJsonConverter.DeserializeFromFile(file);
 
                             var dsoContainer = container as IDeepSkyObjectContainer;
                             if (dsoContainer != null) {
+                                dsoContainer.AttachNewParent(null);
                                 var target = new TargetSequenceContainer(profileService, dsoContainer);
                                 var fileInfo = new FileInfo(file);
                                 container.Name = fileInfo.Name.Replace(TargetsFileExtension, "");

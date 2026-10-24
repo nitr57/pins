@@ -1,12 +1,17 @@
 # AGENTS.md
 
-This file is a solution-wide navigation guide for humans and coding agents working in `NINA.sln`. It complements the per-project `ARCHITECTURE.md` files and stays focused on boundaries that are backed up by the code.
+Guidance for work in `NINA.sln`. Keep this entry point compact and put subsystem details in the owning architecture document.
 
-For repository-wide contribution workflow, branch expectations, release-note updates, and general coding rules, also read [`CONTRIBUTING.md`](CONTRIBUTING.md).
+## Read For The Task
 
-## Scope
+Use the relevant route when more context is needed. Guidance already loaded for the task does not need to be reread.
 
-This guide covers the projects listed in `NINA.sln`.
+| Task | Reference |
+| --- | --- |
+| Find ownership, trace lifecycle or change a cross-project boundary | [Solution architecture and project index](ARCHITECTURE.md), then the owning project's linked document |
+| Select tests, build on Windows or diagnose verification failures | [NINA repository skill](.agents/skills/nina-repository/SKILL.md) and its task-specific references |
+| Prepare an upstream contribution, release note or documentation update | [Contribution guide](CONTRIBUTING.md) |
+| Fix prose or links | The affected document and its incoming links; application builds are unnecessary |
 
 ## Runtime Model (pins fork)
 
@@ -19,29 +24,27 @@ PI 'N' Stars (pins) is a Linux fork of N.I.N.A. (see [`README.md`](README.md)) a
 
 When a task touches "UI", confirm whether it means the WPF layer (usually not the surface here) or the Vue frontend + `ninaAPI` (usually what users actually see).
 
-## Documentation Boundary
+`NINA.Docs` is a separate [documentation repository](https://github.com/isbeorn/nina.docs.git) included as a submodule. It is outside `NINA.sln`; coordinate user-facing documentation there when applicable.
 
-- `NINA.Docs` is a git submodule declared in `.gitmodules` and points to `https://github.com/isbeorn/nina.docs.git`.
-- It is not part of the `NINA.sln` project architecture documented below.
-- If a code change also requires user-facing documentation updates, handle that separately in the `NINA.Docs` submodule / `nina.docs` repository, following the documentation notes in [`CONTRIBUTING.md`](CONTRIBUTING.md).
+## Working Boundaries
 
-## Repository Knowledge
+- Carry authorized local work through implementation and appropriate verification without repeated confirmation. Upstream discussion requirements apply to contribution proposals and major changes; they are not a separate approval gate for an agreed local task.
+- Preserve existing architecture, public interfaces and serialized compatibility unless the task requires changing them. Plugin consumers and saved profiles/sequences can outlive the current build.
+- Keep reusable logic in its owning library, app-shell composition in `NINA` and plugin loading rules in `NINA.Plugin`. Use shared mediator interfaces for communication from libraries to UI handlers.
+- Treat versioned repository files as the durable source of project knowledge. Record newly discovered contracts in the nearest doc, test or analyzer when they will help future work.
 
-- Treat repository-local, versioned files as the system of record for future contributors and coding agents.
-- Keep this file as a map. Put detailed subsystem guidance in the owning `ARCHITECTURE.md`, `CONTRIBUTING.md`, or a focused checked-in reference.
-- If a review, bug, or repeated agent mistake reveals a durable rule, update the nearest doc, test, analyzer, script, or route map instead of relying on off-repo memory.
+## Style
 
-## Code Style And Formatting
+- Follow [`.editorconfig`](.editorconfig) for C#. Preserve touched files' line endings; use CRLF for new files unless the location dictates otherwise.
+- Keep C# declarations readable: separate constructors, properties, methods and type declarations with one blank line. Keep related fields together and separate field groups from other members. Match the surrounding same-line brace style.
+- Within methods, separate guard clauses and distinct logical steps with blank lines. Expand control-flow bodies and long expressions instead of compressing them onto one line; wrap long parameter and argument lists consistently. Review new and touched code for this spacing before handoff, even when an automatic formatter preserves compact code.
+- Follow surrounding XAML style; there is no repository-wide XAML formatter configuration.
+- Prefer modern C# supported by the project and `CommunityToolkit.Mvvm` for new or refactored MVVM code where it fits.
+- Avoid new warnings. Report any intentional deferral with its reason.
 
-- Maintain the existing line-ending style of every touched file; default to CRLF for new files unless the target location dictates LF.
-- Treat the root [`.editorconfig`](.editorconfig) as the canonical C# style source. It covers indentation, line endings, namespace style, `using` placement, `var` preferences, naming, and selected analyzer severities.
-- Do not introduce new warnings casually. If an existing warning blocks a focused cleanup, keep the fix scoped and document any intentional deferral in the PR.
-- For XAML, follow surrounding file style; no repo-wide XAML formatter configuration is checked in.
-- Prefer modern C# supported by the target project. For new or refactored MVVM code, prefer `CommunityToolkit.Mvvm` where it fits instead of expanding legacy relay-command patterns.
+## NINA-Specific Constraints
 
-## Project Architecture Docs
-
-Read the project-local architecture doc before making non-trivial changes in that project:
+### State And Extension Contracts
 
 - [`NINA/ARCHITECTURE.md`](NINA/ARCHITECTURE.md)
 - [`NINA.Astrometry/ARCHITECTURE.md`](NINA.Astrometry/ARCHITECTURE.md)
@@ -49,8 +52,10 @@ Read the project-local architecture doc before making non-trivial changes in tha
 - [`NINA.Core/ARCHITECTURE.md`](NINA.Core/ARCHITECTURE.md)
 - [`NINA.CustomControlLibrary/ARCHITECTURE.md`](NINA.CustomControlLibrary/ARCHITECTURE.md)
 - [`NINA.Equipment/ARCHITECTURE.md`](NINA.Equipment/ARCHITECTURE.md)
+- [`NINA.GuideEngine/ARCHITECTURE.md`](NINA.GuideEngine/ARCHITECTURE.md)
 - [`NINA.Image/ARCHITECTURE.md`](NINA.Image/ARCHITECTURE.md)
 - [`NINA.INDI/ARCHITECTURE.md`](NINA.INDI/ARCHITECTURE.md)
+- [`NINA.Mcp/ARCHITECTURE.md`](NINA.Mcp/ARCHITECTURE.md)
 - [`NINA.MGEN/ARCHITECTURE.md`](NINA.MGEN/ARCHITECTURE.md)
 - [`NINA.Platesolving/ARCHITECTURE.md`](NINA.Platesolving/ARCHITECTURE.md)
 - [`NINA.Plugin/ARCHITECTURE.md`](NINA.Plugin/ARCHITECTURE.md)
@@ -61,21 +66,31 @@ Read the project-local architecture doc before making non-trivial changes in tha
 - [`NINA.SetupBundle/ARCHITECTURE.md`](NINA.SetupBundle/ARCHITECTURE.md)
 - [`NINA.Test/ARCHITECTURE.md`](NINA.Test/ARCHITECTURE.md)
 - [`NINA.WPF.Base/ARCHITECTURE.md`](NINA.WPF.Base/ARCHITECTURE.md)
+- Typed settings belong in `NINA.Profile`. Account for `IProfileService.ProfileChanged` when retaining settings references and preserve defaults, notifications and persisted compatibility.
+- Database changes span `NINA.Core.Database.NINADbContext` and `NINA/Database`. Follow the [migration rules](CONTRIBUTING.md#database-enhancements); changing initial SQL does not migrate existing installations.
+- Sequence entities need consistent MEF metadata, factory creation, cloning, parent attachment and validation. Preserve sequence JSON and plugin contracts; consult the [sequencer architecture](NINA.Sequencer/ARCHITECTURE.md) when changing these paths.
+- For expression-backed entities, use the [generator contract and diagnostics](NINA.Sequencer.Generators/ARCHITECTURE.md). Evaluate live values through generated scalar properties; attachment and watchdog ordering remain the entity's responsibility.
 
-Note: the solution project is named `NINA.PlateSolving`, but the folder on disk is `NINA.Platesolving`.
+### Resources And Distribution
 
-## Solution Map
+- Localize user-visible strings through `NINA.Core.Locale.Loc`. Edit only `NINA.Core/Locale/Locale.resx`; translated `Locale.<culture>.resx` files are managed by Crowdin.
+- When adding, removing or replacing a dependency, synchronize `NINA/View/About/ThirdPartyLicensesView.xaml` and `NINA/3rd-party-licenses.txt`. Remove stale entries and record any deliberate choice among multiple licenses consistently.
+- Runtime files must be copied by `NINA/NINA.csproj` and packaged by `NINA.Setup` when needed. Check test output copying for assets used by tests. Common asset roots are `NINA/External`, `NINA/Utility`, `NINA/Database` and `NINA/Sequencer/Examples`.
 
-The solution has a clear layering pattern.
+### Science And WPF
 
-### Foundation
+- Base astronomical and other sensitive numerical changes on published papers, standards or official model documentation. Use documented reference values, boundary cases and regression tests; SOFA/NOVAS examples already exist in `NINA.Test/AstrometryTest`.
+- WPF tests that construct views or use `Application.Current.Resources` need STA and generally `[NonParallelizable]`. Compile affected XAML and instantiate the relevant view/template when practical; compilation alone misses runtime resource and binding failures.
+- Isolate file-writing tests in temporary paths or injected storage unless the real user-storage location is the behavior under test.
 
-- `NINA.Core`
-  Shared utilities, logging, localization, enums, common models, SQLite EF context, and generated protobuf contracts.
-- `NINA.Profile`
-  Persisted user profile and typed settings model.
-- `NINA.Astrometry`
-  Astronomy math, coordinate types, night/twilight calculations, catalog queries.
+## Verification And Completion
+
+- Select checks for the changed behavior using the [testing map](.agents/skills/nina-repository/references/testing-map.md#routing-table). Broaden when shared contracts, persistence, numerical behavior or UI integration are affected.
+- For bug fixes, reproduce the failure at the closest meaningful layer when practical. Cover paired operations and relevant boundaries, including clone/reset/attachment paths for sequencer changes.
+- Run relevant checks after the final source edit and inspect the final diff. Once those checks pass, repeat or broaden only for new changes, failures or unresolved concerns.
+- For prose-only changes, check links, anchors, moved references and formatting. For skill changes, also validate metadata and discovery; for test-command changes, verify filters against discovery.
+- Report substantive changes, checks performed and any verification gap. Do not report unverified behavior as complete. Include a proposed PR title with a code handoff.
+- Focused local checks do not replace required upstream CI. Submission requirements live in [CONTRIBUTING.md](CONTRIBUTING.md#pull-requests).
 
 ### Runtime Domain Libraries
 
@@ -87,8 +102,12 @@ The solution has a clear layering pattern.
   Device abstractions and concrete ASCOM/Alpaca/native adapters.
 - `NINA.INDI`
   pins-specific INDI integration: indiserver process lifecycle, INDI XML protocol, global property store, and per-device-type adapters consumed by `NINA.Equipment`. (Not present in upstream NINA.)
+- `NINA.GuideEngine`
+  pins internal guider engine: PHD2-port star finding, calibration, guide algorithms, guiding loop, coach and incident recorder, with no NINA dependencies; tested by `NINA.GuideEngine.Test`. (Not present in upstream NINA.)
 - `NINA.Platesolving`
   Plate-solver integrations and orchestration.
+- `NINA.Mcp`, `NINA.Mcp.Adapter`
+  pins MCP server for AI clients such as Claude Code: dependency-free protocol, jobs and tool catalog in `NINA.Mcp` (tested by `NINA.Mcp.Test`), NINA bindings in `NINA.Mcp.Adapter`, mapped at `/mcp` in `NINA/Program.cs`. (Not present in upstream NINA.)
 
 ### Shared UI Infrastructure
 

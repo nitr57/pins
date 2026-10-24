@@ -25,7 +25,9 @@ namespace System.Windows.Media.Imaging {
                 return;
             }
 
-            using Mat sourceMat = (Mat)source;
+            // Borrow the source instead of copying all of it: only the cropped region below is cloned.
+            using var sourceLease = source.LeaseMat();
+            Mat sourceMat = sourceLease.Mat;
 
             // Create OpenCV Rect from Int32Rect
             OpenCvSharp.Rect cvRect = new OpenCvSharp.Rect(sourceRect.X, sourceRect.Y, sourceRect.Width, sourceRect.Height);
@@ -33,11 +35,12 @@ namespace System.Windows.Media.Imaging {
             // Ensure the crop rectangle is within bounds
             cvRect = cvRect.Intersect(new OpenCvSharp.Rect(0, 0, sourceMat.Width, sourceMat.Height));
 
-            // Crop the Mat and clone to avoid dangling reference to parent Mat
-            // Creating Mat(sourceMat, cvRect) creates a ROI view that references sourceMat
-            // If sourceMat is disposed, the view becomes invalid. Clone it instead.
+            // Clone the cropped region: an un-cloned ROI view would keep the whole source buffer
+            // alive (and would share pixels with a source that may still change).
             using (Mat roiMat = new Mat(sourceMat, cvRect)) {
-                _mat = roiMat.Clone();
+                var cropped = roiMat.Clone();
+                _mat.Dispose(); // the empty Mat base() created
+                _mat = cropped;
             }
             AddMemoryPressure();
         }

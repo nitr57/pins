@@ -36,7 +36,7 @@ namespace NINA.Sequencer.SequenceItem.Camera {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Camera")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class CoolCamera : SequenceItem, IValidatable {
 
@@ -57,16 +57,6 @@ namespace NINA.Sequencer.SequenceItem.Camera {
         [IsExpression (Default = 0)]
         public partial double Duration { get; set; }
 
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
-
         public override async Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
             var success = await cameraMediator.CoolCamera(Temperature, TimeSpan.FromMinutes(Duration), progress, token);
 
@@ -75,18 +65,13 @@ namespace NINA.Sequencer.SequenceItem.Camera {
             }
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             var info = cameraMediator.GetInfo();
             if (!info.Connected) {
-                i.Add(Loc.Instance["LblCameraNotConnected"]);
+                issues.Add(Loc.Instance["LblCameraNotConnected"]);
             } else if (!info.CanSetTemperature) {
-                i.Add(Loc.Instance["Lbl_SequenceItem_Validation_CameraCannotSetTemperature"]);
+                issues.Add(Loc.Instance["Lbl_SequenceItem_Validation_CameraCannotSetTemperature"]);
             }
-
-            Expression.ValidateExpressions(i, DurationExpression, TemperatureExpression);
-            Issues = i;
-            return i.Count == 0;
         }
 
         public override void AfterParentChanged() {

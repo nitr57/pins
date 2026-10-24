@@ -78,6 +78,50 @@ namespace NINA.Test.Mediator {
             mediator.IsFreeToCapture(other).Should().BeTrue();
         }
 
+        [Test]
+        public void TryRegisterCaptureBlock_WhenFree_TakesTheBlock() {
+            IGuideCameraMediator mediator = new GuideCameraMediator();
+            object owner = new object();
+
+            Assert.That(mediator.TryRegisterCaptureBlock(owner), Is.True);
+            Assert.That(mediator.IsFreeToCapture(owner), Is.True);
+            Assert.That(mediator.IsFreeToCapture(new object()), Is.False);
+        }
+
+        [Test]
+        public void TryRegisterCaptureBlock_WhenHeld_ReturnsFalseAndKeepsTheHolder() {
+            IGuideCameraMediator mediator = new GuideCameraMediator();
+            object owner = new object();
+            object other = new object();
+            mediator.RegisterCaptureBlock(owner);
+
+            Assert.That(mediator.TryRegisterCaptureBlock(other), Is.False);
+            Assert.That(mediator.TryRegisterCaptureBlock(owner), Is.False, "the holder doesn't take it twice either");
+            Assert.That(mediator.IsFreeToCapture(owner), Is.True);
+            Assert.That(mediator.IsFreeToCapture(other), Is.False);
+
+            mediator.ReleaseCaptureBlock(owner);
+            Assert.That(mediator.TryRegisterCaptureBlock(other), Is.True);
+        }
+
+        [Test]
+        public async Task TryRegisterCaptureBlock_FromManyThreadsAtOnce_LetsExactlyOneTakeIt() {
+            for (int round = 0; round < 50; round++) {
+                IGuideCameraMediator mediator = new GuideCameraMediator();
+                using Barrier start = new Barrier(16);
+                // own threads: on a small thread pool, 16 tasks waiting at the barrier would wait for new pool threads
+                Task<bool>[] attempts = Enumerable.Range(0, 16).Select(_ => Task.Factory.StartNew(() => {
+                    object consumer = new object();
+                    start.SignalAndWait();
+                    return mediator.TryRegisterCaptureBlock(consumer);
+                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)).ToArray();
+
+                bool[] taken = await Task.WhenAll(attempts);
+
+                Assert.That(taken.Count(t => t), Is.EqualTo(1), $"round {round}");
+            }
+        }
+
         /// <summary>
         /// Verifies that aborting an exposure also cancels the active mediator capture while still forwarding the hardware abort.
         /// This protects plugin callers that abort independently of the token supplied when capture started.

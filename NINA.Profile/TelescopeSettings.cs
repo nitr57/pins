@@ -48,6 +48,9 @@ namespace NINA.Profile {
             indiBaudRate = 9600;
             indiDriver = "None";
             indiMaxSlewRateDps = 4.0;
+            serialPort = string.Empty;
+            serialBaudRate = 9600;
+            preferredPierSide = string.Empty;
         }
 
         private string id;
@@ -310,6 +313,57 @@ namespace NINA.Profile {
                 if (value <= 0) return;
                 if (indiMaxSlewRateDps != value) {
                     indiMaxSlewRateDps = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string serialPort;
+
+        /// <summary>The serial port of a mount driven by pins directly (OnStepX), e.g. /dev/ttyUSB0.</summary>
+        [DataMember]
+        public string SerialPort {
+            get => serialPort;
+            set {
+                if (serialPort != value) {
+                    serialPort = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private int serialBaudRate;
+
+        /// <summary>
+        /// The baud rate of <see cref="SerialPort"/>: OnStepX's default is 9600 (SERIAL_A_BAUD_DEFAULT in its Config.h); a
+        /// firmware built with another rate needs that one. Values of 0 and below are ignored.
+        /// </summary>
+        [DataMember]
+        public int SerialBaudRate {
+            get => serialBaudRate;
+            set {
+                if (value <= 0) return;
+                if (serialBaudRate != value) {
+                    serialBaudRate = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private string preferredPierSide;
+
+        /// <summary>
+        /// The pier side the mount prefers for gotos: "East", "West" or "Best" (stay on the current side as long as
+        /// possible); empty leaves the mount's own setting. Mount drivers that support it set it at every connect
+        /// (so far pins' native OnStepX driver, :SX96). With "Best" a goto for a meridian flip may stay on the same side
+        /// until the meridian limit.
+        /// </summary>
+        [DataMember]
+        public string PreferredPierSide {
+            get => preferredPierSide;
+            set {
+                if (preferredPierSide != value) {
+                    preferredPierSide = value;
                     RaisePropertyChanged();
                 }
             }

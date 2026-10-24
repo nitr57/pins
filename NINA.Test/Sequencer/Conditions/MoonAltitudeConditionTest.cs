@@ -82,7 +82,7 @@ namespace NINA.Test.Sequencer.Conditions {
         public void Check_LESS_THAN(double currentAlt, double userAlt, ComparisonOperatorEnum Comparator, bool expected) {
             var sut = new MoonAltitudeCondition(profileServiceMock.Object);
             sut.Data.Comparator = Comparator;
-            sut.Data.Offset = userAlt;
+            sut.Offset = userAlt;
             sut.Data.CurrentAltitude = currentAlt;
 
             sut.Check(default, default, true).Should().Be(expected);
@@ -94,7 +94,7 @@ namespace NINA.Test.Sequencer.Conditions {
         public void Check_NaNAltitude_ContinuesCondition(ComparisonOperatorEnum comparator) {
             var sut = new MoonAltitudeCondition(profileServiceMock.Object);
             sut.Data.Comparator = comparator;
-            sut.Data.Offset = 10.0;
+            sut.Offset = 10.0;
             sut.Data.CurrentAltitude = double.NaN;
 
             sut.Check(default, default, true).Should().BeTrue();

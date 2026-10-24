@@ -102,6 +102,51 @@ namespace NINA.Test.SystemWindowsCompat {
             Assert.Throws<ArgumentException>(() => source.CopyPixels(new byte[4], 4, 0));
         }
 
+        // CopyPixels(ushort[]) copies straight into the caller's array (no temporary byte[]);
+        // offset counts elements, not bytes, and data before it must stay untouched.
+        [Test]
+        public void CopyPixels_Gray16_WithOffset_WritesAtElementOffset() {
+            var input = new ushort[] { 1, 2, 60000, 65535 };
+            using var source = CreateGray16(2, 2, input);
+
+            var output = new ushort[] { 7, 7, 0, 0, 0, 0 };
+            source.CopyPixels(output, 4, 2);
+
+            Assert.That(output, Is.EqualTo(new ushort[] { 7, 7, 1, 2, 60000, 65535 }));
+        }
+
+        [Test]
+        public void CopyPixels_Gray16_NonContinuousMat_CopiesCorrectly() {
+            using var parent = new OpenCvSharp.Mat(3, 4, OpenCvSharp.MatType.CV_16UC1);
+            for (int y = 0; y < 3; y++) {
+                for (int x = 0; x < 4; x++) {
+                    parent.Set(y, x, (ushort)(y * 1000 + x));
+                }
+            }
+
+            // Owned by `source` below, see CopyPixels_NonContinuousMat_RowByRowFallback_CopiesCorrectly.
+            var roi = new OpenCvSharp.Mat(parent, new OpenCvSharp.Rect(1, 1, 2, 2));
+            Assert.That(roi.IsContinuous(), Is.False, "test setup must produce a non-continuous ROI");
+
+            using var source = new BitmapSource(roi);
+            var output = new ushort[4];
+            source.CopyPixels(output, 4, 0);
+
+            Assert.That(output, Is.EqualTo(new ushort[] { 1001, 1002, 2001, 2002 }));
+        }
+
+        [Test]
+        public void Create_Gray16_IsIndependentOfInputArray() {
+            var input = new ushort[] { 100, 200, 300, 400 };
+            using var source = CreateGray16(2, 2, input);
+
+            input[0] = 9999;
+
+            var output = new ushort[4];
+            source.CopyPixels(output, 4, 0);
+            Assert.That(output, Is.EqualTo(new ushort[] { 100, 200, 300, 400 }));
+        }
+
         // REVIEW.md F8: BitmapSource(Mat) takes ownership of the Mat directly without cloning
         // (unlike CroppedBitmap/BitmapSource(Mat,Rectangle), which always clone their ROI). A raw,
         // un-cloned OpenCvSharp ROI view is non-continuous - its rows have padding between them
@@ -182,6 +227,19 @@ namespace NINA.Test.SystemWindowsCompat {
             Assert.That(output, Is.EqualTo(input));
         }
 
+        // These constructors keep the empty Mat base() created instead of replacing it, so it
+        // must still be alive and usable.
+        [Test]
+        public void EmptySourceConstructors_ProduceUsableEmptyBitmaps() {
+            using var fromNull = new WriteableBitmap((BitmapSource)null);
+            using var fromEmpty = new WriteableBitmap(new BitmapSource());
+            using var cropped = new CroppedBitmap(null, new Int32Rect(0, 0, 2, 2));
+
+            Assert.That(fromNull.PixelWidth, Is.EqualTo(0));
+            Assert.That(fromEmpty.PixelWidth, Is.EqualTo(0));
+            Assert.That(cropped.PixelWidth, Is.EqualTo(0));
+        }
+
         [Test]
         public void WriteableBitmap_SizeConstructor_CreatesRequestedDimensions() {
             using var bitmap = new WriteableBitmap(7, 5, 96, 96, PixelFormats.Gray16, null);
@@ -226,6 +284,68 @@ namespace NINA.Test.SystemWindowsCompat {
                 var output = new byte[4];
                 frame.CopyPixels(output, 2, 0);
                 Assert.That(output, Is.EqualTo(input));
+            }
+        }
+
+        // A frozen source shares its pixel buffer with the frame instead of copying it. OpenCV's
+        // reference count must keep those pixels alive after the source is disposed.
+        [Test]
+        public void BitmapFrame_Create_FromFrozenSource_SurvivesSourceDisposal() {
+            var input = new byte[] { 5, 6, 7, 8 };
+            var source = CreateGray8(2, 2, input);
+            source.Freeze();
+            var frame = BitmapFrame.Create(source);
+
+            source.Dispose();
+
+            using (frame) {
+                var output = new byte[4];
+                frame.CopyPixels(output, 2, 0);
+                Assert.That(output, Is.EqualTo(input));
+
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(frame);
+                using var stream = new MemoryStream();
+                encoder.Save(stream);
+                Assert.That(stream.Length, Is.GreaterThan(0));
+            }
+        }
+
+        // Freeze does not stop BackBuffer writes here, so a frozen WriteableBitmap is never shared.
+        [Test]
+        public void BitmapFrame_Create_FromFrozenWriteableBitmap_IgnoresLaterWrites() {
+            using var source = new WriteableBitmap(CreateGray8(2, 2, new byte[] { 5, 6, 7, 8 }));
+            source.Freeze();
+            using var frame = BitmapFrame.Create(source);
+
+            Marshal.WriteByte(source.BackBuffer, 0, 99);
+
+            var output = new byte[4];
+            frame.CopyPixels(output, 2, 0);
+            Assert.That(output, Is.EqualTo(new byte[] { 5, 6, 7, 8 }));
+        }
+
+        // A Mat handed to the public constructor may wrap caller-owned memory that OpenCV does not
+        // reference-count, so it is never shared either.
+        [Test]
+        public void BitmapFrame_Create_FromFrozenForeignBuffer_CopiesPixels() {
+            var buffer = new byte[] { 5, 6, 7, 8 };
+            var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+            BitmapFrame frame;
+            try {
+                var foreign = OpenCvSharp.Mat.FromPixelData(2, 2, OpenCvSharp.MatType.CV_8UC1, handle.AddrOfPinnedObject(), 2);
+                using var source = new BitmapSource(foreign);
+                source.Freeze();
+                frame = BitmapFrame.Create(source);
+                buffer[0] = 99;
+            } finally {
+                handle.Free();
+            }
+
+            using (frame) {
+                var output = new byte[4];
+                frame.CopyPixels(output, 2, 0);
+                Assert.That(output, Is.EqualTo(new byte[] { 5, 6, 7, 8 }));
             }
         }
 

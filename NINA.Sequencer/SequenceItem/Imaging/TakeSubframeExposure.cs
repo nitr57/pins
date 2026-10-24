@@ -22,6 +22,7 @@ using NINA.Equipment.Equipment.MyCamera;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Equipment.Model;
 using NINA.Image.Interfaces;
+using NINA.Profile;
 using NINA.Profile.Interfaces;
 using NINA.Sequencer.Container;
 using NINA.Sequencer.Generators;
@@ -39,7 +40,6 @@ using System.ComponentModel;
 using System.ComponentModel.Composition;
 using System.Data.Entity.Core.Common.CommandTrees;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Runtime.Serialization;
 using System.Security.Cryptography;
@@ -56,7 +56,7 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Camera")]
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
 
     public partial class TakeSubframeExposure : SequenceItem, IExposureItem, IValidatable {
         private ICameraMediator cameraMediator;
@@ -92,17 +92,7 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
             }
         }
 
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = value;
-                RaisePropertyChanged();
-            }
-        }
-
-        [IsExpression (Default = 100, Range = [1, 100])]
+        [IsExpression (Default = 100, Range = [1, 100], ValidateWhen = nameof(IsROI))]
         public partial double ROIPct { get; set; }
 
         [IsExpression(Default = 60, Range = [0, 3600])]
@@ -123,7 +113,7 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
         // Backward compatibility
         [JsonProperty]
         public double ROI {
-            get => ROIPctExpression.Value / 100;
+            get => ROIPct / 100;
             set {
                 // When loaded, we set the expression
                 ROIPctExpression.Definition = (value * 100).ToString(CultureInfo.InvariantCulture);
@@ -278,7 +268,7 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
                         useSubsample = false;
                     }
                 } else {
-                    rect = new ObservableRectangle(LeftExpression.Value, TopExpression.Value, WidthExpression.Value, HeightExpression.Value);
+                    rect = new ObservableRectangle(Left, Top, Width, Height);
                 }
             }
 
@@ -373,28 +363,9 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
             }
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void PrepareExpressionValidation() {
             CameraInfo = this.cameraMediator.GetInfo();
             GainExpression.IsValid = OffsetExpression.IsValid = CameraInfo.Connected;
-            if (!CameraInfo.Connected) {
-                i.Add(Loc.Instance["LblCameraNotConnected"]);
-            } else {
-                if (CameraInfo.CanSetGain && Gain > -1 && (Gain < CameraInfo.GainMin || Gain > CameraInfo.GainMax)) {
-                    i.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_Gain"], CameraInfo.GainMin, CameraInfo.GainMax, Gain));
-                }
-                if (CameraInfo.CanSetOffset && Offset > -1 && (Offset < CameraInfo.OffsetMin || Offset > CameraInfo.OffsetMax)) {
-                    i.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_Offset"], CameraInfo.OffsetMin, CameraInfo.OffsetMax, Offset));
-                }
-            }
-
-            var fileSettings = profileService.ActiveProfile.ImageFileSettings;
-
-            if (string.IsNullOrWhiteSpace(fileSettings.FilePath)) {
-                i.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_FilePathEmpty"]);
-            } else if (!Directory.Exists(fileSettings.FilePath)) {
-                i.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_FilePathInvalid"]);
-            }
             if (GainExpression.Default != CameraInfo.DefaultGain) {
                 GainExpression.Default = CameraInfo.DefaultGain;
                 if (GainExpression.Definition.Length == 0) {
@@ -409,13 +380,29 @@ namespace NINA.Sequencer.SequenceItem.Imaging {
                 }
             }
 
-            Expression.ValidateExpressions(i, ExposureTimeExpression, GainExpression, OffsetExpression, LeftExpression, TopExpression, WidthExpression, HeightExpression);
-
             GainExpression.Range = CameraInfo.CanSetGain ? new double[] { CameraInfo.GainMin, CameraInfo.GainMax, 0 } : null;
             OffsetExpression.Range = CameraInfo.CanSetOffset ? new double[] { CameraInfo.OffsetMin, CameraInfo.OffsetMax, 0 } : null;
+        }
 
-            Issues = i;
-            return i.Count == 0;
+        partial void ValidateAdditional(IList<string> issues) {
+            if (!CameraInfo.Connected) {
+                issues.Add(Loc.Instance["LblCameraNotConnected"]);
+            } else {
+                if (CameraInfo.CanSetGain && Gain > -1 && (Gain < CameraInfo.GainMin || Gain > CameraInfo.GainMax)) {
+                    issues.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_Gain"], CameraInfo.GainMin, CameraInfo.GainMax, Gain));
+                }
+                if (CameraInfo.CanSetOffset && Offset > -1 && (Offset < CameraInfo.OffsetMin || Offset > CameraInfo.OffsetMax)) {
+                    issues.Add(string.Format(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_Offset"], CameraInfo.OffsetMin, CameraInfo.OffsetMax, Offset));
+                }
+            }
+
+            var fileSettings = profileService.ActiveProfile.ImageFileSettings;
+
+            if (string.IsNullOrWhiteSpace(fileSettings.FilePath)) {
+                issues.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_FilePathEmpty"]);
+            } else if (!fileSettings.IsFilePathValid()) {
+                issues.Add(Loc.Instance["Lbl_SequenceItem_Imaging_TakeSubframeExposure_Validation_FilePathInvalid"]);
+            }
         }
 
         public override TimeSpan GetEstimatedDuration() {

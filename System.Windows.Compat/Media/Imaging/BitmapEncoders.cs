@@ -48,7 +48,8 @@ namespace System.Windows.Media.Imaging {
 
             // Use the first frame's bitmap source
             var frame = Frames[0];
-            using Mat mat = (Mat)frame;
+            using var frameLease = frame.LeaseMat();
+            Mat mat = frameLease.Mat;
 
             // Encode as TIFF using OpenCV
             Cv2.ImEncode(".tif", mat, out byte[] buffer);
@@ -66,7 +67,8 @@ namespace System.Windows.Media.Imaging {
             }
 
             var frame = Frames[0];
-            using Mat mat = (Mat)frame;
+            using var frameLease = frame.LeaseMat();
+            Mat mat = frameLease.Mat;
 
             if (mat == null) {
                 throw new InvalidOperationException("Mat is null");
@@ -102,7 +104,8 @@ namespace System.Windows.Media.Imaging {
 
             // Use the first frame's bitmap source
             var frame = Frames[0];
-            using Mat mat = (Mat)frame;
+            using var frameLease = frame.LeaseMat();
+            Mat mat = frameLease.Mat;
 
             // JPEG only supports 8-bit, so convert if necessary
             Mat matToEncode = mat;

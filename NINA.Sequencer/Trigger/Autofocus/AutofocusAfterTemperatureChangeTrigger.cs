@@ -33,7 +33,6 @@ using NINA.WPF.Base.Interfaces.Mediator;
 using NINA.WPF.Base.Interfaces.ViewModel;
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.ComponentModel.Composition;
 using System.Linq;
 using System.Text;
@@ -50,7 +49,7 @@ namespace NINA.Sequencer.Trigger.Autofocus {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Focuser")]
     [Export(typeof(ISequenceTrigger))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
+    [UsesExpressions(GenerateValidation = true)]
     public partial class AutofocusAfterTemperatureChangeTrigger : SequenceTrigger, IValidatable {
         private IProfileService profileService;
         private IImageHistoryVM history;
@@ -79,16 +78,6 @@ namespace NINA.Sequencer.Trigger.Autofocus {
 
         partial void AfterClone(AutofocusAfterTemperatureChangeTrigger clone) {
             clone.TriggerRunner = (SequentialContainer)TriggerRunner.Clone();
-        }
-
-        private IList<string> issues = new List<string>();
-
-        public IList<string> Issues {
-            get => issues;
-            set {
-                issues = ImmutableList.CreateRange(value);
-                RaisePropertyChanged();
-            }
         }
 
         [IsExpression (Default = 5)]
@@ -153,21 +142,16 @@ namespace NINA.Sequencer.Trigger.Autofocus {
             Validate();
         }
 
-        public bool Validate() {
-            var i = new List<string>();
+        partial void ValidateAdditional(IList<string> issues) {
             var cameraInfo = cameraMediator.GetInfo();
             var focuserInfo = focuserMediator.GetInfo();
 
             if (!cameraInfo.Connected) {
-                i.Add(Loc.Instance["LblCameraNotConnected"]);
+                issues.Add(Loc.Instance["LblCameraNotConnected"]);
             }
             if (!focuserInfo.Connected) {
-                i.Add(Loc.Instance["LblFocuserNotConnected"]);
+                issues.Add(Loc.Instance["LblFocuserNotConnected"]);
             }
-
-            Expression.ValidateExpressions(i, AmountExpression, DeltaTExpression);
-            Issues = i;
-            return i.Count == 0;
         }
     }
 }

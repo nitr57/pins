@@ -1,4 +1,4 @@
-﻿#region "copyright"
+#region "copyright"
 
 /*
     Copyright © 2016 - 2026 Stefan Berg <isbeorn86+NINA@googlemail.com> and the N.I.N.A. contributors
@@ -23,6 +23,7 @@ using NINA.Sequencer.Logic;
 using NINA.Sequencer.SequenceItem;
 using NINA.Sequencer.SequenceItem.Utility;
 using NINA.Sequencer.Utility;
+using NINA.Sequencer.Validations;
 using System;
 using System.ComponentModel.Composition;
 using System.Globalization;
@@ -37,10 +38,11 @@ namespace NINA.Sequencer.Conditions {
     [ExportMetadata("Category", "Lbl_SequenceCategory_Condition")]
     [Export(typeof(ISequenceCondition))]
     [JsonObject(MemberSerialization.OptIn)]
-    [UsesExpressions]
-    public partial class AboveHorizonCondition : LoopForAltitudeBase, ISequenceCustomPropertyEditProvider, ISequenceAttachmentStateProvider {
+    [UsesExpressions(GenerateValidation = true)]
+    public partial class AboveHorizonCondition : LoopForAltitudeBase, IValidatable, ISequenceCustomPropertyEditProvider, ISequenceAttachmentStateProvider {
         private double lastRA;
         private double lastDec;
+        private Epoch lastEpoch;
         private bool hasDsoParent;
 
         [ImportingConstructor]
@@ -79,18 +81,10 @@ namespace NINA.Sequencer.Conditions {
             }
         }
 
-        [IsExpression(Default = 0, Range = [-90, 90], Proxy = "Data.Offset", HasValidator = true)]
+        [IsExpression(Default = 0, Range = [-90, 90], Proxy = "Data.Offset")]
         public partial double Offset { get; set; }
 
-        partial void OffsetExpressionValidator(Expression expr) {
-            if (expr.Error == null) {
-                if (Data != null) {                    
-                    Data.Offset = expr.Value;
-                }
-            }
-        }
-
-        private void Coordinates_PropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e) {
+        private void Coordinates_CoordinatesChanged(object sender, EventArgs e) {
             // When coordinates change, we change the decimal value
             InputCoordinates ic = (InputCoordinates)sender;
             Coordinates c = ic.Coordinates;
@@ -106,6 +100,7 @@ namespace NINA.Sequencer.Conditions {
 
             lastRA = c.RA;
             lastDec = c.Dec;
+            lastEpoch = c.Epoch;
             CalculateExpectedTime();
         }
 
@@ -121,7 +116,12 @@ namespace NINA.Sequencer.Conditions {
         public override void AfterParentChanged() {
             var coordinates = RetrieveContextCoordinates(this.Parent);
             if (coordinates != null) {
-                Data.Coordinates.Coordinates = coordinates.Coordinates;
+                var inheritedCoordinates = coordinates.Coordinates;
+                // Ancestor attachment repeats during loading; only changed coordinate state needs a new prediction.
+                if (!ReferenceEquals(Data.Coordinates.Coordinates, inheritedCoordinates)
+                    || inheritedCoordinates.RA != lastRA || inheritedCoordinates.Dec != lastDec || inheritedCoordinates.Epoch != lastEpoch) {
+                    Data.Coordinates.Coordinates = inheritedCoordinates;
+                }
                 PositionAngle = coordinates.PositionAngle;
                 HasDsoParent = true;
             } else {
@@ -129,15 +129,13 @@ namespace NINA.Sequencer.Conditions {
             }
 
             if (Data.Coordinates != null) {
-                Data.Coordinates.PropertyChanged -= Coordinates_PropertyChanged;
+                // Use the aggregate event because one coordinate change raises several property notifications.
+                Data.Coordinates.CoordinatesChanged -= Coordinates_CoordinatesChanged;
                 lastRA = Data.Coordinates.Coordinates.RA;
                 lastDec = Data.Coordinates.Coordinates.Dec;
-                Data.Coordinates.PropertyChanged += Coordinates_PropertyChanged;
+                lastEpoch = Data.Coordinates.Coordinates.Epoch;
+                Data.Coordinates.CoordinatesChanged += Coordinates_CoordinatesChanged;
             }
-            RaExpression.Context = this;
-            DecExpression.Context = this;
-            PositionAngleExpression.Context = this;
-            OffsetExpression.Context = this;
             Validate();
             RunWatchdogIfInsideSequenceRoot();
         }
@@ -148,7 +146,7 @@ namespace NINA.Sequencer.Conditions {
 
         public override bool Check(ISequenceItem previousItem, ISequenceItem nextItem) {
             CalculateExpectedTime();
-            var targetAltitude = Data.GetTargetAltitudeWithHorizon(DateTime.Now);
+            var targetAltitude = Data.TargetAltitude;
             var check = Data.CurrentAltitude >= targetAltitude;
 
             if (!check && IsActive()) {
@@ -167,8 +165,8 @@ namespace NINA.Sequencer.Conditions {
         }
 
         public void CalculateExpectedTime(DateTime time) {
-            Data.CurrentAltitude = GetCurrentAltitude(time, Data.Observer);
-            CalculateExpectedTimeCommon(Data, until: false, 90, GetCurrentAltitude);
+            _ = Offset; // Refresh the target consumed by the shared altitude calculator.
+            Data.CalculateTargetExpectedTime(time, TargetCrossingComparison.BelowStrict);
         }
 
         protected bool Protect = false;
@@ -244,10 +242,5 @@ namespace NINA.Sequencer.Conditions {
             }
         }
 
-        public bool Validate() {
-            Expression.ValidateExpressions(Issues, RaExpression, DecExpression, PositionAngleExpression, OffsetExpression);
-            RaisePropertyChanged(nameof(Issues));
-            return Issues.Count == 0;
-        }
     }
 }

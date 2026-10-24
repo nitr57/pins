@@ -39,6 +39,30 @@ namespace NINA.Test.SystemWindowsCompat {
             Assert.That((int)result.GetPixel(0, 0).R, Is.EqualTo(143).Within(1));
         }
 
+        // The 16-bit color path (Rgb48 star detection/annotation) must stay 16-bit and keep the
+        // weighted values, and must not touch its source.
+        [Test]
+        public void Grayscale_On48bppInput_ReturnsWeighted16BitGray() {
+            var filter = new Grayscale(0.2125, 0.7154, 0.0721);
+
+            var mat = new OpenCvSharp.Mat(1, 2, OpenCvSharp.MatType.CV_16UC3);
+            // OpenCV order is B, G, R
+            mat.Set(0, 0, new OpenCvSharp.Vec3w(1000, 2000, 3000));
+            mat.Set(0, 1, new OpenCvSharp.Vec3w(65535, 65535, 65535));
+            using var source = new Bitmap(mat);
+
+            using var result = filter.Apply(source);
+
+            Assert.That(result.PixelFormat, Is.EqualTo(PixelFormat.Format16bppGrayScale));
+            OpenCvSharp.Mat resultMat = result;
+            // 0.2125*3000 + 0.7154*2000 + 0.0721*1000 = 2140.1
+            Assert.That((int)resultMat.Get<ushort>(0, 0), Is.EqualTo(2140).Within(1));
+            Assert.That((int)resultMat.Get<ushort>(0, 1), Is.EqualTo(65535));
+
+            OpenCvSharp.Mat sourceMat = source;
+            Assert.That(sourceMat.Get<OpenCvSharp.Vec3w>(0, 0), Is.EqualTo(new OpenCvSharp.Vec3w(1000, 2000, 3000)));
+        }
+
         [Test]
         public void Grayscale_OnGrayInput_ReturnsIndependentCopy() {
             var filter = new Grayscale(0.2125, 0.7154, 0.0721);

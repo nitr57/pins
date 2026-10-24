@@ -90,6 +90,7 @@ namespace NINA.Profile {
             ApplicationSettings = new ApplicationSettings();
             AstrometrySettings = new AstrometrySettings();
             CameraSettings = new CameraSettings();
+            GuideCameraSettings = new CameraSettings();
             ColorSchemaSettings = new ColorSchemaSettings();
             DomeSettings = new DomeSettings();
             FilterWheelSettings = new FilterWheelSettings();
@@ -124,6 +125,7 @@ namespace NINA.Profile {
             ApplicationSettings.PropertyChanged += SettingsChanged;
             AstrometrySettings.PropertyChanged += SettingsChanged;
             CameraSettings.PropertyChanged += SettingsChanged;
+            GuideCameraSettings.PropertyChanged += SettingsChanged;
             ColorSchemaSettings.PropertyChanged += SettingsChanged;
             DomeSettings.PropertyChanged += SettingsChanged;
             FilterWheelSettings.PropertyChanged += SettingsChanged;
@@ -228,6 +230,13 @@ namespace NINA.Profile {
 
         [DataMember]
         public ICameraSettings CameraSettings { get; set; }
+
+        /// <summary>
+        /// pins: the guide camera's own camera settings, seen by the guide camera as its CameraSettings
+        /// (see GuideCameraProfileService).
+        /// </summary>
+        [DataMember]
+        public ICameraSettings GuideCameraSettings { get; set; }
 
         [DataMember]
         public IColorSchemaSettings ColorSchemaSettings { get; set; }
