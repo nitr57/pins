@@ -388,7 +388,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
         // Dew heater power is a percentage for the generic SDKs (Player One POA_HEATER_POWER: 0-100).
         // Surfaced so ninaAPI's reflection-based camera settings expose the slider scale to
         // Touch-N-Stars, the same way ToupTekAlikeCamera and IndiCamera do.
-        private const int MinDewHeaterStrength = 10;
+        private const int MinDewHeaterStrength = 1;
 
         public int MaxDewHeaterStrength => HasDewHeater ? 100 : 0;
 

@@ -543,8 +543,10 @@ namespace NINA.Test.Equipment.Camera {
 
         [Test]
         [TestCase(50, 50)]
-        [TestCase(0, 10)]
-        [TestCase(-5, 10)]
+        [TestCase(5, 5)]
+        [TestCase(1, 1)]
+        [TestCase(0, 1)]
+        [TestCase(-5, 1)]
         [TestCase(150, 100)]
         public async Task TargetDewHeaterStrength_ClampedAndAppliedWhileHeaterOn(int requested, int expected) {
             var sdk = new Mock<IGenericCameraSDK>();
