@@ -27,7 +27,6 @@ applies to:
     - Nito.Mvvm.Async
     - NJsonSchema
     - OxyPlot
-    - OpenCv4Sharp
     - Swashbuckle.AspNetCore
     - System.ComponentModel.Composition
     - System.Data.DataSetExtensions
@@ -37,7 +36,6 @@ applies to:
     - System.Management
     - System.Runtime.Caching
     - ZstdSharp.Port
->>>>>>> upstream/develop
 -----------------------------------------------------------------------------
 
 Copyright <YEAR> <COPYRIGHT HOLDER>
@@ -98,6 +96,8 @@ applies to:
     - Castle Core
     - Grpc
     - GrpcDotNetNamedPipes
+    - OpenCV
+    - OpenCvSharp4
     - Serilog
     - SharpGIS.NmeaParser
 -----------------------------------------------------------------------------
@@ -964,7 +964,6 @@ BSD 3-Clause License
 
 applies to:
     - Google.Protobuf  
-    - OpenCV
     - HIDAPI
     - Parlot
     - PHD2 (parts of the internal guider in NINA.GuideEngine are ported from it)
