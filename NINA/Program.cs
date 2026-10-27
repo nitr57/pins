@@ -9,6 +9,7 @@ using System;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading.Tasks;
 using NINA.Profile;
 using System.Linq;
 using NINA.Utility;
@@ -32,6 +33,25 @@ Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "true");
 // (a de_DE Pi would hand ASTAP "-r 2,5"). Loc resolves its UI language from the profile separately.
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
 System.Threading.Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
+
+// As upstream App.xaml.cs: log what takes the process down. An exception from async void code (a folder
+// watcher, a synchronously throwing command) ends pins, systemd restarts it, and the log would just stop.
+AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
+    if (e.ExceptionObject is Exception exception) {
+        Logger.Error($"An unhandled domain exception has occurred of type {exception.GetType()}. Application must terminate: {e.IsTerminating}", exception);
+    } else {
+        Logger.Error("An unhandled domain exception has occurred.");
+    }
+
+    if (e.IsTerminating) {
+        Logger.CloseAndFlush();
+    }
+};
+
+// A faulted task nobody awaited doesn't end the process, but its exception would otherwise vanish
+TaskScheduler.UnobservedTaskException += (sender, e) => {
+    Logger.Error($"An unobserved task exception has occurred of type {e.Exception.InnerException?.GetType() ?? e.Exception.GetType()}", e.Exception);
+};
 
 // Now build the full application with all services
 var builder = WebApplication.CreateBuilder(args);
