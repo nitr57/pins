@@ -472,6 +472,64 @@ namespace NINA.Test.ProfileTest {
             deserialized.MountDitherMinimumPixels.Should().Be(0.0);
         }
 
+        [Test]
+        public void GuiderSettings_PHD2SyncFields_AreUnsetByDefault() {
+            GuiderSettings defaults = new GuiderSettings();
+
+            defaults.PHD2FocalLength.Should().BeNull();
+            defaults.PHD2CameraGain.Should().BeNull();
+            defaults.PHD2ExposureMs.Should().BeNull();
+            defaults.PHD2SaturationADUValue.Should().BeNull();
+            defaults.PHD2GuideAlgorithmRA.Should().BeNull();
+            RoundTrip(defaults).PHD2FocalLength.Should().BeNull();
+        }
+
+        [Test]
+        public void GuiderSettings_LegacyProfile_DropsTheOldPHD2Defaults_AndKeepsChangedValues() {
+            GuiderSettings settings = new GuiderSettings {
+                PHD2FocalLength = 200,
+                PHD2CameraGain = 95,
+                PHD2GuideAlgorithmRA = "Hysteresis",
+                PHD2ExposureMs = 1500
+            };
+
+            GuiderSettings deserialized = RoundTripWithoutElement(settings, "PHD2LegacyDefaultsCleared");
+
+            deserialized.PHD2FocalLength.Should().BeNull();
+            deserialized.PHD2CameraGain.Should().BeNull();
+            deserialized.PHD2GuideAlgorithmRA.Should().BeNull();
+            deserialized.PHD2ExposureMs.Should().Be(1500);
+            RoundTrip(deserialized).PHD2ExposureMs.Should().Be(1500);
+        }
+
+        [Test]
+        public void GuiderSettings_CurrentProfile_KeepsAStoredValueThatEqualsAnOldDefault() {
+            GuiderSettings settings = new GuiderSettings {
+                PHD2FocalLength = 200
+            };
+
+            GuiderSettings roundTripped = RoundTrip(RoundTrip(settings));
+
+            roundTripped.PHD2FocalLength.Should().Be(200);
+        }
+
+        private static GuiderSettings RoundTripWithoutElement(GuiderSettings settings, string elementName) {
+            DataContractSerializer serializer = new DataContractSerializer(typeof(GuiderSettings));
+            using MemoryStream stream = new MemoryStream();
+            serializer.WriteObject(stream, settings);
+            stream.Position = 0;
+
+            XDocument document = XDocument.Load(stream);
+            document.Descendants()
+                .Single(element => element.Name.LocalName == elementName)
+                .Remove();
+            stream.SetLength(0);
+            document.Save(stream);
+            stream.Position = 0;
+
+            return serializer.ReadObject(stream).Should().BeOfType<GuiderSettings>().Subject;
+        }
+
         private sealed class DerivedImageFileSettings : ImageFileSettings, IImageFileSettings {
             public string InterfacePath { get; set; } = string.Empty;
             string IImageFileSettings.FilePath {

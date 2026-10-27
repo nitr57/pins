@@ -222,11 +222,10 @@ public class InternalGuiderOptionsTests
     [Test]
     public void Phd2s_default_algorithms_are_not_carried_over()
     {
-        // every profile has them unless they were changed
+        // PHD2's own defaults, as stored when a client records them unchanged
         var (o, g) = Create();
-        var phd2 = new NINA.Profile.GuiderSettings();
-        g.SetupGet(x => x.PHD2GuideAlgorithmRA).Returns(phd2.PHD2GuideAlgorithmRA);
-        g.SetupGet(x => x.PHD2GuideAlgorithmDec).Returns(phd2.PHD2GuideAlgorithmDec);
+        g.SetupGet(x => x.PHD2GuideAlgorithmRA).Returns("Hysteresis");
+        g.SetupGet(x => x.PHD2GuideAlgorithmDec).Returns("Resist Switch");
 
         var s = o.ToEngineSettings();
         s.RaAlgorithm.Kind.Should().Be(GuideAlgorithmKind.Predictive);
