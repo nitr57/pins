@@ -39,9 +39,13 @@ namespace NINA.Profile.Interfaces {
         int FileCameraDownloadDelay { get; set; }
         BayerPatternEnum BayerPattern { get; set; }
         bool FLIEnableFloodFlush { get; set; }
+        bool RBIBackgroundFlush { get; set; }
         bool FLIEnableSnapshotFloodFlush { get; set; }
+        bool FLIKeepShutterOpen { get; set; }
+        bool FLIIncludeOverscan { get; set; }
         double FLIFloodDuration { get; set; }
         uint FLIFlushCount { get; set; }
+        bool FLIFloodBinAuto { get; set; }
         BinningMode FLIFloodBin { get; set; }
         bool BitScaling { get; set; }
         bool SaveNativeCameraRaw { get; set; }

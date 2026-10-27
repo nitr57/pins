@@ -9,6 +9,7 @@ using NINA.Sequencer.SequenceItem.Expressions;
 using System;
 using System.Collections.Generic;
 using System.Data.Entity;
+using System.Globalization;
 using System.Text;
 
 namespace NINA.Test.Sequencer.Logic {
@@ -522,7 +523,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 0, 10, 0 };
 
             sut.Value = 20;
-            sut.Error.Should().Be("Value must be between 0 and 10.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeInclusiveInclusive"],
+                0, 10));
         }
 
         [Test]
@@ -531,7 +536,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 10, 20, 0 };
 
             sut.Value = 5;
-            sut.Error.Should().Be("Value must be between 10 and 20.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeInclusiveInclusive"],
+                10, 20));
         }
 
         [Test]
@@ -540,7 +549,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 10, 0, 0 };
 
             sut.Value = 5;
-            sut.Error.Should().Be("Value must be greater than or equal to 10.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeGreaterThanOrEquals"],
+                10));
         }
 
         [Test]
@@ -549,7 +562,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 10, 0, 1 };
 
             sut.Value = 5;
-            sut.Error.Should().Be("Value must be greater than 10.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeGreaterThan"],
+                10));
         }
 
         [Test]
@@ -558,7 +575,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 10, 20, 1 };
 
             sut.Value = 10;
-            sut.Error.Should().Be("Value must be greater than 10 and up to 20.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeExclusiveInclusive"],
+                10, 20));
         }
 
         [Test]
@@ -567,7 +588,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 10, 20, 2 };
 
             sut.Value = 20;
-            sut.Error.Should().Be("Value must be between 10 and less than 20.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeInclusiveExclusive"],
+                10, 20));
         }
 
         [Test]
@@ -576,7 +601,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 10, 20, 3 };
 
             sut.Value = 10;
-            sut.Error.Should().Be("Value must be greater than 10 and less than 20.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeExclusiveExclusive"],
+                10, 20));
         }
 
         [Test]
@@ -585,7 +614,11 @@ namespace NINA.Test.Sequencer.Logic {
             sut.Range = new double[] { 10, 20, 3 };
 
             sut.Value = 20;
-            sut.Error.Should().Be("Value must be greater than 10 and less than 20.");
+
+            sut.Error.Should().Be(string.Format(
+                CultureInfo.InvariantCulture,
+                Loc.Instance["Lbl_Expressions_CheckRange_RangeExclusiveExclusive"],
+                10, 20));
         }
 
         [Test]

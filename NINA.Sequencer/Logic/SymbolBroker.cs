@@ -1155,18 +1155,24 @@ namespace NINA.Sequencer.Logic {
                 UninitializeAllSymbols("Mount", "Connected");
             }
         }
+
+        private static string GetSwitchExpressionName(ISwitch channel) {
+            var expressionName = (channel as ICompositeSwitchIdentity)?.ExpressionName;
+            return string.IsNullOrEmpty(expressionName) ? channel.Name : expressionName;
+        }
+
         public void UpdateDeviceInfo(SwitchInfo deviceInfo) {
             AddOrUpdateSymbol("Switch", "Connected", deviceInfo.Connected);
             if (deviceInfo.Connected) {
                 var readonlySwitches = deviceInfo.ReadonlySwitches ?? Enumerable.Empty<ISwitch>();
                 var writableSwitches = deviceInfo.WritableSwitches ?? Enumerable.Empty<IWritableSwitch>();
                 var readonlySymbols = readonlySwitches
-                    .Select(sw => SanitizeIdentifier(sw.Name))
+                    .Select(sw => SanitizeIdentifier(GetSwitchExpressionName(sw)))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(symbol => symbol, StringComparer.OrdinalIgnoreCase)
                     .ToList();
                 var writableSymbols = writableSwitches
-                    .Select(sw => SanitizeIdentifier(sw.Name))
+                    .Select(sw => SanitizeIdentifier(GetSwitchExpressionName(sw)))
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .OrderBy(symbol => symbol, StringComparer.OrdinalIgnoreCase)
                     .ToList();
@@ -1174,11 +1180,11 @@ namespace NINA.Sequencer.Logic {
                 RemoveAllSymbols("Gauge", readonlySymbols.ToArray());
                 RemoveAllSymbols("Switch", writableSymbols.Prepend("Connected").ToArray());
                 foreach (ISwitch sw in readonlySwitches) {
-                    string key = SanitizeIdentifier(sw.Name);
+                    string key = SanitizeIdentifier(GetSwitchExpressionName(sw));
                     AddOrUpdateSymbol("Gauge", key, sw.Value);
                 }
                 foreach (IWritableSwitch sw in writableSwitches) {
-                    string key = SanitizeIdentifier(sw.Name);
+                    string key = SanitizeIdentifier(GetSwitchExpressionName(sw));
                     AddOrUpdateSymbol("Switch", key, sw.Value);
                 }
 

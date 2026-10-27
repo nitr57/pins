@@ -37,6 +37,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.SafetyMonitor {
         public override async Task GetEquipment() {
             await lockObj.WaitAsync();
             try {
+                if (HubConfiguration?.Hub.IsSessionActive == true) {
+                    return;
+                }
+
                 var devices = new List<IDevice>();
 
                 devices.Add(new DummyDevice(Loc.Instance["LblNoSafetyMonitor"]));
@@ -77,6 +81,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.SafetyMonitor {
                 }
 
                 devices.Add(new SafetyMonitorSimulator());
+
+                AddHub(devices, new SafetyMonitorHub(Loc.Instance["LblSafetyMonitorHub"]), profileService.ActiveProfile.SafetyMonitorSettings);
 
                 DetermineSelectedDevice(devices, profileService.ActiveProfile.SafetyMonitorSettings.Id, profileService.ActiveProfile.SafetyMonitorSettings.LastDeviceName);
 

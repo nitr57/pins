@@ -58,6 +58,12 @@ This allows you to safely return to a stable release if needed.
 - Canceling a native Nikon automatic shutter exposure no longer sends an unsupported Bulb termination command that could terminate N.I.N.A.
 
 ## Improvements
+- Plugins can now provide primary and blind plate solvers, including optional embedded settings. Profiles retain unavailable plugin selections and report an error only when those solvers are used.
+- **Equipment hubs**
+    - Combine multiple Safety Monitor, Switch or Weather devices by selecting a N.I.N.A. hub in the driver list. Choose its devices through the gear button and see their connection status and any errors on the equipment screen.
+    - The safety hub considers conditions safe only when every device is connected and reports safe. Each device's safety status is shown separately.
+    - The switch hub gathers all gauges and switches in one view, with names that identify their source device. Sequencer switch actions remember the selected device and channel even when their order changes.
+    - The weather hub lets you choose which device supplies each reading, such as temperature, humidity or wind speed. Devices without assigned readings stay disconnected and are marked as not used.
 - The advanced sequencer now keeps the last 100 configuration edits in memory with Undo, Redo and an Edit History sidebar tab showing affected items, their locations and before/after values. History remains available during unlocked execution and preserves sequence objects and unrelated progress. Standard plugin fields participate automatically; custom plugin editors can opt in through the editor history context. The history list keeps its rows stable during editing and replay. Entries name the edited item and show compact locations, position changes and readable selection labels. Full paths can be expanded without navigating history, and moves omit incidental shifts of neighboring items. Field edits inside compound instructions such as Smart Exposure use the visible instruction's name and position. Core editor coverage includes compound exposure and flat inputs, expression text and stepper controls, coordinate fields, time-provider changes and programmable meridian-flip action sets. Optional custom property and attachment-state providers let plugins capture configuration side effects through the same path as core entities; ordinary fields need no additional interface. Template-instance edits and custom editors now resolve the correct history independently of focus. Whole-target undo preserves the sign of zero declination. Replay keeps history available for retry when a failed edit has been fully rolled back.
 - "Cool Camera" now waits until the sensor enters the target temperature tolerance whether approaching from above or below.
 - The Legacy Sequencer can now reset progress for every target in the current Target Set with one confirmed action.
@@ -162,8 +168,25 @@ This allows you to safely return to a stable release if needed.
   - While connecting the app will wait for the filter wheel homing to finish before proceeding
 - **Moravian Instruments Cameras and Integrated Filter Wheels**
   - Added native drivers for Moravian Instruments cameras and integrated filter wheels
+- **Finger Lakes Instrumentation Legacy CCD Driver**
+  - Substantial overhaul of the built-in driver for legacy FLI CCD cameras includes:
+    - Completely revamped pre-exposure RBI handling and expanded the available RBI options.
+    - The RBI settings for an exposure are recorded to image file headers.
+    - Exposure timestamps are more accurate and no longer include the time taken by RBI actions that precede an exposure.
+    - Introduced an option to include overscan and optical-black areas in the downloaded image.
+    - Connected FLI cameras are now identified by their serial number, enabling easier management in the case of multiple FLI cameras connected to the system.
+    - No longer creates an extra copy of image data in memory when downloading images, reducing memory usage and improving performance.
 
 ### **User Interface & Usability**
+- **Plugin Manager**
+  - Browse plugins in a resizable list with details alongside it. Installed opens first, while Available remains separate for discovering plugins.
+  - Search by name, author, description or tag and select multiple tags to narrow the list. Tag filters show counts for the current section, and list labels identify installed plugins and available updates.
+  - Configure installed plugins, read changelogs within N.I.N.A. and view screenshots in a gallery. Additional Info brings together installation guidance and project links.
+  - The Versions tab highlights the installed release and lets you switch to older or newer compatible versions where available, even when the latest release requires a newer N.I.N.A.
+  - Update all includes every available update, even when filters hide some plugins. Refresh and installation progress appear at the bottom alongside restart reminders that stay visible as you browse. Plugin changes take effect after restarting N.I.N.A.
+  - Plugin images and changelogs are saved between sessions for faster browsing and remain available if a refresh fails.
+- **Initialization Progress**
+  - Plugins, Imaging and Sequencer now use matching horizontal progress bars while loading.
 - **Sequencer**
   - Each intstruction container now has a colored border on the left side to better differentiate between them. This can be disabled in Options > Imaging > Sequence > Colored Container Borders
 - **Sky Atlas Improvements**  

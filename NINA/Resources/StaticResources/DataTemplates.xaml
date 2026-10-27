@@ -14,6 +14,7 @@
     xmlns:camera="clr-namespace:NINA.Equipment.Equipment.MyCamera;assembly=NINA.Equipment"
     xmlns:equip="clr-namespace:NINA.View.Equipment"
     xmlns:equipment="clr-namespace:NINA.Equipment.Equipment;assembly=NINA.Equipment"
+    xmlns:equipvm="clr-namespace:NINA.WPF.Base.ViewModel.Equipment;assembly=NINA.WPF.Base"
     xmlns:flatdevice="clr-namespace:NINA.Equipment.Equipment.MyFlatDevice;assembly=NINA.Equipment"
     xmlns:focuser="clr-namespace:NINA.Equipment.Equipment.MyFocuser;assembly=NINA.Equipment"
     xmlns:framing="clr-namespace:NINA.ViewModel.FramingAssistant"
@@ -32,6 +33,13 @@
     xmlns:view="clr-namespace:NINA.View"
     xmlns:vm="clr-namespace:NINA.ViewModel"
     xmlns:vm2="clr-namespace:NINA.WPF.Base.ViewModel;assembly=NINA.WPF.Base">
+
+    <DataTemplate DataType="{x:Type equipvm:HubConfigurationVM}">
+        <equip:HubConfigurationView
+            MinWidth="600"
+            MinHeight="180"
+            MaxHeight="600" />
+    </DataTemplate>
 
     <DataTemplate DataType="{x:Type vm2:MeridianFlipVM}">
         <view:MeridianFlipView />
@@ -68,10 +76,6 @@
 
     <DataTemplate DataType="{x:Type camera:FileCamera}">
         <equip:FileCameraSetupView />
-    </DataTemplate>
-
-    <DataTemplate DataType="{x:Type camera:FLICamera}">
-        <equip:FLICameraSetupView />
     </DataTemplate>
 
     <DataTemplate DataType="{x:Type phd2:PHD2Guider}">

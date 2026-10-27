@@ -37,6 +37,10 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
         public override async Task GetEquipment() {
             await lockObj.WaitAsync();
             try {
+                if (HubConfiguration?.Hub.IsSessionActive == true) {
+                    return;
+                }
+
                 var devices = new List<IDevice>();
 
                 devices.Add(new DummyDevice(Loc.Instance["LblNoSwitch"]));
@@ -77,6 +81,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Switch {
                         Logger.Error(ex);
                     }
                 }
+
+                AddHub(devices, new CompositeSwitchHub(Loc.Instance["LblSwitchHub"]), profileService.ActiveProfile.SwitchSettings);
 
                 DetermineSelectedDevice(devices, profileService.ActiveProfile.SwitchSettings.Id, profileService.ActiveProfile.SwitchSettings.LastDeviceName);
 

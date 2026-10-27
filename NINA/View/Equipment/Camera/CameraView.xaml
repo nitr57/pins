@@ -268,8 +268,29 @@
                                 <DataTemplate x:Key="Default">
                                     <Border />
                                 </DataTemplate>
-                                <DataTemplate x:Key="Moravian">
 
+                                <DataTemplate x:Key="Fli">
+                                    <StackPanel>
+                                        <UniformGrid Columns="2">
+                                            <UniformGrid
+                                                Margin="0,6,0,6"
+                                                VerticalAlignment="Center"
+                                                Columns="2">
+                                                <TextBlock Text="{ns:Loc LblFirmwareVersion}" />
+                                                <TextBlock Margin="5,0,0,0" Text="{Binding FirmwareVersion}" />
+                                            </UniformGrid>
+                                            <UniformGrid
+                                                Margin="0,6,0,6"
+                                                VerticalAlignment="Center"
+                                                Columns="2">
+                                                <TextBlock Text="{ns:Loc LblHardwareVersion}" />
+                                                <TextBlock Margin="5,0,0,0" Text="{Binding HardwareVersion}" />
+                                            </UniformGrid>
+                                        </UniformGrid>
+                                    </StackPanel>
+                                </DataTemplate>
+
+                                <DataTemplate x:Key="Moravian">
                                     <StackPanel>
                                         <UniformGrid Columns="2">
                                             <UniformGrid
@@ -358,6 +379,7 @@
                                     Canon="{StaticResource Default}"
                                     Default="{StaticResource Default}"
                                     FailedToLoadTemplate="{StaticResource Failed}"
+                                    Fli="{StaticResource Fli}"
                                     Generic="{StaticResource Default}"
                                     LegacySbig="{StaticResource Default}"
                                     Moravian="{StaticResource Moravian}"
@@ -508,6 +530,7 @@
                                 <DataTemplate x:Key="Default">
                                     <Grid />
                                 </DataTemplate>
+
                                 <DataTemplate x:Key="Altair">
                                     <StackPanel Orientation="Vertical">
                                         <DockPanel Margin="0,0,0,6" Visibility="{Binding HasLowNoiseMode, Converter={StaticResource VisibilityConverter}}">
@@ -794,6 +817,7 @@
                                         </DockPanel>
                                     </StackPanel>
                                 </DataTemplate>
+
                                 <DataTemplate x:Key="Failed">
                                     <TextBlock
                                         Margin="5"
@@ -1009,6 +1033,145 @@
                                         </DockPanel>
                                     </StackPanel>
                                 </DataTemplate>
+
+                                <DataTemplate x:Key="Fli">
+                                    <StackPanel Orientation="Vertical">
+                                        <GroupBox
+                                            Name="FliRbi"
+                                            Margin="0,10,0,0"
+                                            Header="{ns:Loc LblFLIPreRBIMitigation}"
+                                            Visibility="{Binding HasFan, Converter={StaticResource VisibilityConverter}}">
+                                            <StackPanel>
+                                                <DockPanel Margin="0,6,0,0">
+                                                    <StackPanel MinWidth="100" Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblEnabled}" />
+                                                        <CheckBox HorizontalAlignment="Left" IsChecked="{Binding FLIEnableFloodFlush}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                                <DockPanel Margin="0,6,0,0" IsEnabled="{Binding FLIEnableFloodFlush}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblFLIFloodDuration}" />
+                                                        <ninactrl:UnitTextBox
+                                                            MinWidth="75"
+                                                            Text="{Binding FLIFloodDuration}"
+                                                            Unit="s" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                                <DockPanel Margin="0,6,0,0" IsEnabled="{Binding FLIEnableFloodFlush}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblFLIFlushCount}" />
+                                                        <ninactrl:IntStepperControl
+                                                            MinWidth="75"
+                                                            HorizontalAlignment="Right"
+                                                            MaxValue="16"
+                                                            MinValue="1"
+                                                            StepSize="1"
+                                                            Value="{Binding FLIFlushCount, Mode=TwoWay}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                                <DockPanel Margin="0,6,0,0" IsEnabled="{Binding FLIEnableFloodFlush}">
+                                                    <StackPanel Orientation="Horizontal" ToolTip="{ns:Loc LblFLIFloodBinAutoTooltip}">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblFLIFloodBinAuto}" />
+                                                        <CheckBox HorizontalAlignment="Left" IsChecked="{Binding FLIFloodBinAuto}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                                <DockPanel Margin="0,6,0,0" IsEnabled="{Binding FLIEnableFloodFlush}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblFLIFloodBin}" />
+                                                        <ninactrl:IntStepperControl
+                                                            MinWidth="75"
+                                                            Margin="0,0,6,0"
+                                                            IsEnabled="{Binding FLIFloodBinAuto, Converter={StaticResource InverseBooleanConverter}}"
+                                                            MaxValue="{Binding MaxBinX}"
+                                                            MinValue="1"
+                                                            StepSize="1"
+                                                            Value="{Binding FLIFloodBinX, Mode=TwoWay}" />
+                                                        <TextBlock
+                                                            Margin="0,0,6,0"
+                                                            VerticalAlignment="Center"
+                                                            Text="x" />
+                                                        <ninactrl:IntStepperControl
+                                                            MinWidth="75"
+                                                            Margin="0,0,6,0"
+                                                            IsEnabled="{Binding FLIFloodBinAuto, Converter={StaticResource InverseBooleanConverter}}"
+                                                            MaxValue="{Binding MaxBinY}"
+                                                            MinValue="1"
+                                                            StepSize="1"
+                                                            Value="{Binding FLIFloodBinY, Mode=TwoWay}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                                <DockPanel
+                                                    Margin="0,6,0,0"
+                                                    IsEnabled="{Binding FLIEnableFloodFlush}"
+                                                    Visibility="{Binding CanBackgroundFlush, Converter={StaticResource VisibilityConverter}}">
+                                                    <StackPanel MinWidth="100" Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblFLIRBIBackgroundFlush}" />
+                                                        <CheckBox HorizontalAlignment="Left" IsChecked="{Binding RBIBackgroundFlush}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                                <DockPanel Margin="0,6,0,0" IsEnabled="{Binding FLIEnableFloodFlush}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblFLISnapshotFlood}" />
+                                                        <CheckBox HorizontalAlignment="Left" IsChecked="{Binding FLIEnableSnapshotFloodFlush}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </StackPanel>
+                                        </GroupBox>
+                                        <GroupBox
+                                            Name="FliGeneral"
+                                            Margin="0,10,0,0"
+                                            Header="{ns:Loc LblGeneral}">
+                                            <StackPanel>
+                                                <DockPanel Margin="0,6,0,0">
+                                                    <StackPanel MinWidth="100" Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblFLIKeepShutterOpen}" />
+                                                        <CheckBox HorizontalAlignment="Left" IsChecked="{Binding FLIKeepShutterOpen}" />
+                                                    </StackPanel>
+                                                </DockPanel>
+                                                <DockPanel Margin="0,6,0,0">
+                                                    <StackPanel MinWidth="100" Orientation="Horizontal">
+                                                        <TextBlock
+                                                            Width="178"
+                                                            VerticalAlignment="Center"
+                                                            Text="{ns:Loc LblQhyIncludeOverscan}" />
+                                                        <CheckBox HorizontalAlignment="Left" IsChecked="{Binding FLIIncludeOverscan}">
+                                                            <CheckBox.ToolTip>
+                                                                <ToolTip ToolTipService.ShowOnDisabled="False">
+                                                                    <TextBlock Text="{ns:Loc LblQhyIncludeOverscanTooltip}" />
+                                                                </ToolTip>
+                                                            </CheckBox.ToolTip>
+                                                        </CheckBox>
+                                                    </StackPanel>
+                                                </DockPanel>
+                                            </StackPanel>
+                                        </GroupBox>
+                                    </StackPanel>
+                                </DataTemplate>
+
                                 <DataTemplate x:Key="Moravian2">
                                     <StackPanel Orientation="Vertical">
                                         <DockPanel Margin="0,0,0,6" Visibility="{Binding HasFan, Converter={StaticResource VisibilityConverter}}">
@@ -1036,7 +1199,6 @@
                                     </StackPanel>
                                 </DataTemplate>
 
-
                                 <local:CameraTemplateSelector
                                     x:Key="ContentSelector"
                                     ASCOM="{StaticResource ASCOM}"
@@ -1044,6 +1206,7 @@
                                     Canon="{StaticResource Canon}"
                                     Default="{StaticResource Default}"
                                     FailedToLoadTemplate="{StaticResource Failed}"
+                                    Fli="{StaticResource Fli}"
                                     Generic="{StaticResource Generic}"
                                     LegacySbig="{StaticResource LegacySbig}"
                                     Moravian="{StaticResource Moravian2}"
