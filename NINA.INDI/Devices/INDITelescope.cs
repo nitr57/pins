@@ -938,6 +938,15 @@ namespace NINA.INDI.Devices {
         // same hardening the dome/focuser/rotator/filter-wheel MoveTimeout fixes applied.
         private static readonly TimeSpan MotionTimeout = TimeSpan.FromMinutes(5);
 
+        // Park phase limits; internal so tests can shorten them.
+        internal TimeSpan ParkAcknowledgeTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+        internal TimeSpan ParkMotionStartTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+        internal TimeSpan ParkCompletionTimeout { get; set; } = MotionTimeout;
+
+        internal TimeSpan ParkConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
         public async Task ParkAsync(CancellationToken ct = default) {
             // Preserve the NotImplementedException contract for mounts without park support —
             // the equipment layer uses it to clear its CanPark flag.
@@ -960,7 +969,7 @@ namespace NINA.INDI.Devices {
             // Acknowledged send (mirrors INDIDome.Park): the previous fire-and-forget write
             // plus a fixed 100ms grace could return before a slow mount even flipped the
             // property to Busy, reporting "parked" while the mount was still moving.
-            if (!await SetSwitchValueAsync("TELESCOPE_PARK", "PARK", true, TimeSpan.FromSeconds(10))) {
+            if (!await SetSwitchValueAsync("TELESCOPE_PARK", "PARK", true, ParkAcknowledgeTimeout)) {
                 Logger.Warning($"[{DeviceName}] TELESCOPE_PARK was not acknowledged — polling for park completion anyway");
             }
 
@@ -973,15 +982,13 @@ namespace NINA.INDI.Devices {
             // A mount already at the park position legitimately never moves — that case
             // falls through after the timeout. A timestamp-fresh Alert means the driver
             // reported the park attempt as FAILED.
-            var motionStartTimeout = TimeSpan.FromSeconds(10);
+            var motionStartTimeout = ParkMotionStartTimeout;
             var started = DateTime.UtcNow;
             var parkProp = GetProperty("TELESCOPE_PARK");
             while (!ct.IsCancellationRequested) {
                 parkProp = GetProperty("TELESCOPE_PARK");
-                if (parkProp?.State == PropertyState.Alert && parkProp.Timestamp != preSendTimestamp) {
-                    Logger.Error($"[{DeviceName}] Mount reported the park attempt as failed (TELESCOPE_PARK Alert)");
-                    throw new InvalidOperationException("Mount reported the park attempt as failed");
-                }
+                ThrowIfParkReportedFailed(parkProp, preSendTimestamp);
+
                 var pos = SampleRaDec();
                 if (Slewing || parkProp?.State == PropertyState.Busy || PositionMoved(lastPos, pos)) {
                     break;
@@ -999,15 +1006,50 @@ namespace NINA.INDI.Devices {
             // Busy on drivers that manage it properly.
             started = DateTime.UtcNow;
             while ((Slewing == true || parkProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
-                if (DateTime.UtcNow - started > MotionTimeout) {
-                    Logger.Warning($"[{DeviceName}] Mount did not report park completion within {MotionTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
+                ThrowIfParkReportedFailed(parkProp, preSendTimestamp);
+
+                if (DateTime.UtcNow - started > ParkCompletionTimeout) {
+                    Logger.Error($"[{DeviceName}] Mount did not report park completion within {ParkCompletionTimeout.TotalSeconds:F0}s");
+                    throw new TimeoutException($"Mount did not finish parking within {ParkCompletionTimeout.TotalSeconds:F0}s");
                 }
+
                 await Task.Delay(200, ct);
                 parkProp = GetProperty("TELESCOPE_PARK");
             }
 
+            ct.ThrowIfCancellationRequested();
+
+            // Confirmation: the driver has to report PARK=On in an update after the command.
+            // SetSwitchValue already set PARK=On in the local copy when sending, so that value
+            // only counts with a timestamp newer than the one before the send. Without this a
+            // mount that refused or lost the command, or stopped short of its park position,
+            // was reported as parked.
+            started = DateTime.UtcNow;
+            while (true) {
+                parkProp = GetProperty("TELESCOPE_PARK");
+                ThrowIfParkReportedFailed(parkProp, preSendTimestamp);
+
+                if (parkProp?.Timestamp != preSendTimestamp && GetSwitchPropertyValue("TELESCOPE_PARK", "PARK") == true) {
+                    break;
+                }
+
+                if (DateTime.UtcNow - started > ParkConfirmTimeout) {
+                    Logger.Error($"[{DeviceName}] Mount stopped but did not report TELESCOPE_PARK PARK=On within {ParkConfirmTimeout.TotalSeconds:F0}s");
+                    throw new InvalidOperationException("Mount did not report that it is parked");
+                }
+
+                await Task.Delay(200, ct);
+            }
+
             atHome = false;
+        }
+
+        // A timestamp-fresh Alert means the driver reported the park attempt as failed.
+        private void ThrowIfParkReportedFailed(INDIProperty parkProp, string preSendTimestamp) {
+            if (parkProp?.State == PropertyState.Alert && parkProp.Timestamp != preSendTimestamp) {
+                Logger.Error($"[{DeviceName}] Mount reported the park attempt as failed (TELESCOPE_PARK Alert)");
+                throw new InvalidOperationException("Mount reported the park attempt as failed");
+            }
         }
 
         public async Task UnparkAsync(CancellationToken ct = default) {
