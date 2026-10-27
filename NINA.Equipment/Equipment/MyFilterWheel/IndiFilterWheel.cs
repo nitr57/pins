@@ -50,12 +50,23 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
             }
         }
 
-        private Task<bool> WaitForReadyState(CancellationToken ct = default) {
-            do {
-                CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
-            } while (device.IsMoving);
+        // IsMoving is only cleared by a FILTER_SLOT update that is no longer Busy, so a driver
+        // or indiserver that stops answering mid-move would otherwise block the setter, and
+        // with it FilterWheelVM's filter-change semaphore, for the rest of the night. After
+        // the limit the setter returns and FilterWheelVM's position check reports the failure.
+        private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(1);
 
-            return Task.FromResult(true);
+        private void WaitForReadyState() {
+            var deadline = DateTime.UtcNow + MoveTimeout;
+
+            while (device.IsMoving) {
+                if (DateTime.UtcNow > deadline) {
+                    Logger.Warning($"Filter wheel did not report move completion within {MoveTimeout.TotalSeconds:F0}s - giving up waiting");
+                    return;
+                }
+
+                Thread.Sleep(100);
+            }
         }
 
         private IProfileService profileService;
