@@ -144,7 +144,7 @@ namespace NINA.Image.FileFormat.FITS {
 
         // int CFITS_API ffgisz(fitsfile *fptr, int nlen, long *naxes, int *status);
         [DllImport(DLLNAME, EntryPoint = "ffgisz", CallingConvention = CallingConvention.Cdecl)]
-        public static extern int fits_get_img_size(IntPtr fptr, out int nlen, out int[] naxes, out int status);
+        public static extern int fits_get_img_size(IntPtr fptr, int nlen, [Out] CLong[] naxes, out int status);
 
         // int CFITS_API ffpcks(fitsfile *fptr, int *status);
         [DllImport(DLLNAME, EntryPoint = "ffpcks", CallingConvention = CallingConvention.Cdecl)]
@@ -441,7 +441,7 @@ namespace NINA.Image.FileFormat.FITS {
 
         // int CFITS_API ffcrim(fitsfile *fptr, int bitpix, int naxis, long *naxes, int *status);
         [DllImport(DLLNAME, EntryPoint = "ffcrim", CallingConvention = CallingConvention.Cdecl)]
-        public static extern int fits_create_img(IntPtr fptr, BITPIX bitpix, int naxis, int[] naxes, out int status);
+        public static extern int fits_create_img(IntPtr fptr, BITPIX bitpix, int naxis, CLong[] naxes, out int status);
 
         // int CFITS_API ffinit(  fitsfile **fptr, const char *filename, int *status);
         [DllImport(DLLNAME, CharSet = CharSet.Ansi, EntryPoint = "ffinit", CallingConvention = CallingConvention.Cdecl)]
@@ -452,7 +452,7 @@ namespace NINA.Image.FileFormat.FITS {
 
 
 
-        [DllImport("cfitsionative.dll", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi, EntryPoint = "ffdkinit")]
+        [DllImport(DLLNAME, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi, EntryPoint = "ffdkinit")]
         public static extern int fits_create_diskfile(out nint fptr, [MarshalAs(UnmanagedType.LPStr)] string filename, out int status);
 
         [DllImport(DLLNAME, EntryPoint = "ffppr", CallingConvention = CallingConvention.Cdecl)]
