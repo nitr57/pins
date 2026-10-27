@@ -6,6 +6,7 @@ using NINA.Core.Utility;
 using NINA.Core.Utility.Notification;
 using NINA.Core.SignalR;
 using System;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using NINA.Profile;
@@ -26,6 +27,11 @@ using NINA.Mcp.Adapter;
 
 // Disable file watching to prevent inotify limit issues on Linux
 Environment.SetEnvironmentVariable("DOTNET_USE_POLLING_FILE_WATCHER", "true");
+
+// As upstream App.xaml.cs: number formatting and parsing must not follow the system locale
+// (a de_DE Pi would hand ASTAP "-r 2,5"). Loc resolves its UI language from the profile separately.
+CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
+System.Threading.Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
 
 // Now build the full application with all services
 var builder = WebApplication.CreateBuilder(args);
