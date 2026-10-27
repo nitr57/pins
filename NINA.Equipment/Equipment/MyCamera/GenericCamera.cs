@@ -385,11 +385,18 @@ namespace NINA.Equipment.Equipment.MyCamera {
             }
         }
 
+        // Dew heater power is a percentage for the generic SDKs (Player One POA_HEATER_POWER: 0-100).
+        // Surfaced so ninaAPI's reflection-based camera settings expose the slider scale to
+        // Touch-N-Stars, the same way ToupTekAlikeCamera and IndiCamera do.
+        private const int MinDewHeaterStrength = 1;
+
+        public int MaxDewHeaterStrength => HasDewHeater ? 100 : 0;
+
         public int TargetDewHeaterStrength {
             get => profileService.ActiveProfile.CameraSettings.GenericCameraDewHeaterStrength;
             set {
-                profileService.ActiveProfile.CameraSettings.GenericCameraDewHeaterStrength = value;
-                if(DewHeaterOn) {
+                profileService.ActiveProfile.CameraSettings.GenericCameraDewHeaterStrength = Math.Max(MinDewHeaterStrength, Math.Min(100, value));
+                if (HasDewHeater && DewHeaterOn) {
                     sdk.SetDewHeater(profileService.ActiveProfile.CameraSettings.GenericCameraDewHeaterStrength);
                 }
                 RaisePropertyChanged();

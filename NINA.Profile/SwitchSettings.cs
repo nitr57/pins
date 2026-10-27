@@ -18,7 +18,7 @@ using System.Runtime.Serialization;
 
 namespace NINA.Profile {
 
-    public sealed class SwitchSettings : Settings, ISwitchSettings {
+    public sealed class SwitchSettings : Settings, ISwitchSettings, IHasDeviceHubSettings {
 
         public SwitchSettings() {
             SetDefaultValues();
@@ -30,6 +30,7 @@ namespace NINA.Profile {
         }
 
         protected override void SetDefaultValues() {
+            HubSettings = new DeviceHubSettings();
             id = "No_Device";
             indiDriver = "None";
             lastDeviceName = string.Empty;
@@ -42,6 +43,32 @@ namespace NINA.Profile {
             indiAddress = "localhost";
             indiPreConnectDelay = 0;
             indiPostConnectDelay = 1;
+        }
+
+        IDeviceHubSettings IHasDeviceHubSettings.HubSettings => HubSettings;
+
+        private DeviceHubSettings hubSettings;
+
+        [DataMember]
+        public DeviceHubSettings HubSettings {
+            get => hubSettings;
+            set {
+                if (ReferenceEquals(hubSettings, value)) {
+                    return;
+                }
+
+                if (hubSettings != null) {
+                    hubSettings.PropertyChanged -= HubSettingsChanged;
+                }
+
+                hubSettings = value ?? new DeviceHubSettings();
+                hubSettings.PropertyChanged += HubSettingsChanged;
+                RaisePropertyChanged();
+            }
+        }
+
+        private void HubSettingsChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e) {
+            RaisePropertyChanged(nameof(HubSettings));
         }
 
         private string id;

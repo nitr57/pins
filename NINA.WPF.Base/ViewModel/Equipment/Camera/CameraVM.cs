@@ -574,6 +574,12 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
             cameraValues.TryGetValue(nameof(CameraInfo.SubSampleHeight), out o);
             CameraInfo.SubSampleHeight = (int)(o ?? -1);
 
+            cameraValues.TryGetValue(nameof(CameraInfo.XSize), out o);
+            CameraInfo.XSize = (int)(o ?? -1);
+
+            cameraValues.TryGetValue(nameof(CameraInfo.YSize), out o);
+            CameraInfo.YSize = (int)(o ?? -1);
+
             cameraValues.TryGetValue(nameof(CameraInfo.ReadoutMode), out o);
             CameraInfo.ReadoutMode = Convert.ToInt16(o ?? 0);
 
@@ -617,6 +623,8 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Camera {
                 { nameof(CameraInfo.SubSampleY), _cam?.SubSampleY ?? -1 },
                 { nameof(CameraInfo.SubSampleWidth), _cam?.SubSampleWidth ?? -1 },
                 { nameof(CameraInfo.SubSampleHeight), _cam?.SubSampleHeight ?? -1 },
+                { nameof(CameraInfo.XSize), _cam?.CameraXSize ?? -1 },
+                { nameof(CameraInfo.YSize), _cam?.CameraYSize ?? -1 },
                 { nameof(CameraInfo.ReadoutMode), _cam?.ReadoutMode ?? 0 },
                 { nameof(CameraInfo.ExposureMin), _cam?.ExposureMin ?? 0 },
                 { nameof(CameraInfo.PixelSize), _cam?.PixelSizeX ?? 0 }

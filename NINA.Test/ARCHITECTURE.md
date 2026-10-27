@@ -63,6 +63,18 @@ The general pattern in this project is:
 
 `INDI/FakeIndiServer.cs` is a loopback stand-in for `indiserver`: it records what the client sends and sends raw INDI XML, so INDI device adapters can be tested on the wire. `INDI/INDITelescopePulseGuideTest.cs` shows the setup and teardown; see the `NINA.INDI` architecture notes for why the test client must never be swapped back to null. A test client never writes driver start/stop commands to the machine's FIFO; `INDIClientDriverSharingTest.cs` receives them through `FifoCommandsForTests` and answers like indiserver.
 
+## Test Performance
+
+Review cases above 100 ms using test-result timings, including setup and teardown. Retain actual timing, persistence, native concurrency and compiled-view coverage where those paths are the behavior under test. Prefer completion signals over fixed sleeps and small controlled inputs for orchestration tests.
+
+`PluginViewResources` shares compiled resources within single-threaded STA fixtures while each case constructs fresh views and view models. Its per-case reset restores resource entries, merged dictionaries, the shared dictionary cache, the selected theme and the main window. Model-only sequencer lifetime/history cases can use `CoreEditorTestScope(initializeEditor: false)` to retain real history and ownership without constructing editors.
+
+Hub configuration screenshots are optional diagnostics. Set the NUnit test parameter `SaveTestPreviews` to `true` to attach both 96 and 144 DPI PNGs; normal runs retain layout and binding assertions without encoding unasserted screenshots.
+
+`Database/EarthRotationTestDatabase.cs` creates only the production Earth rotation schema for controlled query and numerical tests. These tests still use the real EF/SQLite provider. Preserve pool clearing and finalizer cleanup before deleting their files: context disposal and disabled pooling alone do not reliably release every native SQLite handle.
+
+Serialization fixtures own every deserialized graph they create. Cancel and await attachment-owned condition watchdogs before disposing mocked services; container block teardown alone does not stop child watchdogs.
+
 ## Test Assets
 
 `NINA.Test.csproj` copies sample files into the output directory, including:
@@ -96,6 +108,7 @@ It is the verification layer, not a reusable library.
 - Place new tests under the folder that matches the production area under test; the existing layout makes failures easy to navigate.
 - Reuse existing helpers and mocks when possible instead of rebuilding factory/bootstrap code in each fixture.
 - For WPF-facing tests that instantiate `System.Windows.Application`, depend on `Application.Current.Resources`, or construct XAML-backed views, keep the fixture in an STA apartment and generally mark it `[NonParallelizable]` to avoid multiple-application races during full-suite execution.
+- `HubConfigurationViewTest` owns and restores its notification manager and dispatcher. Equipment-only tests can initialize notifications before a WPF application exists, so notification assertions must also pass when `EquipmentHubTest` and this UI fixture run in the same process. An isolated fixture pass does not establish full-suite compatibility; run the CI unit-test command after the final code edit.
 - For startup-reachable XAML views, add a runtime construction test when changing controls or resources. Successful BAML compilation alone does not validate runtime type conversion or static-resource resolution.
 - If a production change needs native files or sample data at test time, update the project file so the assets are copied into the test output.
 - For astronomical or other numerically sensitive changes, prefer assertions based on documented reference values, authoritative sample data, and edge cases rather than only hand-derived spot checks.

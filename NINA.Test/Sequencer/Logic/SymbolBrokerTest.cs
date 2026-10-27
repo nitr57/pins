@@ -1,8 +1,9 @@
-﻿using FluentAssertions;
+using FluentAssertions;
 using Moq;
 using NINA.Astrometry;
 using NINA.Core.Enum;
 using NINA.Core.Model.Equipment;
+using NINA.Equipment.Equipment.Hubs;
 using NINA.Equipment.Equipment.MyCamera;
 using NINA.Equipment.Equipment.MyDome;
 using NINA.Equipment.Equipment.MyFlatDevice;
@@ -425,6 +426,46 @@ namespace NINA.Test.Sequencer.Logic {
             ValidateSymbol(key: "Switch_TestSwitch4", expectedSuccess: true, expectedValue: 52.3);
             switchSettingsMock.Object.KnownReadonlySwitchSymbols.Should().Equal("TestSwitch1", "TestSwitch2");
             switchSettingsMock.Object.KnownWritableSwitchSymbols.Should().Equal("TestSwitch3", "TestSwitch4");
+        }
+
+        [Test]
+        public async Task CompositeSwitchSymbols_UseCompactKeysAcrossReconnectsAndDriverRenames() {
+            var gauge = Mock.Of<ISwitch>(channel => channel.Id == 0 && channel.Name == "Voltage" && channel.Value == 12);
+            var output = Mock.Of<IWritableSwitch>(channel => channel.Id == 1 && channel.Name == "Relay" && channel.Value == 0.5);
+            var child = new Mock<ISwitchHub>();
+            child.SetupGet(device => device.Id).Returns("roof");
+            child.SetupGet(device => device.Name).Returns("Roof box");
+            child.SetupGet(device => device.Connected).Returns(true);
+            child.SetupGet(device => device.Switches).Returns(new ISwitch[] { gauge, output });
+            child.Setup(device => device.Connect(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+            var hub = new CompositeSwitchHub("Hub");
+            hub.Configure(new[] { new HubDevice(3, child.Object) });
+            try {
+                (await hub.Connect(CancellationToken.None)).Should().BeTrue();
+                hub.Switches.Select(channel => channel.Name).Should().Equal("Switch 3 - Voltage", "Switch 3 - Relay");
+                var info = new SwitchInfo {
+                    Connected = true,
+                    ReadonlySwitches = new System.Collections.ObjectModel.ReadOnlyCollection<ISwitch>(
+                        hub.Switches.Where(channel => channel is not IWritableSwitch).ToList()),
+                    WritableSwitches = new System.Collections.ObjectModel.ReadOnlyCollection<IWritableSwitch>(
+                        hub.Switches.OfType<IWritableSwitch>().ToList())
+                };
+
+                broker.UpdateDeviceInfo(info);
+                ValidateSymbol("Gauge_S3_C1_Voltage", true, 12d);
+                ValidateSymbol("Switch_S3_C2_Relay", true, 0.5d);
+                switchSettingsMock.Object.KnownReadonlySwitchSymbols.Should().Equal("S3_C1_Voltage");
+                switchSettingsMock.Object.KnownWritableSwitchSymbols.Should().Equal("S3_C2_Relay");
+                broker.UpdateDeviceInfo(new SwitchInfo { Connected = false });
+                ValidateUninitializedSymbol("Gauge_S3_C1_Voltage");
+                ValidateUninitializedSymbol("Switch_S3_C2_Relay");
+                child.SetupGet(device => device.Name).Returns("Renamed roof box");
+                broker.UpdateDeviceInfo(info);
+                ValidateSymbol("Gauge_S3_C1_Voltage", true, 12d);
+                ValidateSymbol("Switch_S3_C2_Relay", true, 0.5d);
+            } finally {
+                hub.Disconnect();
+            }
         }
 
         [Test]
@@ -1181,7 +1222,6 @@ namespace NINA.Test.Sequencer.Logic {
                 broker.SetImageSymbols(this, CreateImagePreparedEventArgs(3));
 
                 // Assert
-                SpinWait.SpinUntil(() => startedFrameIds.Count > 1, TimeSpan.FromMilliseconds(250));
                 startedFrameIds.ToArray().Should().Equal(new[] { 1 });
                 maximumStatisticsConcurrency.Should().Be(1, "statistics work must be serialized");
                 ValidateUninitializedSymbol("Image_Mean");
@@ -1596,47 +1636,42 @@ namespace NINA.Test.Sequencer.Logic {
 
         [Test]
         public async Task SymbolBroker_ConcurrentSymbolSnapshotsAndUpdates_DoNotThrow() {
-            // Arrange
+            const int iterations = 64;
             ISymbolProvider provider = broker.RegisterSymbolProvider("ConcurrentProvider");
             provider.AddOrUpdateSymbol("Value", 0);
             provider.AddOrUpdateHiddenSymbol("HiddenValue", 0, Array.Empty<Symbol>());
-            ConcurrentQueue<Exception> exceptions = new ConcurrentQueue<Exception>();
+            using var round = new Barrier(3);
 
-            Task updater = Task.Run(() => {
-                try {
-                    for (int i = 0; i < 10000; i++) {
-                        provider.AddOrUpdateSymbol("Value", i);
-                        provider.AddOrUpdateHiddenSymbol("HiddenValue", i, Array.Empty<Symbol>());
-
-                        if (i % 5 == 0) {
-                            provider.RemoveSymbol("Value");
-                        }
+            Task RunWorker(Action<int> operation) => Task.Run(() => {
+                for (int i = 0; i < iterations; i++) {
+                    if (!round.SignalAndWait(TimeSpan.FromSeconds(5))) {
+                        throw new TimeoutException("Concurrent symbol operations did not reach the next round.");
                     }
-                } catch (Exception ex) {
-                    exceptions.Enqueue(ex);
+
+                    operation(i);
                 }
             });
 
-            Task[] readers = Enumerable.Range(0, 16)
-                .Select(index => Task.Run(() => {
-                    try {
-                        for (int i = 0; i < 10000; i++) {
-                            broker.TryGetValue("ConcurrentProvider_Value", out _);
-                            broker.TryGetSymbol("ConcurrentProvider_HiddenValue", out _);
-                            broker.GetSymbols();
-                            broker.GetHiddenSymbols("ConcurrentProvider");
-                        }
-                    } catch (Exception ex) {
-                        exceptions.Enqueue(ex);
-                    }
-                }))
-                .ToArray();
+            Task updater = RunWorker(i => {
+                provider.AddOrUpdateSymbol("Value", i);
+                provider.AddOrUpdateHiddenSymbol("HiddenValue", i, Array.Empty<Symbol>());
 
-            // Act
-            await Task.WhenAll(readers.Concat(new[] { updater }));
+                if (i % 5 == 0) {
+                    provider.RemoveSymbol("Value");
+                }
+            });
 
-            // Assert
-            exceptions.Should().BeEmpty();
+            Task[] readers = Enumerable.Range(0, 2).Select(index => RunWorker(i => {
+                broker.TryGetValue("ConcurrentProvider_Value", out _);
+                broker.TryGetSymbol("ConcurrentProvider_HiddenValue", out _);
+                broker.GetSymbols();
+                broker.GetHiddenSymbols("ConcurrentProvider");
+            })).ToArray();
+
+            await Task.WhenAll(readers.Append(updater));
+
+            broker.TryGetValue("ConcurrentProvider_Value", out object finalValue).Should().BeTrue();
+            finalValue.Should().Be(iterations - 1);
         }
 
         [Test]

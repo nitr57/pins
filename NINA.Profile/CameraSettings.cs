@@ -50,9 +50,14 @@ namespace NINA.Profile {
             dewHeaterOn = false;
 
             fliEnableFloodFlush = false;
-            fliFloodDuration = 1;
+            rbiBackgroundFlush = true;
+            fliFloodDuration = 0.5d;
             fliFlushCount = 2;
+            fliFloodBinAuto = false;
+            fliFloodBin = new BinningMode(1, 4);
             fliEnableSnapshotFloodFlush = false;
+            fliKeepShutterOpen = false;
+            fliIncludeOverscan = false;
 
             qhyIncludeOverscan = false;
             ascomAllowUnevenPixelSize = true;
@@ -287,6 +292,19 @@ namespace NINA.Profile {
             }
         }
 
+        private bool rbiBackgroundFlush;
+
+        [DataMember]
+        public bool RBIBackgroundFlush {
+            get => rbiBackgroundFlush;
+            set {
+                if (rbiBackgroundFlush != value) {
+                    rbiBackgroundFlush = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
         private double fliFloodDuration;
 
         [DataMember]
@@ -295,6 +313,32 @@ namespace NINA.Profile {
             set {
                 if (fliFloodDuration != value) {
                     fliFloodDuration = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private bool fliFloodBinAuto;
+
+        [DataMember]
+        public bool FLIFloodBinAuto {
+            get => fliFloodBinAuto;
+            set {
+                if (fliFloodBinAuto != value) {
+                    fliFloodBinAuto = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private BinningMode fliFloodBin;
+
+        [DataMember]
+        public BinningMode FLIFloodBin {
+            get => fliFloodBin;
+            set {
+                if (fliFloodBin != value) {
+                    fliFloodBin = value;
                     RaisePropertyChanged();
                 }
             }
@@ -313,14 +357,27 @@ namespace NINA.Profile {
             }
         }
 
-        private BinningMode fliFloodBin;
+        private bool fliIncludeOverscan;
 
         [DataMember]
-        public BinningMode FLIFloodBin {
-            get => fliFloodBin;
+        public bool FLIIncludeOverscan {
+            get => fliIncludeOverscan;
             set {
-                if (fliFloodBin != value) {
-                    fliFloodBin = value;
+                if (fliIncludeOverscan != value) {
+                    fliIncludeOverscan = value;
+                    RaisePropertyChanged();
+                }
+            }
+        }
+
+        private bool fliKeepShutterOpen;
+
+        [DataMember]
+        public bool FLIKeepShutterOpen {
+            get => fliKeepShutterOpen;
+            set {
+                if (fliKeepShutterOpen != value) {
+                    fliKeepShutterOpen = value;
                     RaisePropertyChanged();
                 }
             }

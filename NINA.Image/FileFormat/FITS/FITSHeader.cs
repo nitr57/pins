@@ -12,15 +12,15 @@
 
 #endregion "copyright"
 
-using NINA.Core.Enum;
 using NINA.Astrometry;
+using NINA.Core.Enum;
+using NINA.Core.Utility;
+using NINA.Image.ImageData;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using NINA.Core.Utility;
-using NINA.Image.ImageData;
 
 namespace NINA.Image.FileFormat.FITS {
     public class FITSHeader {
@@ -35,11 +35,17 @@ namespace NINA.Image.FileFormat.FITS {
             Add("EXTEND", true, "Extensions are permitted");
         }
 
-        private Dictionary<string, FITSHeaderCard> _headerCards = new Dictionary<string, FITSHeaderCard>();
+        private readonly Dictionary<string, FITSHeaderCard> _headerCards = new Dictionary<string, FITSHeaderCard>();
 
         public ICollection<FITSHeaderCard> HeaderCards => _headerCards.Values;
 
         public void Add(string keyword, string value, string comment) {
+            if (!_headerCards.ContainsKey(keyword)) {
+                _headerCards.Add(keyword, new FITSHeaderCard(keyword, value, comment));
+            }
+        }
+
+        public void Add(string keyword, uint value, string comment) {
             if (!_headerCards.ContainsKey(keyword)) {
                 _headerCards.Add(keyword, new FITSHeaderCard(keyword, value, comment));
             }
@@ -776,6 +782,9 @@ namespace NINA.Image.FileFormat.FITS {
                 switch (elem) {
                     case StringMetaDataHeader s:
                         Add(s.Key, s.Value, s.Comment);
+                        break;
+                    case UIntMetaDataHeader u:
+                        Add(u.Key, u.Value, u.Comment);
                         break;
                     case IntMetaDataHeader i:
                         Add(i.Key, i.Value, i.Comment);
