@@ -567,16 +567,15 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         public async Task Park(CancellationToken token) {
             try {
                 if (CanPark) {
+                    // A failed park (driver Alert, timeout, no PARK=On) propagates, so TelescopeVM
+                    // reports "failed to park" with the reason and a Park Scope step fails instead
+                    // of the sequence going on with an unparked mount.
                     try {
                         await device.ParkAsync(token);
-                        InvalidatePropertyCache();
-                    } catch (OperationCanceledException) {
-                        throw;
                     } catch (NotImplementedException) {
                         canPark = false;
-                    } catch (Exception e) {
-                        Logger.Error(e);
-                        Notification.ShowExternalError(e.Message, Loc.Instance["LblASCOMDriverError"]);
+                    } finally {
+                        InvalidatePropertyCache();
                     }
                 }
             } catch (NotImplementedException) {

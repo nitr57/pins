@@ -21,7 +21,6 @@ using NINA.INDI.Interfaces;
 using NINA.Profile.Interfaces;
 using NUnit.Framework;
 using System.IO;
-using System.IO.Compression;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -29,7 +28,7 @@ using System.Threading.Tasks;
 namespace NINA.Test.Equipment.Camera {
 
     /// <summary>
-    /// An INDI camera's frame arrives as a FITS BLOB, optionally zlib-compressed (.fits.z), and is decoded in memory.
+    /// An INDI camera's frame arrives as a FITS BLOB (NINA.INDI has already inflated a .fits.z) and is decoded in memory.
     /// </summary>
     [TestFixture]
     public class IndiCameraDownloadTest {
@@ -46,30 +45,10 @@ namespace NINA.Test.Equipment.Camera {
             return ms.ToArray();
         }
 
-        private static byte[] Zlib(byte[] data) {
-            using var ms = new MemoryStream();
-            using (var zs = new ZLibStream(ms, CompressionLevel.Optimal)) {
-                zs.Write(data);
-            }
-            return ms.ToArray();
-        }
-
         [Test]
         public async Task FitsBlob_IsDecoded() {
             var pixels = Pixels();
             var camera = new CameraWithBlob(Fits(pixels), ".fits");
-
-            var image = await (await camera.DownloadExposure(CancellationToken.None)).ToImageData();
-
-            Assert.That(image.Properties.Width, Is.EqualTo(Width));
-            Assert.That(image.Properties.Height, Is.EqualTo(Height));
-            Assert.That(image.Data.FlatArray, Is.EqualTo(pixels));
-        }
-
-        [Test]
-        public async Task CompressedFitsBlob_IsDecompressedAndDecoded() {
-            var pixels = Pixels();
-            var camera = new CameraWithBlob(Zlib(Fits(pixels)), ".fits.z");
 
             var image = await (await camera.DownloadExposure(CancellationToken.None)).ToImageData();
 

@@ -235,7 +235,7 @@ jobs:
           fi
 
           mkdir -p "$publish_root/External"
-          rsync -a "NINA/External/" "$publish_root/External/"
+          rsync -a --exclude='.git' "NINA/External/" "$publish_root/External/"
 
           echo "Bundled native files staged under: $publish_root/External"
 

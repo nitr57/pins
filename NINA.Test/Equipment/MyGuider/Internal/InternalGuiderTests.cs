@@ -85,7 +85,7 @@ public class FitsReaderTests
     public void Reads_16_bit_with_bzero()
     {
         var bytes = Fits(16, 7, 5, (x, y) => x * 1000 + y * 7 + 3, "OBJECT  = 'guide / star'        / a comment");
-        var f = FitsReader.Read(bytes, ".fits");
+        var f = FitsReader.Read(bytes);
         f.Width.Should().Be(7);
         f.Height.Should().Be(5);
         f[0, 0].Should().Be(3);
@@ -96,24 +96,9 @@ public class FitsReaderTests
     [Test]
     public void Reads_8_bit()
     {
-        var f = FitsReader.Read(Fits(8, 4, 3, (x, y) => x + 10 * y), ".fits");
+        var f = FitsReader.Read(Fits(8, 4, 3, (x, y) => x + 10 * y));
         f[3, 2].Should().Be(23);
         f.BitsPerPixel.Should().Be(8);
-    }
-
-    [Test]
-    public void Reads_zlib_compressed_blob()
-    {
-        var raw = Fits(16, 16, 16, (x, y) => 40000 + x - y);
-        using var ms = new MemoryStream();
-        using (var z = new System.IO.Compression.ZLibStream(ms, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
-        {
-            z.Write(raw);
-        }
-
-        var f = FitsReader.Read(ms.ToArray(), ".fits.z");
-        f[15, 0].Should().Be(40015);
-        f[0, 15].Should().Be(39985);
     }
 
     [Test]
@@ -157,7 +142,7 @@ public class FitsReaderTests
     public void Rejects_truncated_data()
     {
         var bytes = Fits(16, 100, 100, (_, _) => 1);
-        FluentActions.Invoking(() => FitsReader.Read(bytes.Take(4000).ToArray(), ".fits")).Should().Throw<InvalidDataException>();
+        FluentActions.Invoking(() => FitsReader.Read(bytes.Take(4000).ToArray())).Should().Throw<InvalidDataException>();
     }
 }
 
@@ -222,11 +207,10 @@ public class InternalGuiderOptionsTests
     [Test]
     public void Phd2s_default_algorithms_are_not_carried_over()
     {
-        // every profile has them unless they were changed
+        // PHD2's own defaults, as stored when a client records them unchanged
         var (o, g) = Create();
-        var phd2 = new NINA.Profile.GuiderSettings();
-        g.SetupGet(x => x.PHD2GuideAlgorithmRA).Returns(phd2.PHD2GuideAlgorithmRA);
-        g.SetupGet(x => x.PHD2GuideAlgorithmDec).Returns(phd2.PHD2GuideAlgorithmDec);
+        g.SetupGet(x => x.PHD2GuideAlgorithmRA).Returns("Hysteresis");
+        g.SetupGet(x => x.PHD2GuideAlgorithmDec).Returns("Resist Switch");
 
         var s = o.ToEngineSettings();
         s.RaAlgorithm.Kind.Should().Be(GuideAlgorithmKind.Predictive);

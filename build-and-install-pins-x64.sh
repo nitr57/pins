@@ -1052,7 +1052,7 @@ build_core_pins_package() {
 
   [[ -d "NINA/External" ]] || fail "NINA/External not found"
   mkdir -p "$publish_root/External"
-  rsync -a "NINA/External/" "$publish_root/External/"
+  rsync -a --exclude='.git' "NINA/External/" "$publish_root/External/"
 
   local opencv_target="$publish_root/OpenCvSharpExtern.so"
   local expected_opencv_so="$publish_root/External/$TARGET_RUNTIME/libOpenCvSharpExtern.so"

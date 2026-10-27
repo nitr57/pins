@@ -59,14 +59,14 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
-        public void UpdateBlobProperty_EmptyPayload_KeepsTheData() {
+        public void UpdateBlobProperty_EmptyPayload_EmptiesTheData() {
             var prop = new INDIBlobProperty { Name = "CCD1" };
             prop.Blobs.Add(new INDIBlob { Name = "CCD1", Format = ".fits", Data = [1, 2, 3] });
 
             INDIProtocolParser.UpdateBlobProperty(prop, SetBlob("", ".xisf", "Busy"));
 
             Assert.That(prop.State, Is.EqualTo(PropertyState.Busy));
-            Assert.That(prop.Blobs[0].Data, Is.EqualTo(new byte[] { 1, 2, 3 }));
+            Assert.That(prop.Blobs[0].Data, Is.Empty);
             Assert.That(prop.Blobs[0].Format, Is.EqualTo(".xisf"));
         }
 

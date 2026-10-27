@@ -15,6 +15,7 @@
 using NINA.Core.Enum;
 using NINA.Profile.Interfaces;
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.Serialization;
 using System.Windows.Media;
@@ -28,6 +29,96 @@ namespace NINA.Profile {
         [OnDeserializing]
         public void OnDeserializing(StreamingContext context) {
             SetDefaultValues();
+
+            // A profile written before the marker existed has no element for it.
+            phd2LegacyDefaultsCleared = false;
+        }
+
+        [OnDeserialized]
+        public void OnDeserialized(StreamingContext context) {
+            if (!phd2LegacyDefaultsCleared) {
+                ClearLegacyPhd2Defaults();
+                phd2LegacyDefaultsCleared = true;
+            }
+        }
+
+        // SetDefaultValues used to give every PHD2* field a concrete value, so each profile saved
+        // since then stores all of them, every connect pushed them over PHD2's own configuration
+        // and the internal guider fell back to a 200 mm focal length. A value still equal to its
+        // old default is taken as never set; PHD2 keeps its own copy of what the user chose there.
+        [DataMember(Name = "PHD2LegacyDefaultsCleared")]
+        private bool phd2LegacyDefaultsCleared;
+
+        private void ClearLegacyPhd2Defaults() {
+            phd2RAMinMove = Unset(phd2RAMinMove, 0.2);
+            phd2DecMinMove = Unset(phd2DecMinMove, 0.2);
+            phd2RAAggressiveness = Unset(phd2RAAggressiveness, 0.7);
+            phd2DecAggressiveness = Unset(phd2DecAggressiveness, 1.0);
+            phd2RAHysteresis = Unset(phd2RAHysteresis, 0.1);
+            phd2DecHysteresis = Unset(phd2DecHysteresis, 0.1);
+            phd2DecFastSwitch = Unset(phd2DecFastSwitch, true);
+            phd2RAFastSwitch = Unset(phd2RAFastSwitch, true);
+            phd2RASlopeWeight = Unset(phd2RASlopeWeight, 5.0);
+            phd2DecSlopeWeight = Unset(phd2DecSlopeWeight, 5.0);
+            phd2RALowpass2Aggressiveness = Unset(phd2RALowpass2Aggressiveness, 80.0);
+            phd2DecLowpass2Aggressiveness = Unset(phd2DecLowpass2Aggressiveness, 80.0);
+            phd2RAPredictiveWeight = Unset(phd2RAPredictiveWeight, 0.5);
+            phd2DecPredictiveWeight = Unset(phd2DecPredictiveWeight, 0.5);
+            phd2RAReactiveWeight = Unset(phd2RAReactiveWeight, 0.6);
+            phd2DecReactiveWeight = Unset(phd2DecReactiveWeight, 0.6);
+            phd2RAPeriodLength = Unset(phd2RAPeriodLength, 200.0);
+            phd2DecPeriodLength = Unset(phd2DecPeriodLength, 200.0);
+            phd2RAExpFactor = Unset(phd2RAExpFactor, 2.0);
+            phd2DecExpFactor = Unset(phd2DecExpFactor, 2.0);
+            phd2RAGPAutoAdjustPeriod = Unset(phd2RAGPAutoAdjustPeriod, true);
+            phd2DecGPAutoAdjustPeriod = Unset(phd2DecGPAutoAdjustPeriod, true);
+            phd2DecGuideMode = Unset(phd2DecGuideMode, "Auto");
+            phd2ExposureMs = Unset(phd2ExposureMs, 1000);
+            phd2CalibrationStepMs = Unset(phd2CalibrationStepMs, 750);
+            phd2CalibrationDistancePx = Unset(phd2CalibrationDistancePx, 25);
+            phd2SearchRegion = Unset(phd2SearchRegion, 15);
+            phd2MaxRADuration = Unset(phd2MaxRADuration, 2500);
+            phd2MaxDecDuration = Unset(phd2MaxDecDuration, 2500);
+            phd2GuideAlgorithmRA = Unset(phd2GuideAlgorithmRA, "Hysteresis");
+            phd2GuideAlgorithmDec = Unset(phd2GuideAlgorithmDec, "Resist Switch");
+            phd2DitherScale = Unset(phd2DitherScale, 1.0);
+            phd2DitherRAOnly = Unset(phd2DitherRAOnly, false);
+            phd2DitherMode = Unset(phd2DitherMode, "random");
+            phd2NoiseReductionMethod = Unset(phd2NoiseReductionMethod, 0);
+            phd2CameraGain = Unset(phd2CameraGain, 95);
+            phd2CameraBinning = Unset(phd2CameraBinning, 1);
+            phd2UseSubframes = Unset(phd2UseSubframes, false);
+            phd2FocalLength = Unset(phd2FocalLength, 200);
+            phd2AssumeDecOrthogonal = Unset(phd2AssumeDecOrthogonal, false);
+            phd2UseDecCompensation = Unset(phd2UseDecCompensation, true);
+            phd2ReverseDecOnFlip = Unset(phd2ReverseDecOnFlip, false);
+            phd2FastRecenter = Unset(phd2FastRecenter, true);
+            phd2MinStarHFD = Unset(phd2MinStarHFD, 1.5);
+            phd2MaxStarHFD = Unset(phd2MaxStarHFD, 10.0);
+            phd2BeepForLostStar = Unset(phd2BeepForLostStar, true);
+            phd2MassChangeThresholdEnabled = Unset(phd2MassChangeThresholdEnabled, true);
+            phd2MassChangeThreshold = Unset(phd2MassChangeThreshold, 0.5);
+            phd2UseMultipleStars = Unset(phd2UseMultipleStars, true);
+            phd2TimeLapseMs = Unset(phd2TimeLapseMs, 0);
+            phd2VarDelayEnabled = Unset(phd2VarDelayEnabled, false);
+            phd2VarDelayShortSec = Unset(phd2VarDelayShortSec, 1);
+            phd2VarDelayLongSec = Unset(phd2VarDelayLongSec, 10);
+            phd2AfMinStarSnr = Unset(phd2AfMinStarSnr, 6.0);
+            phd2AutoSelectDownsample = Unset(phd2AutoSelectDownsample, "Auto");
+            phd2SaturationByADU = Unset(phd2SaturationByADU, true);
+            phd2SaturationADUValue = Unset(phd2SaturationADUValue, 255);
+            phd2BacklashCompEnabled = Unset(phd2BacklashCompEnabled, false);
+            phd2BacklashPulseWidth = Unset(phd2BacklashPulseWidth, 0);
+            phd2BacklashFloor = Unset(phd2BacklashFloor, 0);
+            phd2BacklashCeiling = Unset(phd2BacklashCeiling, 0);
+        }
+
+        private static T? Unset<T>(T? value, T legacyDefault) where T : struct {
+            return value.HasValue && EqualityComparer<T>.Default.Equals(value.Value, legacyDefault) ? null : value;
+        }
+
+        private static string Unset(string value, string legacyDefault) {
+            return value == legacyDefault ? null : value;
         }
 
         protected override void SetDefaultValues() {
@@ -52,67 +143,10 @@ namespace NINA.Profile {
             autoRetryStartGuiding = false;
             autoRetryStartGuidingTimeoutSeconds = 300;
             maxY = 4;
-            phd2RAMinMove = 0.2;
-            phd2DecMinMove = 0.2;
-            phd2RAAggressiveness = 0.7;
-            phd2DecAggressiveness = 1.0;
-            phd2RAHysteresis = 0.1;
-            phd2DecHysteresis = 0.1;
-            phd2DecFastSwitch = true;
-            phd2RAFastSwitch = true;
-            phd2RASlopeWeight = 5.0;
-            phd2DecSlopeWeight = 5.0;
-            phd2RALowpass2Aggressiveness = 80.0;
-            phd2DecLowpass2Aggressiveness = 80.0;
-            phd2RAPredictiveWeight = 0.5;
-            phd2DecPredictiveWeight = 0.5;
-            phd2RAReactiveWeight = 0.6;
-            phd2DecReactiveWeight = 0.6;
-            phd2RAPeriodLength = 200.0;
-            phd2DecPeriodLength = 200.0;
-            phd2RAExpFactor = 2.0;
-            phd2DecExpFactor = 2.0;
-            phd2RAGPAutoAdjustPeriod = true;
-            phd2DecGPAutoAdjustPeriod = true;
-            phd2DecGuideMode = "Auto";
-            phd2ExposureMs = 1000;
-            phd2CalibrationStepMs = 750;
-            phd2CalibrationDistancePx = 25;
-            phd2SearchRegion = 15;
-            phd2MaxRADuration = 2500;
-            phd2MaxDecDuration = 2500;
-            phd2GuideAlgorithmRA = "Hysteresis";
-            phd2GuideAlgorithmDec = "Resist Switch";
-            phd2DitherScale = 1.0;
-            phd2DitherRAOnly = false;
-            phd2DitherMode = "random";
-            phd2NoiseReductionMethod = 0;
-            phd2CameraGain = 95;
-            phd2CameraBinning = 1;
-            phd2UseSubframes = false;
-            phd2FocalLength = 200;
-            phd2AssumeDecOrthogonal = false;
-            phd2UseDecCompensation = true;
-            phd2ReverseDecOnFlip = false;
-            phd2FastRecenter = true;
-            phd2MinStarHFD = 1.5;
-            phd2MaxStarHFD = 10.0;
-            phd2BeepForLostStar = true;
-            phd2MassChangeThresholdEnabled = true;
-            phd2MassChangeThreshold = 0.5;
-            phd2UseMultipleStars = true;
-            phd2TimeLapseMs = 0;
-            phd2VarDelayEnabled = false;
-            phd2VarDelayShortSec = 1;
-            phd2VarDelayLongSec = 10;
-            phd2AfMinStarSnr = 6.0;
-            phd2AutoSelectDownsample = "Auto";
-            phd2SaturationByADU = true;
-            phd2SaturationADUValue = 255;
-            phd2BacklashCompEnabled = false;
-            phd2BacklashPulseWidth = 0;
-            phd2BacklashFloor = 0;
-            phd2BacklashCeiling = 0;
+            // The PHD2* algorithm and camera fields stay null until a client stores one:
+            // Touch-N-Stars records each value it sets in PHD2, ApplyPhd2ProfileSettings pushes
+            // only the stored ones on connect and the internal guider falls back to them.
+            phd2LegacyDefaultsCleared = true;
             metaGuideUseIpAddressAny = false;
             metaGuidePort = 1277;
             metaGuideMinIntensity = 100;

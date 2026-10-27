@@ -27,7 +27,7 @@ using System.Threading.Tasks;
 using static Astroasis.AstroasisSDK.AOFocus;
 
 namespace NINA.Equipment.Equipment.MyFocuser {
-    public partial class OasisFocuser : BaseINPC, IFocuser {
+    public partial class OasisFocuser : BaseINPC, IFocuser, IFocuserReportsMoveEnd {
         private readonly IProfileService profileService;
         private int id;
         private readonly bool isFocuserRose;

@@ -24,7 +24,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace NINA.Equipment.Equipment.MyFocuser {
-    public partial class ToupTekAlikeFocuser : BaseINPC, IFocuser {
+    public partial class ToupTekAlikeFocuser : BaseINPC, IFocuser, IFocuserReportsMoveEnd {
         private readonly IProfileService profileService;
         private string internalId;
         private IToupTekAlikeCameraSDK sdk;

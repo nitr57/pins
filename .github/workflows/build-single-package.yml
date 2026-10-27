@@ -190,7 +190,7 @@ jobs:
 
           publish_root="${PUBLISH_DIRECTORY}/${TARGET_RUNTIME}"
           mkdir -p "$publish_root/External"
-          rsync -a NINA/External/ "$publish_root/External/"
+          rsync -a --exclude='.git' NINA/External/ "$publish_root/External/"
 
       - name: Build selected package
         id: build

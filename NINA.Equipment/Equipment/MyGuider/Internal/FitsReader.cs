@@ -10,29 +10,23 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Buffers.Binary;
 using System.Globalization;
-using System.IO.Compression;
 using NINA.GuideEngine.Core;
 
 namespace NINA.Equipment.Equipment.MyGuider.Internal;
 
 /// <summary>
-/// Minimal in-memory FITS reader for guide frames delivered as INDI BLOBs (no temp files, no native code).
-/// Supports the primary HDU with BITPIX 8, 16 (with BZERO 32768) and 32/-32 (scaled to 16 bit), NAXIS 2
-/// (or NAXIS 3 with a single plane), and zlib-compressed BLOBs (".fits.z"). Writing is the engine's
-/// <see cref="GuideEngine.Imaging.FitsWriter"/>.
+/// Minimal in-memory FITS reader for the internal guider (no temp files, no native code), used for the
+/// dark library. Supports BITPIX 8, 16 (with BZERO 32768) and 32/-32 (scaled to 16 bit), NAXIS 2
+/// (or NAXIS 3 with a single plane). Writing is the engine's <see cref="GuideEngine.Imaging.FitsWriter"/>.
 /// </summary>
 internal static class FitsReader
 {
     private const int BlockSize = 2880;
     private const int CardSize = 80;
 
-    public static GuideFrame Read(byte[] data, string? format = null)
+    public static GuideFrame Read(byte[] data)
     {
         ArgumentNullException.ThrowIfNull(data);
-        if (format is not null && format.EndsWith(".z", StringComparison.OrdinalIgnoreCase))
-        {
-            data = Decompress(data);
-        }
 
         int offset = 0;
         return ReadHdu(data, ref offset, out _) ?? throw new InvalidDataException("FITS primary HDU has no image");
@@ -172,15 +166,6 @@ internal static class FitsReader
         }
 
         return new GuideFrame(width, height, pixels) { BitsPerPixel = bitpix == 8 ? 8 : 16 };
-    }
-
-    private static byte[] Decompress(byte[] data)
-    {
-        using var input = new MemoryStream(data);
-        using var z = new ZLibStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream(data.Length * 3);
-        z.CopyTo(output);
-        return output.ToArray();
     }
 
     private static int Int(Dictionary<string, string> h, string key) =>

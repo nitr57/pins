@@ -194,8 +194,8 @@ namespace NINA.INDI.Devices {
             }
 
             // Set offset if supported and explicitly requested
-            if (offset >= 0 && CanSetOffset) {
-                TrySetNumber("CCD_OFFSET", "OFFSET", offset);
+            if (offset >= 0 && OffsetElement is { } offsetElement) {
+                TrySetNumber(offsetElement.Property, offsetElement.Element, offset);
             }
 
             // Set frame region — only send CCD_FRAME when actually sub-sampling AND the

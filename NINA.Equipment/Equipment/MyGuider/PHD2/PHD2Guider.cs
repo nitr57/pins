@@ -1913,7 +1913,11 @@ namespace NINA.Equipment.Equipment.MyGuider.PHD2 {
                     }
                 };
                 process?.Start();
-                process?.WaitForInputIdle();
+                // WaitForInputIdle needs a Windows message loop and throws on Linux; the socket
+                // wait below covers the startup there.
+                if (OperatingSystem.IsWindows()) {
+                    process?.WaitForInputIdle();
+                }
 
                 await Task.Delay(2000);
 

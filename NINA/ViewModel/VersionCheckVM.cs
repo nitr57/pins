@@ -67,6 +67,11 @@ namespace NINA.ViewModel {
         }
 
         public async Task<bool> CheckUpdate() {
+            // The updater downloads and runs N.I.N.A.'s Windows setup; pins updates through its packages
+            if (!OperatingSystem.IsWindows()) {
+                return false;
+            }
+
             return await Task.Run(async () => {
                 if (NetworkInterface.GetIsNetworkAvailable() == false) {
                     Logger.Info("Network is not available. Skipping version check.");

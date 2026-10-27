@@ -583,9 +583,15 @@ namespace NINA.Equipment.SDK.CameraSDKs.PlayerOneSDK {
     public struct POAConfigValue           // Config Value Definition
     {
         //The "FieldOffset:" means that this Integer starts 
-        //Offset 0, in bytes, (with sizeof(long) = 4 bytes length): 
+        //Offset 0, in bytes. The C member is a long: 4 bytes on Windows, 8 bytes on
+        //LP64 Linux. Writing only the low 4 bytes there would turn -10 into 4294967286.
         [FieldOffset(0)]
-        public int intValue;                      // int
+        private CLong longValue;                  // long
+
+        public int intValue {                     // int
+            readonly get => (int)longValue.Value;
+            set => longValue = new CLong(value);
+        }
 
         //Offset 0, (length sizeof(double) = 8 bytes)...   
         [FieldOffset(0)]

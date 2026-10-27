@@ -26,8 +26,6 @@ using NINA.INDI.Interfaces;
 using NINA.Profile.Interfaces;
 using System;
 using System.Collections.Generic;
-using System.IO;
-using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -416,23 +414,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
                 token.ThrowIfCancellationRequested();
 
-                // decompress .fits.z in memory; the FITS image is decoded in memory too, no temporary file
+                // NINA.INDI already inflated a .fits.z payload; the FITS image is decoded in memory, no temporary file
                 LogFrame($"INDI camera: processing blob format='{blobFormat}' size={blobData.Length}");
-                bool isCompressed = blobFormat != null && blobFormat.EndsWith(".z", StringComparison.OrdinalIgnoreCase);
-                byte[] fits = blobData;
-                if (isCompressed) {
-                    // INDI drivers compress BLOBs with zlib compress2() (zlib framing,
-                    // 0x78 header) — not gzip, so ZLibStream is required here.
-                    using var ms = new MemoryStream(blobData);
-                    using var zs = new ZLibStream(ms, CompressionMode.Decompress);
-                    using var decompressed = new MemoryStream();
-                    await zs.CopyToAsync(decompressed, token);
-                    fits = decompressed.ToArray();
-                }
 
-                token.ThrowIfCancellationRequested();
-
-                var imageData = await FITS.Load(fits, isBayered: SensorType != SensorType.Monochrome, imageDataFactory, token);
+                var imageData = await FITS.Load(blobData, isBayered: SensorType != SensorType.Monochrome, imageDataFactory, token);
                 if (imageData == null) {
                     Logger.Error("INDI camera: Failed to create image data from FITS blob");
                     return null;
