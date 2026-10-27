@@ -100,6 +100,10 @@ var app = builder.Build();
 // Initialize DialogBroadcaster early so plugins can access it
 _ = app.Services.GetRequiredService<IDialogBroadcaster>();
 
+// Same for the message box broadcaster: MyMessageBox.Show uses its static Instance, which otherwise
+// only exists once the first client has connected to /hubs/messageboxes
+_ = app.Services.GetRequiredService<IMyMessageBoxBroadcaster>();
+
 // Initialize INDIClient early to start server and FIFO setup
 _ = INDIClient.Instance;
 

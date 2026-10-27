@@ -116,8 +116,9 @@ namespace NINA.Core.MyMessageBox {
                 }
             }
 
-            // Check if running in headless mode (Linux without WPF)
-            if (Application.Current == null) {
+            // Check if running in headless mode (Linux without WPF). The compat Application.Current is
+            // never null, but there is no MainWindow to show the WPF dialog on.
+            if (Application.Current == null || System.Windows.DialogService.IsHeadless()) {
                 return ShowViaDialogService(messageBoxText, caption, button, defaultresult);
             }
 
