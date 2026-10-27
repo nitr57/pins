@@ -243,14 +243,19 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
 
                         FocuserInfo.Position = this.Position;
                         pos = this.Position;
-                        var waitForUpdate = updateTimer.WaitForNextUpdate(timeoutCts.Token);
+                        // A focuser that reports a move as done only once it has stopped is read right after the move
+                        var waitForUpdate = focuserReportsMoveEnd ? null : updateTimer.WaitForNextUpdate(timeoutCts.Token);
                         //Wait for focuser to settle
                         if (profileService.ActiveProfile.FocuserSettings.FocuserSettleTime > 0) {
                             FocuserInfo.IsSettling = true;
                             await CoreUtil.Wait(TimeSpan.FromSeconds(profileService.ActiveProfile.FocuserSettings.FocuserSettleTime), true, timeoutCts.Token, progress, Loc.Instance["LblSettle"]);
                         }
-                        await waitForUpdate;
-                        BroadcastFocuserInfo();
+                        if (waitForUpdate != null) {
+                            await waitForUpdate;
+                            BroadcastFocuserInfo();
+                        } else {
+                            ReadFocuserAfterMove();
+                        }
                     }
                 } catch (OperationCanceledException) {
                     if (!ct.IsCancellationRequested) {
@@ -274,6 +279,20 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 }
             }, ct);
             return pos;
+        }
+
+        // IFocuserReportsMoveEnd: Move returned once the device itself reported a stop at the target, so instead
+        // of waiting one to two polling intervals for the update timer, read the focuser once right away
+        private void ReadFocuserAfterMove() {
+            if (!FocuserInfo.Connected) {
+                return;
+            }
+
+            try {
+                updateTimer.UpdateValuesFunc(updateTimer.GetValuesFunc());
+            } catch (Exception ex) {
+                Logger.Warning($"Failed to read the focuser after the move: {ex.Message}");
+            }
         }
 
         private CancellationTokenSource cancelChooseFocuserCts;
@@ -313,6 +332,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 progress.Report(new ApplicationStatus { Status = Loc.Instance["LblConnecting"] });
 
                 var newFocuser = GetBacklashCompensationFocuser(profileService, (IFocuser)DeviceChooserVM.SelectedDevice);
+                var newFocuserReportsMoveEnd = DeviceChooserVM.SelectedDevice is IFocuserReportsMoveEnd;
                 cancelChooseFocuserCts?.Dispose();
                 cancelChooseFocuserCts = new CancellationTokenSource();
                 var token = cancelChooseFocuserCts.Token;
@@ -320,6 +340,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                     var connected = await newFocuser.Connect(cancelChooseFocuserCts.Token);
                     if (connected) {
                         Focuser = newFocuser;
+                        focuserReportsMoveEnd = newFocuserReportsMoveEnd;
                         token.ThrowIfCancellationRequested();
 
                         if (this.Focuser.CanReverse) {
@@ -473,6 +494,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                 }
                 Focuser?.Disconnect();
                 Focuser = null;
+                focuserReportsMoveEnd = false;
                 FocuserInfo = DeviceInfo.CreateDefaultInstance<FocuserInfo>();
                 BroadcastFocuserInfo();
                 RaisePropertyChanged(nameof(Focuser));
@@ -493,6 +515,9 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
         }
 
         private IFocuser focuser;
+
+        // Taken from the bare driver on connect; the backlash compensation decorator around it hides its type
+        private bool focuserReportsMoveEnd;
 
         public event Func<object, EventArgs, Task> Connected;
         public event Func<object, EventArgs, Task> Disconnected;

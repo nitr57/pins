@@ -29,7 +29,7 @@ using static Nitecrawler.NitecrawlerSDK;
 
 
 namespace NINA.Equipment.Equipment.MyFocuser {
-    public partial class NitecrawlerFocuser : BaseINPC, IFocuser {
+    public partial class NitecrawlerFocuser : BaseINPC, IFocuser, IFocuserReportsMoveEnd {
         private readonly IProfileService _profileService;
         private readonly int _uniqueId;
         private readonly static TimeSpan _sameFocuserPositionTimeout = TimeSpan.FromMinutes(1);

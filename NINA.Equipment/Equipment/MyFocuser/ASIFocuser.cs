@@ -16,7 +16,7 @@ using System.Threading.Tasks;
 using ZWOptical.ASISDK;
 
 namespace NINA.Equipment.Equipment.MyFocuser {
-    public partial class ASIFocuser : BaseINPC, IFocuser {
+    public partial class ASIFocuser : BaseINPC, IFocuser, IFocuserReportsMoveEnd {
         private readonly IProfileService profileService;
         private int id;
         private ASIEAF.EAF_INFO eafInfo;

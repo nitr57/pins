@@ -210,5 +210,96 @@ namespace NINA.Test.Focuser {
             deviceInfo.Temperature.Should().Be(temperature);
             mockFocuserMediator.Verify(m => m.Broadcast(It.Is<FocuserInfo>(info => info.Connected && info.Name == "TestFocuserName" && info.Position == position)), Times.AtLeastOnce);
         }
+
+        /// <summary>
+        /// A focuser whose Move returns once the device reports it has stopped (IFocuserReportsMoveEnd) is read right
+        /// after the move instead of waiting for the next poll: with a 10 s polling interval the move returns at once and
+        /// FocuserInfo already carries the values read after it.
+        /// </summary>
+        [Test]
+        public async Task MoveFocuser_ReadsRightAway_WhenTheFocuserReportsItsMoveEnd() {
+            var focuser = CreateMovingFocuser(reportsMoveEnd: true, out var afterMove);
+            await ConnectAsync(focuser, pollingIntervalSeconds: 10);
+
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var position = await sut.MoveFocuser(1000, CancellationToken.None);
+            watch.Stop();
+
+            position.Should().Be(1000);
+            watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+            afterMove().Should().BeTrue();
+            sut.FocuserInfo.Position.Should().Be(1000);
+            sut.FocuserInfo.Temperature.Should().Be(7d, "the temperature read after the move, not the one from the connect");
+            sut.FocuserInfo.IsMoving.Should().BeFalse();
+
+            await sut.Disconnect();
+        }
+
+        /// <summary>
+        /// Every other focuser keeps waiting for the next poll of the update timer after a move.
+        /// </summary>
+        [Test]
+        public async Task MoveFocuser_WaitsForTheNextPoll_ForOtherFocusers() {
+            var focuser = CreateMovingFocuser(reportsMoveEnd: false, out _);
+            await ConnectAsync(focuser, pollingIntervalSeconds: 0.5);
+
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var position = await sut.MoveFocuser(1000, CancellationToken.None);
+            watch.Stop();
+
+            position.Should().Be(1000);
+            watch.Elapsed.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(0.45));
+
+            await sut.Disconnect();
+        }
+
+        /// <summary>
+        /// A read that fails after a completed move is only logged; the move itself still succeeds.
+        /// </summary>
+        [Test]
+        public async Task MoveFocuser_Succeeds_WhenTheReadAfterTheMoveFails() {
+            var focuser = CreateMovingFocuser(reportsMoveEnd: true, out var afterMove);
+            focuser.Setup(m => m.Temperature).Returns(() => afterMove() ? throw new InvalidOperationException("read failed") : 5d);
+            await ConnectAsync(focuser, pollingIntervalSeconds: 10);
+
+            var position = await sut.MoveFocuser(1000, CancellationToken.None);
+
+            position.Should().Be(1000);
+
+            await sut.Disconnect();
+        }
+
+        private static Mock<IFocuser> CreateMovingFocuser(bool reportsMoveEnd, out Func<bool> afterMove) {
+            var focuser = new Mock<IFocuser>();
+            if (reportsMoveEnd) {
+                focuser.As<IFocuserReportsMoveEnd>();
+            }
+
+            var moved = false;
+            afterMove = () => moved;
+            focuser.Setup(m => m.Connect(It.IsAny<CancellationToken>())).Returns(Task.FromResult(true));
+            focuser.Setup(m => m.Connected).Returns(true);
+            // The backlash compensation decorator clamps every move to MaxStep
+            focuser.Setup(m => m.MaxStep).Returns(10000);
+            focuser.Setup(m => m.Temperature).Returns(() => moved ? 7d : 5d);
+            focuser.Setup(m => m.Move(It.IsAny<int>(), It.IsAny<CancellationToken>(), It.IsAny<int>()))
+                .Callback((int position, CancellationToken ct, int waitInMs) => {
+                    focuser.Setup(m => m.Position).Returns(position);
+                    moved = true;
+                })
+                .Returns(Task.CompletedTask);
+            return focuser;
+        }
+
+        private async Task ConnectAsync(Mock<IFocuser> focuser, double pollingIntervalSeconds) {
+            mockProfileService.Setup(m => m.ActiveProfile.ApplicationSettings.DevicePollingInterval).Returns(pollingIntervalSeconds);
+            mockProfileService.Setup(m => m.ActiveProfile.FocuserSettings.BacklashCompensationModel)
+                .Returns(BacklashCompensationModel.ABSOLUTE);
+            mockFocuserChooserVm.Setup(m => m.SelectedDevice).Returns(focuser.Object);
+
+            var connected = await sut.Connect();
+
+            connected.Should().BeTrue();
+        }
     }
 }
