@@ -96,7 +96,8 @@ namespace NINA.ViewModel.Plugins {
                     Initialized = true;
                 });
 
-                if (hasInstalledPlugins) {
+                // pins installs its plugins from packages, so it doesn't fetch the online catalog at startup
+                if (hasInstalledPlugins && OperatingSystem.IsWindows()) {
                     await FetchPluginsCommand.ExecuteAsync("Initial");
                 }
             } catch (Exception ex) {
