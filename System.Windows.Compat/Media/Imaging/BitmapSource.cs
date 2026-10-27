@@ -185,55 +185,55 @@ namespace System.Windows.Media.Imaging {
         }
 
         public void CopyPixels(byte[] pixels, int stride, int offset) {
-            // Copy Mat data to byte array
-            if (_mat.Empty()) return;
-
-            int bytesPerPixel = _mat.ElemSize();
-            int dataSize = _mat.Rows * _mat.Cols * bytesPerPixel;
-
-            if (pixels.Length < offset + dataSize) {
-                throw new ArgumentException($"Destination array too small. Need {offset + dataSize} bytes, got {pixels.Length}");
-            }
-
-            if (_mat.IsContinuous()) {
-                // Copy the Mat data directly to the byte array
-                System.Runtime.InteropServices.Marshal.Copy(_mat.Data, pixels, offset, dataSize);
-            } else {
-                // A non-continuous Mat (e.g. an un-cloned ROI view) has padding between rows, so
-                // a single flat copy would read past each row's real content. Copy row by row,
-                // using the Mat's own Step() as the source pitch but packing the destination tightly.
-                int rowBytes = _mat.Cols * bytesPerPixel;
-                for (int y = 0; y < _mat.Rows; y++) {
-                    IntPtr srcPtr = _mat.Data + (y * (int)_mat.Step());
-                    System.Runtime.InteropServices.Marshal.Copy(srcPtr, pixels, offset + (y * rowBytes), rowBytes);
-                }
-            }
-            GC.KeepAlive(this);
+            CopyPixelsToArray(pixels, stride, offset, sizeof(byte));
         }
 
         public void CopyPixels(ushort[] pixels, int stride, int offset) {
-            // Copy Mat data to ushort array
-            if (_mat.Empty()) return;
+            CopyPixelsToArray(pixels, stride, offset, sizeof(ushort));
+        }
 
-            int dataSize = _mat.Rows * _mat.Cols * _mat.Channels();
+        /// <summary>
+        /// Copies the whole image into a byte[] or ushort[], matching WPF: offset is an element
+        /// index into pixels and stride is the destination row pitch in bytes (0 packs the rows).
+        /// The pixel bytes are copied as they are, whatever the array's element type.
+        /// </summary>
+        private unsafe void CopyPixelsToArray(Array pixels, int stride, int offset, int elementSize) {
+            ArgumentNullException.ThrowIfNull(pixels);
 
-            if (pixels.Length < offset + dataSize) {
-                throw new ArgumentException($"Destination array too small. Need {offset + dataSize} elements, got {pixels.Length}");
+            if (_mat.Empty()) {
+                return;
             }
 
-            // Marshal.Copy has no ushort[] overload, but the runtime lets a ushort[] be viewed as a
-            // short[] (same element size), so copy straight into the caller's array instead of
-            // through a full-size temporary byte[].
-            short[] destination = (short[])(object)pixels;
+            if (offset < 0) {
+                throw new ArgumentOutOfRangeException(nameof(offset));
+            }
 
-            if (_mat.IsContinuous()) {
-                System.Runtime.InteropServices.Marshal.Copy(_mat.Data, destination, offset, dataSize);
-            } else {
-                // See the byte[] overload above - a non-continuous Mat needs a row-by-row copy.
-                int rowElements = _mat.Cols * _mat.Channels();
-                for (int y = 0; y < _mat.Rows; y++) {
-                    IntPtr srcPtr = _mat.Data + (y * (int)_mat.Step());
-                    System.Runtime.InteropServices.Marshal.Copy(srcPtr, destination, offset + (y * rowElements), rowElements);
+            long rowBytes = (long)_mat.Cols * _mat.ElemSize();
+            long pitch = stride == 0 ? rowBytes : stride;
+            if (pitch < rowBytes) {
+                throw new ArgumentOutOfRangeException(nameof(stride), $"Stride {stride} is smaller than a row of {rowBytes} bytes");
+            }
+
+            long byteOffset = (long)offset * elementSize;
+            long available = Buffer.ByteLength(pixels);
+            long needed = byteOffset + pitch * (_mat.Rows - 1) + rowBytes;
+            if (available < needed) {
+                throw new ArgumentException($"Destination array too small. Need {needed} bytes, got {available}");
+            }
+
+            fixed (byte* destination = &System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(pixels)) {
+                byte* source = (byte*)_mat.Data;
+                long sourceStep = _mat.Step();
+
+                if (_mat.IsContinuous() && pitch == rowBytes) {
+                    Buffer.MemoryCopy(source, destination + byteOffset, available - byteOffset, rowBytes * _mat.Rows);
+                } else {
+                    // A non-continuous Mat (e.g. an un-cloned ROI view) has padding between rows, and
+                    // the destination can have its own; copy row by row with each side's pitch.
+                    for (int y = 0; y < _mat.Rows; y++) {
+                        long destinationOffset = byteOffset + y * pitch;
+                        Buffer.MemoryCopy(source + y * sourceStep, destination + destinationOffset, available - destinationOffset, rowBytes);
+                    }
                 }
             }
             GC.KeepAlive(this);
@@ -241,6 +241,8 @@ namespace System.Windows.Media.Imaging {
 
         public void CopyPixels(Array pixels, int stride, int offset) {
             // Generic CopyPixels that dispatches to specific type
+            ArgumentNullException.ThrowIfNull(pixels);
+
             if (pixels is byte[] byteArray) {
                 CopyPixels(byteArray, stride, offset);
             } else if (pixels is ushort[] ushortArray) {
@@ -336,36 +338,53 @@ namespace System.Windows.Media.Imaging {
 
         public static BitmapSource Create(int pixelWidth, int pixelHeight, double dpiX, double dpiY,
             System.Windows.Media.PixelFormat pixelFormat, BitmapPalette palette, Array pixels, int stride) {
+            ArgumentNullException.ThrowIfNull(pixels);
+
             // Determine the OpenCV Mat type from the pixel format
             MatType matType = pixelFormat;
 
             // Create an empty Mat with the specified dimensions
             Mat mat = new Mat(pixelHeight, pixelWidth, matType);
-
-            // Copy the pixel data using the same approach as the backup
-            if (pixels is ushort[] ushortArray) {
-                int copyElements = (int)System.Math.Min((long)pixelWidth * pixelHeight * mat.Channels(), ushortArray.Length);
-
-                // Viewed as short[] (see CopyPixels(ushort[])) so the copy goes straight into the
-                // Mat instead of through a full-size temporary byte[].
-                System.Runtime.InteropServices.Marshal.Copy((short[])(object)ushortArray, 0, mat.Data, copyElements);
-            } else if (pixels is byte[] byteArray) {
-                int copyBytes = (int)System.Math.Min(mat.Total() * mat.ElemSize(), byteArray.Length);
-                System.Runtime.InteropServices.Marshal.Copy(byteArray, 0, mat.Data, copyBytes);
-            } else {
-                // Fallback: pin and copy
-                var handle = System.Runtime.InteropServices.GCHandle.Alloc(pixels, System.Runtime.InteropServices.GCHandleType.Pinned);
-                try {
-                    IntPtr ptr = handle.AddrOfPinnedObject();
-                    using (Mat tempMat = Mat.FromPixelData(pixelHeight, pixelWidth, matType, ptr, stride)) {
-                        tempMat.CopyTo(mat);
-                    }
-                } finally {
-                    handle.Free();
-                }
+            try {
+                CopyArrayToMat(pixels, stride, mat);
+            } catch {
+                mat.Dispose();
+                throw;
             }
 
             return new BitmapSource(mat, foreignMat: false);
+        }
+
+        /// <summary>
+        /// Copies a managed pixel array into a new Mat, matching WPF: stride is the source row pitch
+        /// in bytes (0 packs the rows), and the array must hold every row the stride implies.
+        /// </summary>
+        private static unsafe void CopyArrayToMat(Array pixels, int stride, Mat mat) {
+            long rowBytes = (long)mat.Cols * mat.ElemSize();
+            long pitch = stride == 0 ? rowBytes : stride;
+            if (pitch < rowBytes) {
+                throw new ArgumentOutOfRangeException(nameof(stride), $"Stride {stride} is smaller than a row of {rowBytes} bytes");
+            }
+
+            // Buffer.ByteLength is the managed size and rejects arrays of non-primitive types
+            long available = Buffer.ByteLength(pixels);
+            long needed = mat.Rows == 0 ? 0 : pitch * (mat.Rows - 1) + rowBytes;
+            if (available < needed) {
+                throw new ArgumentException($"Pixel array too small. Need {needed} bytes, got {available}", nameof(pixels));
+            }
+
+            fixed (byte* source = &System.Runtime.InteropServices.MemoryMarshal.GetArrayDataReference(pixels)) {
+                byte* destination = (byte*)mat.Data;
+                long destinationStep = mat.Step();
+
+                if (pitch == rowBytes && destinationStep == rowBytes) {
+                    Buffer.MemoryCopy(source, destination, destinationStep * mat.Rows, needed);
+                } else {
+                    for (int y = 0; y < mat.Rows; y++) {
+                        Buffer.MemoryCopy(source + y * pitch, destination + y * destinationStep, destinationStep, rowBytes);
+                    }
+                }
+            }
         }
     }
 
