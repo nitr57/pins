@@ -265,7 +265,7 @@ namespace NINA.INDI.Protocol {
 
         /// <summary>
         /// One decoded <c>oneBLOB</c> of a <c>setBLOBVector</c>. <see cref="Data"/> is null when the
-        /// element carried no payload (the blob then keeps its previous data).
+        /// element carried no payload; <see cref="ApplyBlobUpdate"/> then empties the blob's data.
         /// </summary>
         public sealed record DecodedBlob(string Name, string Format, byte[] Data);
 
@@ -327,10 +327,11 @@ namespace NINA.INDI.Protocol {
                     prop.Blobs.Add(blob);
                 }
 
+                // An update without payload empties the data instead of keeping the previous frame
+                // (libindi keeps it): INDICamera takes any CCD1 update with data as the finished
+                // exposure, so a kept frame would come back as the new one.
                 blob.Format = d.Format;
-                if (d.Data != null) {
-                    blob.Data = d.Data;
-                }
+                blob.Data = d.Data ?? [];
             }
         }
 
