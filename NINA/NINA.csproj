@@ -27,6 +27,9 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <Compile Remove="View\Plugins\PluginImage.cs" />
+  </ItemGroup>
+  <ItemGroup>
     <Content Include="Database\Initial\initial_data.sql">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </Content>

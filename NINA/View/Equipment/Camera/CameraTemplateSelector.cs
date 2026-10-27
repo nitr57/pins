@@ -24,7 +24,6 @@ namespace NINA.View.Equipment {
         public DataTemplate Default { get; set; }
         public DataTemplate QhyCcd { get; set; }
         public DataTemplate Touptek { get; set; }
-        public DataTemplate Fli { get; set; }
         public DataTemplate LegacySbig { get; set; }
         public DataTemplate Moravian { get; set; }
         public DataTemplate Canon { get; set; }
@@ -50,8 +49,6 @@ namespace NINA.View.Equipment {
                 return Canon;
             } else if (item is AtikCamera) {
                 return Atik;
-            } else if (item is FLICamera) {
-                return Fli;
             } else if (item is ASICamera) {
                 return Zwo;
             } else if (item is SVBonyCamera) {

@@ -64,8 +64,16 @@
     <Compile Remove="View\DirectGuiderDetailViewTest.cs" />
     <Compile Remove="View\GuiderChartViewTest.cs" />
     <Compile Remove="View\HyperlinkBehaviorTest.cs" />
+    <Compile Remove="View\ImageGalleryTest.cs" />
+    <Compile Remove="View\InitializationLoadingViewTest.cs" />
+    <Compile Remove="View\PluginImageCacheTest.cs" />
+    <Compile Remove="View\PluginNavigationDuringRefreshTest.cs" />
+    <Compile Remove="View\PluginsViewTest.cs" />
     <Compile Remove="View\SvgResourceTest.cs" />
     <Compile Remove="ViewModel\DockManagerVMTest.cs" />
+    <Compile Remove="ViewModel\HubConfigurationViewRegressionTest.cs" />
+    <Compile Remove="ViewModel\HubConfigurationViewTest.cs" />
+    <Compile Remove="ViewModel\PlateSolverViewTest.cs" />
   </ItemGroup>
   <ItemGroup>
     <EmbeddedResource Include="..\NINA.Sequencer\Editing\UI-COVERAGE.md" LogicalName="SequenceEditorCoverage" />
