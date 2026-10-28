@@ -295,13 +295,25 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         public int GainMin => ISOSpeeds.Count > 0 ? ISOSpeeds.Aggregate((l, r) => l.Value < r.Value ? l : r).Value : 0;
 
+        // The ISO last read from or written to the camera. Reported during an exposure instead of a new config read
+        // over libgphoto2: the camera info is polled every few seconds, and a camera busy with an exposure or its
+        // download can fail or stall on that read.
+        private int lastGain = -1;
+
+        private bool ExposureInProgress => downloadExposure is { Task.IsCompleted: false };
+
         public int Gain {
             get {
+                if (ExposureInProgress && lastGain >= 0) {
+                    return lastGain;
+                }
+
                 if (GetProperty(isoProperty, out var iso) != GP_ERROR_CODE.GP_OK) {
                     return -1;
                 }
 
-                return TranslateISOChoice(iso);
+                lastGain = TranslateISOChoice(iso);
+                return lastGain;
             }
             set {
                 ValidateMode();
@@ -319,6 +331,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
                 if (GetProperty(isoProperty, out var readBackIso) == GP_ERROR_CODE.GP_OK) {
                     int readBackValue = TranslateISOChoice(readBackIso);
+                    lastGain = readBackValue;
                     Logger.Info($"libgphoto2: Requested ISO {value} via {isoProperty}='{iso}', camera reads back '{readBackIso}' ({readBackValue})");
                     if (readBackValue > 0 && readBackValue != value) {
                         Logger.Warning($"libgphoto2: Camera ISO readback {readBackValue} does not match requested ISO {value}. Check camera Auto ISO and mode settings.");
@@ -792,7 +805,8 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         public async Task WaitUntilExposureIsReady(CancellationToken token) {
-            using (token.Register(() => AbortExposure())) {
+            // Off the cancelling thread: a bulb abort releases the shutter and waits for the camera's file event
+            using (token.Register(() => _ = Task.Run(AbortExposure))) {
                 await downloadExposure.Task;
             }
         }

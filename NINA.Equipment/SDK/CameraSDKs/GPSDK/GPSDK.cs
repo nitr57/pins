@@ -63,8 +63,10 @@ namespace GPSDK {
             { "Sony Alpha 7C", (6000, 4000, 5.93, 5.93) },
         };
 
-        public static Dictionary<string, string> Enum() {
-            Dictionary<string, string> devices = [];
+        // Model name and port of each detected camera. A list, not a dictionary by name: two cameras of the same model
+        // have the same name, and the name has to stay as is, since libgphoto2 looks the model's abilities up by it.
+        public static List<KeyValuePair<string, string>> Enum() {
+            List<KeyValuePair<string, string>> devices = [];
 
             // Create context
             IntPtr ctx = GpContextNew();
@@ -120,7 +122,7 @@ namespace GPSDK {
                 }
 
                 // Add camera to list
-                devices.Add(name, path);
+                devices.Add(new KeyValuePair<string, string>(name, path));
             }
 
             // Clean up
