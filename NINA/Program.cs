@@ -195,8 +195,11 @@ System.Windows.Application.ApplicationLifetime = lifetime;
 lifetime.ApplicationStopping.Register(() => {
     Logger.Info("Application shutting down...");
 
+    // First: indiserver ending from now on is the shutdown, not a crash, so no recovery may restart it and its drivers
+    INDIClient.Instance.BeginShutdown();
+
     // Halt MCP jobs (slews, focuser moves, exposures) through their tokens before the equipment goes away under them;
-    // a park (also as part of secure_observatory) is let finish instead, within systemd's 90 s stop timeout
+    // a park (also as part of secure_observatory) is let finish instead, within the 150 s stop timeout of pins.service
     try {
         var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(60));
         if (stillRunning > 0) {

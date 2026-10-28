@@ -11,6 +11,8 @@ User=pi
 Group=pi
 Restart=always
 RestartSec=5
+KillMode=mixed
+TimeoutStopSec=150
 
 [Install]
 WantedBy=multi-user.target

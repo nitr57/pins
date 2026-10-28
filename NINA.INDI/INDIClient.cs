@@ -75,7 +75,7 @@ namespace NINA.INDI {
         // connection to a lost server is being recovered, so waiters see the new server's readiness.
         private volatile TaskCompletionSource<bool> _serverReadyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        // Set by Dispose: the server and its connection then go away on purpose and are not recovered.
+        // Set by BeginShutdown or Dispose: the server and its connection then go away on purpose and are not recovered.
         private volatile bool _shuttingDown;
 
         // 1 while the server is started or a lost connection is recovered, so a dead socket and the
@@ -958,10 +958,19 @@ namespace NINA.INDI {
             }
         }
 
+        /// <summary>
+        /// Marks the start of the application shutdown, before the equipment disconnects. A server that ends from
+        /// now on is part of the shutdown: it is not recovered or announced, and its devices are only marked
+        /// disconnected, so their waits end at once.
+        /// </summary>
+        public void BeginShutdown() {
+            _shuttingDown = true;
+        }
+
         public void Dispose() {
             Logger.Info("INDIClient.Dispose() starting cleanup");
             // The server and its connection now go away on purpose
-            _shuttingDown = true;
+            BeginShutdown();
             Disconnect();
             if (_managesServer) {
                 CleanupServer();
@@ -1807,7 +1816,12 @@ namespace NINA.INDI {
         /// be connected again as usual.
         /// </summary>
         private void HandleServerConnectionLost(string reason, bool announce = true) {
-            if (_shuttingDown || _gaveUp) {
+            if (_gaveUp) {
+                return;
+            }
+
+            if (_shuttingDown) {
+                HandleServerConnectionLostDuringShutdown(reason);
                 return;
             }
 
@@ -1849,6 +1863,30 @@ namespace NINA.INDI {
                     _serverReadyTcs.TrySetResult(false);
                     Interlocked.Exchange(ref _recovering, 0);
                 }
+            }
+        }
+
+        // Between BeginShutdown and Dispose the equipment still sends its DISCONNECTs and waits for them, so a
+        // server that ends then still ends the session and those waits, without a recovery or a notification.
+        // After Disconnect cancelled the session (Dispose ending the server) there is nothing left to do.
+        private void HandleServerConnectionLostDuringShutdown(string reason) {
+            if (Interlocked.Exchange(ref _recovering, 1) == 1) {
+                // A start or recovery is running; it stops at _shuttingDown and its devices are already marked
+                return;
+            }
+
+            try {
+                var session = _cts;
+                if (session == null || session.IsCancellationRequested) {
+                    return;
+                }
+
+                Logger.Info($"INDI: {reason} during the shutdown; marking all INDI devices disconnected, not recovering it");
+                TearDownLostSession();
+            } catch (Exception ex) {
+                Logger.Error($"INDI: cleaning up the lost INDI server connection failed: {ex.Message}");
+            } finally {
+                Interlocked.Exchange(ref _recovering, 0);
             }
         }
 

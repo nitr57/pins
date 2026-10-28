@@ -28,7 +28,7 @@ namespace NINA.Test.INDI {
     /// disconnected right away, operations waiting for a driver update fail at once, and the client
     /// reconnects to the server; a device only counts as connected again once it is connected again. After
     /// three recoveries within ten minutes the client gives up. A Disconnect ends the connection on purpose
-    /// and is not recovered. Runs against a fake indiserver; restarting a real indiserver is not covered here.
+    /// and is not recovered, nor is a loss once the shutdown has begun. Runs against a fake indiserver; restarting a real indiserver is not covered here.
     /// </summary>
     [TestFixture]
     [NonParallelizable]
@@ -184,6 +184,27 @@ namespace NINA.Test.INDI {
 
             Assert.That(async () => await server.NextConnectionAsync(TimeSpan.FromSeconds(2)), Throws.InstanceOf<OperationCanceledException>(),
                 "no reconnect after an intentional Disconnect");
+            Assert.That(client.IsConnected, Is.False);
+        }
+
+        [Test]
+        public async Task LostConnectionDuringShutdown_EndsTheDeviceWaits_ButIsNotRecovered() {
+            var focuser = await ConnectFocuserAsync();
+            var move = focuser.MoveAsync(2000);
+            await main.WaitUntilAsync(
+                r => r.Contains("<newNumberVector", StringComparison.Ordinal) && r.Contains("name=\"ABS_FOCUS_POSITION\"", StringComparison.Ordinal),
+                "the move is sent",
+                Timeout);
+
+            // As under systemd: the shutdown has begun, and indiserver ends before the client is disposed
+            client.BeginShutdown();
+            main.Close();
+
+            Assert.That(await Task.WhenAny(move, Task.Delay(Timeout)), Is.SameAs(move), "the move ends instead of waiting for a driver update");
+            Assert.That(async () => await move, Throws.InstanceOf<InvalidOperationException>());
+            await WaitUntilAsync(() => !focuser.Connected, "the focuser reports itself disconnected");
+            Assert.That(async () => await server.NextConnectionAsync(TimeSpan.FromSeconds(3)), Throws.InstanceOf<OperationCanceledException>(),
+                "no recovery during the shutdown");
             Assert.That(client.IsConnected, Is.False);
         }
 
