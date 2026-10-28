@@ -131,10 +131,17 @@ namespace NINA.Equipment.Equipment {
 
         /// <summary>
         /// For waits in this layer that a lost INDI server connection ends early (the device's properties are
-        /// gone, so e.g. Slewing reads false): the operation then fails instead of reporting success.
+        /// gone, so e.g. Slewing reads false): the operation then fails instead of reporting success. The Connected
+        /// poll's TryReconnect disposes a device that lost the server, which can happen during the wait and ends it
+        /// the same way, so a device that is gone by then fails the operation too.
         /// </summary>
         protected void ThrowIfServerConnectionLost(string operation) {
-            if (device?.ServerConnectionLost == true) {
+            var current = device;
+            if (current == null) {
+                throw new InvalidOperationException($"{operation} failed: the device was disconnected");
+            }
+
+            if (current.ServerConnectionLost) {
                 throw new InvalidOperationException($"{operation} failed: the connection to the INDI server was lost");
             }
         }
