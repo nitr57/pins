@@ -109,6 +109,11 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
             }
 
             double lst = info.SiderealTime;
+            if (double.IsNaN(lst)) {
+                // the mount has not reported its sidereal time yet, e.g. right after connecting
+                throw new SequenceEntityFailedException("The mount's sidereal time is not known yet");
+            }
+
             bool pointEast;
 
             if (PointingSide == CalibrationPointingSide.East) {
@@ -127,22 +132,30 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
                 ? AstroUtil.EuclidianModulus(lst + HaOffsetDegrees / 15.0, 24.0)
                 : AstroUtil.EuclidianModulus(lst - HaOffsetDegrees / 15.0, 24.0);
 
-            var coordinates = new Coordinates(targetRa, TargetDec, Epoch.J2000, Coordinates.RAType.Hours);
+            // the RA comes from the local sidereal time, so it is of the current epoch
+            var coordinates = new Coordinates(targetRa, TargetDec, Epoch.JNOW, Coordinates.RAType.Hours);
 
             Logger.Info($"SlewToGuiderCalibrationPosition: LST={lst:F4}h pointEast={pointEast} → RA={targetRa:F4}h Dec={TargetDec:F1}° ClearBacklash={ClearBacklash}");
 
             var stoppedGuiding = await guiderMediator.StopGuiding(token);
+            try {
+                if (ClearBacklash) {
+                    // Pre-clear Dec backlash: slew 1° south of target, then north to target so the
+                    // final approach is always northward. Matches PHD2 Calibration Assistant behaviour.
+                    var southCoordinates = new Coordinates(targetRa, TargetDec - 1.0, Epoch.JNOW, Coordinates.RAType.Hours);
+                    if (!await telescopeMediator.SlewToCoordinatesAsync(southCoordinates, token)) {
+                        throw new SequenceEntityFailedException("The slew south of the calibration position failed");
+                    }
+                }
 
-            if (ClearBacklash) {
-                // Pre-clear Dec backlash: slew 1° south of target, then north to target so the
-                // final approach is always northward. Matches PHD2 Calibration Assistant behaviour.
-                var southCoordinates = new Coordinates(targetRa, TargetDec - 1.0, Epoch.J2000, Coordinates.RAType.Hours);
-                await telescopeMediator.SlewToCoordinatesAsync(southCoordinates, token);
-            }
-
-            await telescopeMediator.SlewToCoordinatesAsync(coordinates, token);
-            if (stoppedGuiding) {
-                await guiderMediator.StartGuiding(false, progress, token);
+                if (!await telescopeMediator.SlewToCoordinatesAsync(coordinates, token)) {
+                    throw new SequenceEntityFailedException("The slew to the calibration position failed");
+                }
+            } finally {
+                // a failed slew must not leave the following items without guiding; a cancelled one stops them anyway
+                if (stoppedGuiding && !token.IsCancellationRequested) {
+                    await guiderMediator.StartGuiding(false, progress, token);
+                }
             }
         }
 
@@ -151,6 +164,15 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
             if (!telescopeMediator.GetInfo().Connected) {
                 i.Add(Loc.Instance["LblTelescopeNotConnected"]);
             }
+
+            if (TargetDec < -90 || TargetDec > 90 || (ClearBacklash && TargetDec - 1.0 < -90)) {
+                i.Add("The calibration declination must lie between -90° and 90°, and with backlash clearing 1° above -90°");
+            }
+
+            if (HaOffsetDegrees < 0 || HaOffsetDegrees > 90) {
+                i.Add("The meridian offset must lie between 0° and 90°");
+            }
+
             Issues = i;
             return i.Count == 0;
         }
