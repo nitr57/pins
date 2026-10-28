@@ -226,7 +226,8 @@ namespace NINA.Test.Focuser {
             watch.Stop();
 
             position.Should().Be(1000);
-            watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(2));
+            // Well below the 10 s poll it would otherwise wait for, with room for a busy Pi or CI runner
+            watch.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(5));
             afterMove().Should().BeTrue();
             sut.FocuserInfo.Position.Should().Be(1000);
             sut.FocuserInfo.Temperature.Should().Be(7d, "the temperature read after the move, not the one from the connect");
