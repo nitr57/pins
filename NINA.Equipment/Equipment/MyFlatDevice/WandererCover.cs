@@ -154,8 +154,11 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
         // The cover takes about 10 s from one end to the other
         private static readonly TimeSpan MoveTimeout = TimeSpan.FromSeconds(60);
 
-        // Right after the command the cover can still report the end it is leaving until its motor starts
-        private static readonly TimeSpan MotionStartGrace = TimeSpan.FromSeconds(5);
+        // How long the end the cover is leaving still counts as "not moving yet". The SDK reports moving (3) as soon as
+        // the command is sent and clears it with the first status after the move, which the device only sends once it
+        // stopped. A status sent before the move but arriving after the SDK's 150 ms grace would clear it early and leave
+        // the old end reported for the whole move, so this is longer than one move (about 10 s).
+        private static readonly TimeSpan MotionStartGrace = TimeSpan.FromSeconds(15);
 
         public async Task<bool> Open(CancellationToken ct, int delay = 300) {
             return await MoveCover(CoverOpenCover, StateOpen, "open", ct, delay);
