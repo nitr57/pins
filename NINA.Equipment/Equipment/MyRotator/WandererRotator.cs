@@ -58,6 +58,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 try {
                     var err = RotatorGetStatus(_uniqueId, out var status);
                     if (err == WR_ERROR_TYPE.WR_SUCCESS) {
+                        communicationErrors.RecordSuccess();
                         return status.moving == 1;
                     } else {
                         if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
@@ -263,63 +264,79 @@ namespace NINA.Equipment.Equipment.MyRotator {
 
         public float Position => AstroUtil.EuclidianModulus(MechanicalPosition + offset, 360);
 
-        public float MechanicalPosition {
-            get {
-                if (!Connected) {
-                    return -1;
+        // -1 when the position can't be read, for the displayed values; a move or sync reads it through
+        // ReadMechanicalPositionForMove instead
+        public float MechanicalPosition => TryReadMechanicalPosition(out var position) ? position : -1;
+
+        private bool TryReadMechanicalPosition(out float position) {
+            position = -1;
+            if (!Connected) {
+                return false;
+            }
+
+            try {
+                var err = RotatorGetStatus(_uniqueId, out var status);
+                if (err == WR_ERROR_TYPE.WR_SUCCESS) {
+                    communicationErrors.RecordSuccess();
+                    position = status.position;
+                    return true;
                 }
-                try {
-                    var err = RotatorGetStatus(_uniqueId, out var status);
-                    if (err == WR_ERROR_TYPE.WR_SUCCESS) {
-                        return status.position;
-                    } else {
-                        if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
-                            Logger.Error($"WandererRotator communication error to get Position state {err}");
-                            OnCommunicationError();
-                        } else {
-                            Logger.Error($"WandererRotator error to get Position {err}");
-                        }
-                        return -1;
-                    }
-                } catch (Exception ex) {
-                    Logger.Error($"WandererRotator MechanicalPosition crashed: {ex}");
+
+                if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
+                    Logger.Error($"WandererRotator communication error to get Position state {err}");
                     OnCommunicationError();
-                    return -1;
+                } else {
+                    Logger.Error($"WandererRotator error to get Position {err}");
                 }
+
+                return false;
+            } catch (Exception ex) {
+                Logger.Error($"WandererRotator MechanicalPosition crashed: {ex}");
+                OnCommunicationError();
+                return false;
             }
         }
 
+        /// <summary>
+        /// The position a move or sync starts from. Now that a single failed read keeps the connection, the -1 of a
+        /// failed read would turn into a move by the wrong angle or a wrong sync offset, so a failed read is tried once
+        /// more and then the move or sync is refused.
+        /// </summary>
+        private float ReadMechanicalPositionForMove() {
+            if (TryReadMechanicalPosition(out var position)) {
+                return position;
+            }
+
+            Thread.Sleep(200);
+            if (TryReadMechanicalPosition(out position)) {
+                return position;
+            }
+
+            throw new InvalidOperationException("Could not read the position of the Wanderer rotator");
+        }
+
         public void Sync(float skyAngle) {
-            offset = skyAngle - MechanicalPosition;
+            var mechanicalPosition = ReadMechanicalPositionForMove();
+            offset = skyAngle - mechanicalPosition;
             RaisePropertyChanged(nameof(Position));
             Synced = true;
-            Logger.Debug($"Mechanical Position is {MechanicalPosition}° - Sync Position to Sky Angle {skyAngle}° using offset {offset}");
+            Logger.Debug($"Mechanical Position is {mechanicalPosition}° - Sync Position to Sky Angle {skyAngle}° using offset {offset}");
         }
 
         // A single failed read (e.g. a status poll timing out under USB load) must not tear down the connection, as
-        // for the Nitecrawler: the rotator only counts as lost after MaxCommunicationErrors within CommunicationErrorWindow.
-        private const int MaxCommunicationErrors = 3;
-        private static readonly TimeSpan CommunicationErrorWindow = TimeSpan.FromSeconds(30);
-        private readonly Queue<DateTime> communicationErrors = new();
+        // for the Nitecrawler: the rotator only counts as lost after 3 errors within 30 s with no successful read in
+        // between. The up to three status reads of one poll (Position, IsMoving, MechanicalPosition) fail together in
+        // a hang, so errors within a second count as one.
+        private readonly CommunicationErrorCounter communicationErrors = new(3, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(1));
 
         /// <summary>
         /// Counts a communication error and disconnects once there were too many in a short time. Returns true while the
         /// connection is kept.
         /// </summary>
         private bool OnCommunicationError() {
-            lock (communicationErrors) {
-                var now = DateTime.UtcNow;
-                communicationErrors.Enqueue(now);
-                while (communicationErrors.Count > 0 && now - communicationErrors.Peek() > CommunicationErrorWindow) {
-                    communicationErrors.Dequeue();
-                }
-
-                if (communicationErrors.Count < MaxCommunicationErrors) {
-                    Logger.Warning($"WandererRotator communication error {communicationErrors.Count}/{MaxCommunicationErrors} within {CommunicationErrorWindow.TotalSeconds:F0}s, keeping the connection");
-                    return true;
-                }
-
-                communicationErrors.Clear();
+            if (communicationErrors.RecordError(DateTime.UtcNow, out var count)) {
+                Logger.Warning($"WandererRotator communication error {count}/{communicationErrors.MaxErrors} within {communicationErrors.Window.TotalSeconds:F0}s, keeping the connection");
+                return true;
             }
 
             try {
@@ -547,7 +564,11 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 var err = RotatorMove(_uniqueId, angle);
                 if (err != WR_ERROR_TYPE.WR_SUCCESS) {
                     Logger.Error($"WandererRotator failed to issue move command {err}");
-                    throw new Exception($"Failed to move Rotator {err}");
+                    if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
+                        OnCommunicationError();
+                    }
+
+                    throw new RotatorErrorException($"Failed to move Rotator {err}");
                 }
 
                 await CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
@@ -556,14 +577,16 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     err = RotatorGetStatus(_uniqueId, out status);
 
                     var moving = status.moving == 1;
-                    if (err != WR_ERROR_TYPE.WR_SUCCESS) {
+                    if (err == WR_ERROR_TYPE.WR_SUCCESS) {
+                        communicationErrors.RecordSuccess();
+                    } else {
                         if (err != WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
                             Logger.Error($"WandererRotator error to get moving state {err}");
-                            throw new Exception($"Rotator error {err}");
+                            throw new RotatorErrorException($"Rotator error {err}");
                         }
 
                         if (!OnCommunicationError()) {
-                            throw new Exception($"Rotator error {err}");
+                            throw new RotatorErrorException($"Rotator error {err}");
                         }
 
                         // A single failed poll: keep waiting for the move rather than aborting it
@@ -581,6 +604,10 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 Logger.Info("WandererRotator Move cancelled by user");
                 Halt();
                 return false;
+            } catch (RotatorErrorException ex) {
+                // An error the rotator reported, already counted above when it was a communication error
+                Logger.Error($"WandererRotator Move failed: {ex.Message}");
+                return false;
             } catch (Exception ex) {
                 Logger.Error($"WandererRotator Move crashed: {ex}");
                 // Not again when the status poll's error already disconnected it
@@ -597,7 +624,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 return false;
             }
 
-            var movement = targetPosition - MechanicalPosition;
+            var movement = targetPosition - ReadMechanicalPositionForMove();
             return await Move(movement, ct);
         }
 
@@ -606,8 +633,11 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 return false;
             }
 
-            return await Move(targetPosition - Position, ct);
+            var position = AstroUtil.EuclidianModulus(ReadMechanicalPositionForMove() + offset, 360);
+            return await Move(targetPosition - position, ct);
         }
+
+        private sealed class RotatorErrorException(string message) : Exception(message);
 
         #region Unsupported
         public bool TempCompAvailable => false;
