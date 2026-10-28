@@ -660,6 +660,41 @@ namespace NINA.INDI.Devices
             }
         }
 
+        /// <summary>
+        /// Called by INDIClient when its connection to indiserver is gone (server died or the main
+        /// connection dropped). No update will arrive for this device any more, so it reports itself
+        /// disconnected, fails its pending operations at once instead of letting each run into its timeout,
+        /// and drops its properties: their last values are stale, and a stale CONNECT=On would let the
+        /// equipment layer fake a successful reconnect.
+        /// </summary>
+        internal void OnServerConnectionLost()
+        {
+            Logger.Warning($"[{DeviceName}] INDI server connection lost, marking the device disconnected");
+            _connected = false;
+
+            List<TaskCompletionSource<bool>> pending;
+            lock (_asyncOperationsLock)
+            {
+                pending = _pendingAsyncOperations.Values.Select(v => v.Tcs).ToList();
+            }
+
+            foreach (var tcs in pending)
+            {
+                tcs.TrySetResult(false);
+            }
+
+            RemoveAllProperties();
+            OnConnectionLost();
+        }
+
+        /// <summary>
+        /// Lets a device type release waits that hang on state only a driver update would advance
+        /// (a cached moving flag, an armed exposure), after <see cref="OnServerConnectionLost"/>.
+        /// </summary>
+        protected virtual void OnConnectionLost()
+        {
+        }
+
         public Task<bool> Connect(CancellationToken ct)
         {
             return Task.Run(async () =>

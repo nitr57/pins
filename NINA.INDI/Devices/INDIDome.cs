@@ -40,6 +40,11 @@ namespace NINA.INDI.Devices {
             base.OnTextPropertyUpdated(p);
         }
 
+        // OpenShutter/CloseShutter wait on _shutterState, which only a DOME_SHUTTER update advances
+        protected override void OnConnectionLost() {
+            _shutterState = ShutterState.ShutterNone;
+        }
+
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
             base.OnNumberPropertyUpdated(p);
         }

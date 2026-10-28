@@ -36,6 +36,11 @@ namespace NINA.INDI.Devices {
             base.OnTextPropertyUpdated(p);
         }
 
+        // The move waits on _isMoving, which only an ABS_ROTATOR_ANGLE update that is no longer Busy clears
+        protected override void OnConnectionLost() {
+            _isMoving = false;
+        }
+
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
             base.OnNumberPropertyUpdated(p);
 

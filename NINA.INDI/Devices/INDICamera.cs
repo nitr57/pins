@@ -245,6 +245,14 @@ namespace NINA.INDI.Devices {
         public byte[] GetLastBlobData() => _lastBlobData;
         public string GetLastBlobFormat() => _lastBlobFormat ?? ".fits";
 
+        // As in AbortExposure: no image arrives any more, so wake a waiting exposure now. It finds no image
+        // data and reports a failed download instead of waiting for the camera timeout.
+        protected override void OnConnectionLost() {
+            var pending = _exposureReady;
+            _exposureReady = null;
+            pending?.TrySetResult(true);
+        }
+
         public void AbortExposure() {
             // Drop the in-flight completion first so a BLOB that still trickles in from
             // the aborted exposure is ignored instead of being mistaken for the next frame.

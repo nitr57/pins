@@ -29,6 +29,12 @@ namespace NINA.INDI.Devices {
             base.OnTextPropertyUpdated(p);
         }
 
+        // Open/Close wait while coverState is NeitherOpenNorClosed, which only a CAP_PARK update ends;
+        // Unknown ends the wait and lets them report the cover as not opened/closed
+        protected override void OnConnectionLost() {
+            coverState = CoverState.Unknown;
+        }
+
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
             base.OnNumberPropertyUpdated(p);
         }

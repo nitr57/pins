@@ -13,6 +13,7 @@
 #endregion "copyright"
 
 using NINA.Core.Utility;
+using NINA.Core.Utility.Notification;
 using NINA.INDI.Devices;
 using NINA.INDI.Enums;
 using NINA.INDI.Protocol;
@@ -70,8 +71,19 @@ namespace NINA.INDI {
         private readonly object _driverLock = new();
         private readonly SemaphoreSlim _getDriversSemaphore = new(1, 1);
 
-        // Signals when the server is ready for driver operations
-        private readonly TaskCompletionSource<bool> _serverReadyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Signals when the server is ready for driver operations. Replaced by a fresh one while the
+        // connection to a lost server is being recovered, so waiters see the new server's readiness.
+        private TaskCompletionSource<bool> _serverReadyTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        // Set by Dispose: the server and its connection then go away on purpose and are not recovered.
+        private volatile bool _shuttingDown;
+        // 1 while a lost connection is being recovered, so a dead socket and the server's exit, which
+        // usually arrive together, start one recovery.
+        private int _recovering;
+        // Restarts of indiserver after it died, to give up on one that keeps dying instead of looping.
+        private readonly Queue<DateTime> _serverRestarts = new();
+        private const int MaxServerRestarts = 3;
+        private static readonly TimeSpan ServerRestartWindow = TimeSpan.FromMinutes(10);
 
         private readonly Dictionary<string, INDIDeviceInfo> _discoveredDevices = [];
         // Multiple devices can share the same INDI device name when the driver exposes
@@ -180,8 +192,12 @@ namespace NINA.INDI {
                 // field, or a stale loop from a previous session could read the new session's
                 // stream (two concurrent readers) after a quick Disconnect→Connect cycle.
                 var stream = _stream;
-                var token = _cts.Token;
-                _receiveTask = Task.Run(() => ReceiveLoop(stream, token, ProcessMainElement, "main connection"));
+                var session = _cts;
+                var token = session.Token;
+                _receiveTask = Task.Run(async () => {
+                    await ReceiveLoop(stream, token, ProcessMainElement, "main connection");
+                    OnMainConnectionEnded(session);
+                });
 
                 // Request all properties from all devices
                 GetProperties();
@@ -881,6 +897,8 @@ namespace NINA.INDI {
 
         public void Dispose() {
             Logger.Info("INDIClient.Dispose() starting cleanup");
+            // The server and its connection now go away on purpose
+            _shuttingDown = true;
             Disconnect();
             if (_managesServer) {
                 CleanupServer();
@@ -1625,40 +1643,204 @@ namespace NINA.INDI {
                     };
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
+
+                    // Notices a dead server even before its connection reports the end
+                    process.EnableRaisingEvents = true;
+                    process.Exited += (_, _) => OnServerProcessExited(process);
                 } else {
                     Logger.Error("Failed to start INDI server");
-                    _serverReadyTcs.SetResult(false);
+                    _serverReadyTcs.TrySetResult(false);
                     return;
                 }
 
-                // Wait for server to be ready with retries. Connect THIS instance — going
-                // through INDIClient.Instance would lazily construct the 7624 singleton
-                // (spawning a second server start) if this instance was created directly.
-                bool connected = false;
-                for (int attempt = 1; attempt <= 10; attempt++) {
-                    await Task.Delay(100 * attempt); // Exponential backoff: 100ms, 200ms, 300ms...
-
-                    if (await Connect()) {
-                        connected = true;
-                        Logger.Info($"Connected to INDI server on attempt {attempt}");
-                        break;
-                    }
-
-                    Logger.Debug($"Connection attempt {attempt} failed, retrying...");
-                }
-
-                if (!connected) {
+                if (!await ConnectWithRetriesAsync()) {
                     Logger.Error("Could not connect to INDI server after 10 attempts");
-                    _serverReadyTcs.SetResult(false);
+                    _serverReadyTcs.TrySetResult(false);
                     return;
                 }
 
                 // Server is ready!
-                _serverReadyTcs.SetResult(true);
+                _serverReadyTcs.TrySetResult(true);
             } catch (Exception ex) {
                 Logger.Error($"Error to start INDI server: {ex.Message}");
-                _serverReadyTcs.SetResult(false);
+                _serverReadyTcs.TrySetResult(false);
             }
+        }
+
+        // Wait for server to be ready with retries. Connect THIS instance — going through
+        // INDIClient.Instance would lazily construct the 7624 singleton (spawning a second
+        // server start) if this instance was created directly.
+        private async Task<bool> ConnectWithRetriesAsync() {
+            for (int attempt = 1; attempt <= 10; attempt++) {
+                await Task.Delay(100 * attempt); // Exponential backoff: 100ms, 200ms, 300ms...
+
+                if (_shuttingDown) {
+                    return false;
+                }
+
+                if (await Connect()) {
+                    Logger.Info($"Connected to INDI server on attempt {attempt}");
+                    return true;
+                }
+
+                Logger.Debug($"Connection attempt {attempt} failed, retrying...");
+            }
+
+            return false;
+        }
+
+        private void OnServerProcessExited(Process process) {
+            if (!ReferenceEquals(process, _process)) {
+                // A server this client already replaced (or killed on purpose while recovering)
+                return;
+            }
+
+            string exitCode;
+            try {
+                exitCode = process.ExitCode.ToString(CultureInfo.InvariantCulture);
+            } catch (InvalidOperationException) {
+                exitCode = "unknown";
+            }
+
+            HandleServerConnectionLost($"indiserver exited (exit code {exitCode})");
+        }
+
+        // The main receive loop of a session ended. Disconnect cancels the session first, so an
+        // uncancelled end means the server closed the connection or the socket failed.
+        private void OnMainConnectionEnded(CancellationTokenSource session) {
+            if (session.IsCancellationRequested || !ReferenceEquals(session, _cts)) {
+                return;
+            }
+
+            HandleServerConnectionLost("the connection to indiserver ended");
+        }
+
+        /// <summary>
+        /// The server died or the main connection to it is gone: no update arrives for any device any
+        /// more and commands would vanish. Tears the dead session down, tells every registered device that
+        /// it is disconnected (the equipment layer then reports the lost connection and disconnects) and
+        /// starts reconnecting to, or restarting, indiserver. Equipment is not reconnected: after the
+        /// recovery it can be connected again as usual.
+        /// </summary>
+        private void HandleServerConnectionLost(string reason) {
+            if (_shuttingDown || Interlocked.Exchange(ref _recovering, 1) == 1) {
+                return;
+            }
+
+            Logger.Error($"INDI: {reason}. Marking all INDI devices disconnected and recovering the INDI server");
+            Notification.ShowError("Lost the connection to the INDI server. Pins is reconnecting to it; connect the INDI equipment again afterwards.");
+
+            // GetDevices and WaitForServerReadyAsync wait for the recovered server from now on
+            _serverReadyTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            // This can run on the receive loop that just ended, so it is not waited for
+            _cts?.Cancel();
+            lock (_operationLock) {
+                _stream?.Close();
+                _tcpClient?.Close();
+                _stream = null;
+                _tcpClient = null;
+            }
+            _receiveTask = null;
+            CloseBlobConnections();
+
+            lock (_driverLock) {
+                // A LoadDriver waiting for DRIVER_INFO gets no answer from a dead connection
+                _driverTcs?.TrySetResult(false);
+            }
+
+            List<INDIDevice> devices;
+            lock (_lock) {
+                _allProperties.Clear();
+                devices = _registeredDevices.Values.SelectMany(list => list).Distinct().ToList();
+            }
+
+            foreach (var device in devices) {
+                try {
+                    device.OnServerConnectionLost();
+                } catch (Exception ex) {
+                    Logger.Error($"INDI: failed to mark '{device.DeviceName}' disconnected: {ex.Message}");
+                }
+            }
+
+            _ = Task.Run(RecoverServerAsync);
+        }
+
+        private async Task RecoverServerAsync() {
+            var recovered = false;
+            try {
+                // A running server keeps its drivers loaded, so only the connection is restored. Starting
+                // them again would run a second instance of each driver.
+                var serverRunning = !_managesServer || IsServerProcessRunning();
+                if (serverRunning) {
+                    recovered = await ConnectWithRetriesAsync();
+                    if (recovered) {
+                        Logger.Info("INDI: reconnected to the running INDI server");
+                    }
+                }
+
+                if (!recovered && _managesServer && !_shuttingDown) {
+                    if (!RecordServerRestart()) {
+                        Logger.Error($"INDI: indiserver was restarted {MaxServerRestarts} times within {ServerRestartWindow.TotalMinutes:F0} minutes; not restarting it again. Restart pins to use INDI devices.");
+                        Notification.ShowError("The INDI server keeps stopping. Pins stopped restarting it; restart pins to use INDI equipment.");
+                        return;
+                    }
+
+                    Logger.Warning("INDI: restarting indiserver");
+
+                    // The new server starts without drivers: the next connect or rescan loads them again
+                    lock (_driverLock) {
+                        _loadedDrivers.Clear();
+                        _discoveredDevices.Clear();
+                    }
+
+                    var oldProcess = _process;
+                    _process = null;
+                    try {
+                        oldProcess?.Dispose();
+                    } catch (Exception) {
+                        // Only releasing the handle of a process that is gone
+                    }
+
+                    await StartServerInFifoMode();
+                    recovered = _serverReadyTcs.Task.IsCompletedSuccessfully && _serverReadyTcs.Task.Result;
+                }
+
+                if (recovered) {
+                    Notification.ShowInformation("The INDI server is back. Connect the INDI equipment again.");
+                } else if (!_shuttingDown) {
+                    Logger.Error("INDI: could not recover the INDI server");
+                    Notification.ShowError("Pins could not reconnect to the INDI server. Restart pins to use INDI equipment.");
+                }
+            } catch (Exception ex) {
+                Logger.Error($"INDI: recovering the INDI server failed: {ex.Message}");
+            } finally {
+                _serverReadyTcs.TrySetResult(recovered);
+                Interlocked.Exchange(ref _recovering, 0);
+            }
+        }
+
+        private bool IsServerProcessRunning() {
+            try {
+                return _process != null && !_process.HasExited;
+            } catch (InvalidOperationException) {
+                return false;
+            }
+        }
+
+        // False once the server has been restarted MaxServerRestarts times within ServerRestartWindow
+        private bool RecordServerRestart() {
+            var now = DateTime.UtcNow;
+            while (_serverRestarts.Count > 0 && now - _serverRestarts.Peek() > ServerRestartWindow) {
+                _serverRestarts.Dequeue();
+            }
+
+            if (_serverRestarts.Count >= MaxServerRestarts) {
+                return false;
+            }
+
+            _serverRestarts.Enqueue(now);
+            return true;
         }
 
         private void CreateFifo(string fifoPath) {

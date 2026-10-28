@@ -36,6 +36,12 @@ namespace NINA.INDI.Devices {
             }
         }
 
+        // MoveToPositionAsync (and the IndiFilterWheel position setter) wait on _isMoving, which only a
+        // FILTER_SLOT update that is no longer Busy clears
+        protected override void OnConnectionLost() {
+            _isMoving = false;
+        }
+
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
             base.OnNumberPropertyUpdated(p);
 

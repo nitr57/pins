@@ -15,6 +15,7 @@
 using NINA.INDI;
 using NINA.INDI.Interfaces;
 using NINA.Core.Utility;
+using NINA.Core.Utility.Notification;
 using NINA.Equipment.Interfaces;
 using System;
 using System.Collections.Generic;
@@ -101,6 +102,8 @@ namespace NINA.Equipment.Equipment {
             var indiConnectionState = device.GetSwitchPropertyValue("CONNECTION", "CONNECT");
             if (indiConnectionState != true) {
                 Logger.Warning($"{Name} detected as externally disconnected (INDI CONNECTION/CONNECT \u2260 true) \u2014 treating as real disconnect");
+                // As AscomDevice does when a device drops: say which device was lost
+                Notification.ShowWarning(ConnectionLostMessage);
                 // Clear the expectation flag inside the lock we already hold.
                 connectedExpectation = false;
                 InvalidatePropertyCache();
