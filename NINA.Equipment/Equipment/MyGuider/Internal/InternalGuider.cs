@@ -911,7 +911,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         }
 
         ApplySettingsIfConnected();
-        if (def?.Name is "UseDarkLibrary" or "Binning")
+        if (def?.Name is "UseDarkLibrary" or "Binning" or "Gain" or "Offset")
         {
             LoadDarks();
         }
@@ -1094,7 +1094,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             }
 
             var path = DarkLibraryFiles.NativePath(cam.Name, cam.SensorWidth, cam.SensorHeight, s.Binning);
-            DarkLibraryFiles.Save(path, masters, s.Gain);
+            DarkLibraryFiles.Save(path, masters, s.Gain, s.Offset);
             LoadDarks();
             Raise(AdvancedGuiderEventTypes.Darks, DateTimeOffset.UtcNow, new { status = "done", total, message = darkLibrary });
             Notification.ShowSuccess($"Internal guider: dark library built ({masters.Count} exposures)");
@@ -1356,7 +1356,9 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
         try
         {
-            var loaded = DarkLibraryFiles.Load(cam.Name, cam.SensorWidth, cam.SensorHeight, Math.Max(1, options.GetInt("Binning")));
+            // the options, not g.Settings: a running loop applies a changed gain only with its next frame
+            var loaded = DarkLibraryFiles.Load(cam.Name, cam.SensorWidth, cam.SensorHeight, Math.Max(1, options.GetInt("Binning")),
+                options.GetInt("Gain"), options.GetInt("Offset"), out var mismatch);
             if (loaded is { } named)
             {
                 named.Library.Name = Path.GetFileName(named.Source);
@@ -1364,7 +1366,11 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
             g.Preprocessor.Darks = loaded?.Library;
             darkLibrary = loaded is { } l ? $"{Path.GetFileName(l.Source)} ({l.Library.Count} darks)" : string.Empty;
-            if (loaded is null)
+            if (mismatch is not null)
+            {
+                Notification.ShowWarning($"Internal guider: {mismatch}");
+            }
+            else if (loaded is null)
             {
                 Logger.Info("InternalGuider: no dark library found for the guide camera");
             }
