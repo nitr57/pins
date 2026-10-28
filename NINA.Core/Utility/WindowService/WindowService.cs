@@ -441,6 +441,10 @@ namespace NINA.Core.Utility.WindowService {
             ("CancelCommand",    "Cancel",    false, true),
             ("NoCommand",        "No",        false, false),
             ("AbortCommand",     "Abort",     false, true),
+            // TelescopeLatLongSyncVM: the mount's and the profile's location differ on connect
+            ("SyncTelescopeCommand", "Sync to mount",   false, false),
+            ("SyncNINACommand",      "Sync from mount", false, false),
+            ("SyncNoneCommand",      "No sync",         false, false),
         };
 
         private static List<(string Name, ICommand Command, bool IsDefault, bool IsCancel)> ExtractCommandButtons(object content) {
