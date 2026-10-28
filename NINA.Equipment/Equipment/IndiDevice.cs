@@ -99,9 +99,11 @@ namespace NINA.Equipment.Equipment {
             // physically disconnected (e.g. the other device role using the same shared
             // INDI driver sent a DISCONNECT), we must NOT fake a successful reconnect \u2014
             // instead we mark the device as properly disconnected so the user is aware.
+            // After a lost connection to indiserver a server that kept running reports CONNECT=On again,
+            // but this session (image connection, PostConnect setup) is gone until the device is connected again.
             var indiConnectionState = device.GetSwitchPropertyValue("CONNECTION", "CONNECT");
-            if (indiConnectionState != true) {
-                Logger.Warning($"{Name} detected as externally disconnected (INDI CONNECTION/CONNECT \u2260 true) \u2014 treating as real disconnect");
+            if (indiConnectionState != true || device.ServerConnectionLost) {
+                Logger.Warning($"{Name} detected as externally disconnected (INDI CONNECTION/CONNECT \u2260 true or the INDI server connection was lost) \u2014 treating as real disconnect");
                 // As AscomDevice does when a device drops: say which device was lost
                 Notification.ShowWarning(ConnectionLostMessage);
                 // Clear the expectation flag inside the lock we already hold.

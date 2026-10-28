@@ -13,6 +13,7 @@
 #endregion "copyright"
 
 using NINA.Core.Enum;
+using NINA.Core.Locale;
 using NINA.Core.Model.Equipment;
 using NINA.Core.Utility;
 using NINA.Equipment.Interfaces;
@@ -56,7 +57,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
             this.logFramesAtDebug = logFramesAtDebug;
         }
 
-        protected override string ConnectionLostMessage => "CameraConnectionLost";
+        protected override string ConnectionLostMessage => Loc.Instance["LblCameraConnectionLost"];
 
         protected override IINDICamera GetInstance() {
             return device ??= new INDICamera(_device) { LogFramesAtDebug = logFramesAtDebug };

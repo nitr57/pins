@@ -36,6 +36,13 @@ This project is pins-specific; it does not exist in upstream NINA. It is consume
 - Readiness is exposed through `WaitForServerReadyAsync`; callers (e.g. device enumeration) wait on it with a bounded timeout so a missing/broken server never hangs the app.
 - `Dispose` / `CleanupServer` kill the server process and remove the FIFO.
 
+**Losing the server.** An uncancelled end of the main receive loop or the indiserver process's `Exited` event calls `HandleServerConnectionLost`, once for both (`_recovering`; a loss during a start or recovery is picked up by `FinishRecovery` afterwards):
+
+- The dead session is torn down (cancelled first, so it applies no buffered element), the image connections are closed and the property store is cleared.
+- Every registered `INDIDevice` gets `OnServerConnectionLost`: it is disconnected, fails its pending async operations, drops its properties and sets `ServerConnectionLost`, and `OnConnectionLost` releases type-specific waits. Waits ended that way throw (`ThrowIfServerConnectionLost`) instead of returning as completed. `ServerConnectionLost` stays set until the device is connected again, so the equipment layer does not take the `CONNECT=On` that a still-running server reports after the reconnect as connected: that session's image connection and `PostConnect` setup are gone.
+- Recovery: a server that still runs keeps its drivers, so only the connection is restored. A dead one is restarted and the drivers that ran under it are started again before readiness is signalled. `_serverReadyTcs` is replaced for the recovery. At most `MaxRecoveries` (3) within `RecoveryWindow` (10 minutes), then the client gives up and asks for a restart of pins.
+- Equipment is not reconnected automatically. `Dispose` and `Disconnect` are never treated as a loss.
+
 This is inherently a Linux deployment story (`mkfifo`, `pkill`, an `indiserver` binary on `PATH`). It aligns with pins being a headless Linux fork — see "Runtime Model (pins fork)" in [`../AGENTS.md`](../AGENTS.md).
 
 ## Wire Protocol And Property Model

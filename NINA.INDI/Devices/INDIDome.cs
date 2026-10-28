@@ -162,6 +162,8 @@ namespace NINA.INDI.Devices {
                 }
                 await Task.Delay(500, ct);
             }
+
+            ThrowIfServerConnectionLost("Dome slew");
         }
 
         public async Task OpenShutter(CancellationToken ct) {
@@ -182,6 +184,8 @@ namespace NINA.INDI.Devices {
                 await Task.Delay(500, ct);
                 shutterProp = GetProperty("DOME_SHUTTER");
             }
+
+            ThrowIfServerConnectionLost("Opening the dome shutter");
         }
 
         public async Task CloseShutter(CancellationToken ct) {
@@ -199,6 +203,8 @@ namespace NINA.INDI.Devices {
                 await Task.Delay(500, ct);
                 shutterProp = GetProperty("DOME_SHUTTER");
             }
+
+            ThrowIfServerConnectionLost("Closing the dome shutter");
         }
 
         public async Task Park(CancellationToken ct) {
@@ -219,6 +225,8 @@ namespace NINA.INDI.Devices {
                 await Task.Delay(500, ct);
                 parkProp = GetProperty("DOME_PARK");
             }
+
+            ThrowIfServerConnectionLost("Dome park");
         }
 
         public void FindHome() {

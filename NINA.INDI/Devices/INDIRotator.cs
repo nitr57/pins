@@ -146,6 +146,8 @@ namespace NINA.INDI.Devices {
                 await Task.Delay(100, ct);
             }
 
+            ThrowIfServerConnectionLost("Rotator move");
+
             Logger.Debug($"Rotator reached position {Position}");
         }
 

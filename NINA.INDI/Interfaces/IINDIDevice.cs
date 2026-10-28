@@ -27,6 +27,13 @@ namespace NINA.INDI.Interfaces {
         string DisplayName { get; }
         string Category { get; }
         bool Connected { get; set; }
+
+        /// <summary>
+        /// True from a lost connection to indiserver until the device is connected again: its CONNECTION
+        /// state then no longer says whether this session is connected.
+        /// </summary>
+        bool ServerConnectionLost { get; }
+
         string Description { get; }
         string DriverInfo { get; }
         string DriverVersion { get; }

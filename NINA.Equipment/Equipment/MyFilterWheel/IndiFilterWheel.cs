@@ -67,6 +67,12 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
 
                 Thread.Sleep(100);
             }
+
+            // The wait also ends when the INDI server connection is lost. Without properties the position
+            // reads as slot 0, which would pass FilterWheelVM's check for a change to the first filter.
+            if (device.ServerConnectionLost) {
+                throw new InvalidOperationException("Filter change failed: the connection to the INDI server was lost");
+            }
         }
 
         private IProfileService profileService;

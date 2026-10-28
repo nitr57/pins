@@ -670,7 +670,7 @@ namespace NINA.INDI.Devices
         internal void OnServerConnectionLost()
         {
             Logger.Warning($"[{DeviceName}] INDI server connection lost, marking the device disconnected");
-            _connected = false;
+            _serverConnectionLost = true;
 
             List<TaskCompletionSource<bool>> pending;
             lock (_asyncOperationsLock)
@@ -683,8 +683,29 @@ namespace NINA.INDI.Devices
                 tcs.TrySetResult(false);
             }
 
+            // Properties first: whoever sees Connected turn false must already find no stale CONNECTION
             RemoveAllProperties();
             OnConnectionLost();
+            _connected = false;
+        }
+
+        // Set when the server connection was lost and cleared by the next Connect. A server that kept
+        // running sends CONNECT=On again after the reconnect, but this device's session (its image
+        // connection, PostConnect setup) is gone, so it only counts as connected once connected again.
+        private volatile bool _serverConnectionLost;
+
+        public bool ServerConnectionLost => _serverConnectionLost;
+
+        /// <summary>
+        /// Called after a wait that <see cref="OnConnectionLost"/> may have ended: a lost server connection
+        /// makes the operation fail instead of returning as if it had completed.
+        /// </summary>
+        protected void ThrowIfServerConnectionLost(string operation)
+        {
+            if (_serverConnectionLost)
+            {
+                throw new InvalidOperationException($"{operation} failed: the connection to the INDI server was lost");
+            }
         }
 
         /// <summary>
@@ -704,6 +725,9 @@ namespace NINA.INDI.Devices
                     Logger.Warning($"Device '{DeviceName}' is already connected");
                     return true;
                 }
+
+                // A new session on the current server connection
+                _serverConnectionLost = false;
 
                 Logger.Info($"Connecting to INDI device: {DeviceName}");
 

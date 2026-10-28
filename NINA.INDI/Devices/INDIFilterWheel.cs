@@ -141,6 +141,8 @@ namespace NINA.INDI.Devices {
                 await Task.Delay(100, ct);
             }
 
+            ThrowIfServerConnectionLost("Filter change");
+
             Logger.Debug($"Filter wheel reached position {Position}");
         }
 

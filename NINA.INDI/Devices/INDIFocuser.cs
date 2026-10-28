@@ -225,6 +225,8 @@ namespace NINA.INDI.Devices {
                 await Task.Delay(100, ct);
             }
 
+            ThrowIfServerConnectionLost("Focuser move");
+
             Logger.Debug($"Focuser reached position {Position}");
         }
 

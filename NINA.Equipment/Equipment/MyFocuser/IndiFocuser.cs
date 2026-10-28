@@ -14,6 +14,7 @@
 
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using NINA.Core.Locale;
 using NINA.Core.Utility;
 using NINA.Equipment.Interfaces;
 using NINA.INDI;
@@ -209,7 +210,7 @@ namespace NINA.Equipment.Equipment.MyFocuser {
             }
         }
 
-        protected override string ConnectionLostMessage => "FocuserConnectionLost";
+        protected override string ConnectionLostMessage => Loc.Instance["LblFocuserConnectionLost"];
 
         private void Initialize() {
             var maxStep = device.MaxStep;

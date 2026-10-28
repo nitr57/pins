@@ -25,9 +25,10 @@ namespace NINA.Test.INDI {
 
     /// <summary>
     /// When the connection to indiserver ends without a Disconnect, every registered device reports itself
-    /// disconnected right away, waits that only a driver update would end return at once, and the client
-    /// reconnects to the server. A Disconnect ends the connection on purpose and is not recovered. Runs
-    /// against a fake indiserver; restarting a real indiserver is not covered here.
+    /// disconnected right away, operations waiting for a driver update fail at once, and the client
+    /// reconnects to the server; a device only counts as connected again once it is connected again. After
+    /// three recoveries within ten minutes the client gives up. A Disconnect ends the connection on purpose
+    /// and is not recovered. Runs against a fake indiserver; restarting a real indiserver is not covered here.
     /// </summary>
     [TestFixture]
     [NonParallelizable]
@@ -71,7 +72,7 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
-        public async Task LostConnection_EndsAMoveThatWaitsForADriverUpdate() {
+        public async Task LostConnection_FailsAMoveThatWaitsForADriverUpdate() {
             var focuser = await ConnectFocuserAsync();
             var move = focuser.MoveAsync(2000);
             await main.WaitUntilAsync(
@@ -83,8 +84,9 @@ namespace NINA.Test.INDI {
             var watch = Stopwatch.StartNew();
             main.Close();
 
-            Assert.That(await Task.WhenAny(move, Task.Delay(Timeout)), Is.SameAs(move), "the move returns instead of waiting up to 5 minutes for a driver update");
+            Assert.That(await Task.WhenAny(move, Task.Delay(Timeout)), Is.SameAs(move), "the move ends instead of waiting up to 5 minutes for a driver update");
             Assert.That(watch.Elapsed, Is.LessThan(TimeSpan.FromSeconds(5)));
+            Assert.That(async () => await move, Throws.InstanceOf<InvalidOperationException>(), "the move failed, it did not reach its target");
             Assert.That(focuser.IsMoving, Is.False);
         }
 
@@ -97,6 +99,43 @@ namespace NINA.Test.INDI {
 
             Assert.That(await client.WaitForServerReadyAsync(Timeout), Is.True);
             await WaitUntilAsync(() => client.IsConnected, "the client is connected again");
+        }
+
+        [Test]
+        public async Task ReconnectToARunningServer_KeepsTheDeviceDisconnected_UntilItIsConnectedAgain() {
+            var focuser = await ConnectFocuserAsync();
+
+            main.Close();
+            var second = await server.NextConnectionAsync(Timeout);
+            await second.WaitForAsync("<getProperties version=\"1.7\" />", Timeout);
+            // The driver kept running, so the server reports the device connected again
+            second.Send(FocuserDefinitions());
+            await WaitUntilAsync(() => focuser.GetSwitchProperty("CONNECTION") != null, "CONNECTION is defined again");
+
+            Assert.That(focuser.Connected, Is.False);
+            Assert.That(focuser.ServerConnectionLost, Is.True, "the equipment layer must not count CONNECT=On of the old session as connected");
+
+            Assert.That(await focuser.Connect(CancellationToken.None), Is.True);
+            Assert.That(focuser.Connected, Is.True);
+            Assert.That(focuser.ServerConnectionLost, Is.False);
+        }
+
+        [Test]
+        public async Task RepeatedLosses_GiveUpAfterThreeRecoveries() {
+            var connection = main;
+            for (int recovery = 1; recovery <= 3; recovery++) {
+                connection.Close();
+                connection = await server.NextConnectionAsync(Timeout);
+                Assert.That(await client.WaitForServerReadyAsync(Timeout), Is.True, $"recovery {recovery} succeeded");
+                await WaitUntilAsync(() => client.IsConnected, $"the client is connected after recovery {recovery}");
+            }
+
+            connection.Close();
+
+            Assert.That(async () => await server.NextConnectionAsync(TimeSpan.FromSeconds(3)), Throws.InstanceOf<OperationCanceledException>(),
+                "no fourth recovery within ten minutes");
+            Assert.That(await client.WaitForServerReadyAsync(Timeout), Is.False);
+            Assert.That(client.IsConnected, Is.False);
         }
 
         [Test]
@@ -113,11 +152,7 @@ namespace NINA.Test.INDI {
             // The new device asks for its properties and waits for CONNECTION. The driver is already
             // connected, so Connect sends no CONNECT and needs no answer.
             await main.WaitForAsync($"<getProperties version=\"1.7\" device=\"{Focuser}\" />", Timeout);
-            main.Send(
-                $"<defSwitchVector device=\"{Focuser}\" name=\"CONNECTION\" label=\"Connection\" group=\"Main\" state=\"Ok\" perm=\"rw\" rule=\"OneOfMany\" timeout=\"60\">"
-                + "<defSwitch name=\"CONNECT\" label=\"Connect\">On</defSwitch><defSwitch name=\"DISCONNECT\" label=\"Disconnect\">Off</defSwitch></defSwitchVector>\n"
-                + $"<defNumberVector device=\"{Focuser}\" name=\"ABS_FOCUS_POSITION\" label=\"Absolute Position\" group=\"Main Control\" state=\"Ok\" perm=\"rw\" timeout=\"60\">"
-                + "<defNumber name=\"FOCUS_ABSOLUTE_POSITION\" label=\"Steps\" format=\"%.f\" min=\"0\" max=\"100000\" step=\"1\">1000</defNumber></defNumberVector>\n");
+            main.Send(FocuserDefinitions());
             Assert.That(await Task.WhenAny(create, Task.Delay(Timeout)), Is.SameAs(create), "the focuser registers");
             var focuser = await create;
 
@@ -125,6 +160,13 @@ namespace NINA.Test.INDI {
             Assert.That(await focuser.Connect(CancellationToken.None), Is.True);
             Assert.That(focuser.Connected, Is.True);
             return focuser;
+        }
+
+        private static string FocuserDefinitions() {
+            return $"<defSwitchVector device=\"{Focuser}\" name=\"CONNECTION\" label=\"Connection\" group=\"Main\" state=\"Ok\" perm=\"rw\" rule=\"OneOfMany\" timeout=\"60\">"
+                + "<defSwitch name=\"CONNECT\" label=\"Connect\">On</defSwitch><defSwitch name=\"DISCONNECT\" label=\"Disconnect\">Off</defSwitch></defSwitchVector>\n"
+                + $"<defNumberVector device=\"{Focuser}\" name=\"ABS_FOCUS_POSITION\" label=\"Absolute Position\" group=\"Main Control\" state=\"Ok\" perm=\"rw\" timeout=\"60\">"
+                + "<defNumber name=\"FOCUS_ABSOLUTE_POSITION\" label=\"Steps\" format=\"%.f\" min=\"0\" max=\"100000\" step=\"1\">1000</defNumber></defNumberVector>\n";
         }
 
         private static async Task WaitUntilAsync(Func<bool> condition, string because) {

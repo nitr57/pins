@@ -1018,6 +1018,7 @@ namespace NINA.INDI.Devices {
             }
 
             ct.ThrowIfCancellationRequested();
+            ThrowIfServerConnectionLost("Park");
 
             // Confirmation: the driver has to report PARK=On in an update after the command.
             // SetSwitchValue already set PARK=On in the local copy when sending, so that value
@@ -1083,6 +1084,8 @@ namespace NINA.INDI.Devices {
                 await Task.Delay(200, ct);
                 parkProp = GetProperty("TELESCOPE_PARK");
             }
+
+            ThrowIfServerConnectionLost("Unpark");
         }
 
         public void SetPark() {
@@ -1263,6 +1266,8 @@ namespace NINA.INDI.Devices {
                     ++polls;
                     await Task.Delay(500, ct);
                 }
+
+                ThrowIfServerConnectionLost("Slew");
             } catch (ArgumentException ex) {
                 throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
@@ -1418,6 +1423,8 @@ namespace NINA.INDI.Devices {
                     await Task.Delay(500, ct);
                     coordProp = GetProperty("HORIZONTAL_COORD");
                 }
+
+                ThrowIfServerConnectionLost("Slew");
             } catch (ArgumentException ex) {
                 throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
@@ -1570,6 +1577,8 @@ namespace NINA.INDI.Devices {
 
                 // A cancelled wait is not a completed homing run either.
                 if (ct.IsCancellationRequested) return;
+
+                ThrowIfServerConnectionLost("Homing");
 
                 Logger.Debug($"Reached home");
                 atHome = true;
