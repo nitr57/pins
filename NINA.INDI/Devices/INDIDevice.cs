@@ -106,6 +106,9 @@ namespace NINA.INDI.Devices
         private bool _connectionAttemptFailed;  // Track if the last connection attempt failed
         private volatile Task _disconnectTask;  // In-flight graceful disconnect (see Disconnect/Dispose)
 
+        // The graceful disconnect still in flight, for a shutdown that has to let it finish
+        internal Task DisconnectTask => _disconnectTask ?? Task.CompletedTask;
+
         public bool Connected
         {
             get => _connected;

@@ -185,22 +185,30 @@ public sealed class JobManager : IJobManager, IDisposable {
         }
     }
 
-    public int Shutdown(TimeSpan wait) {
+    public int Shutdown(TimeSpan wait, IReadOnlyCollection<string>? letFinish = null, TimeSpan letFinishWait = default) {
+        List<JobEntry> running;
+
         lock (gate) {
             shutDown = true;
+            running = jobs.Values.Where(entry => entry.State == JobState.Running).ToList();
         }
 
-        CancelAll();
+        var finishing = running.Where(entry => letFinish?.Contains(entry.Kind) == true).ToList();
 
-        List<Task> running;
-
-        lock (gate) {
-            running = jobs.Values.Where(entry => entry.State == JobState.Running).Select(entry => entry.Completion).ToList();
+        // Outside the lock: cancellation callbacks run synchronously and may call back into the manager.
+        foreach (var entry in running.Except(finishing)) {
+            RequestCancel(entry);
         }
 
-        if (running.Count > 0 && wait > TimeSpan.Zero) {
+        foreach (var entry in finishing) {
+            logger.LogInformation("Letting MCP job {Id} ({Description}) finish before shutdown", entry.Id, entry.Description);
+        }
+
+        var maxWait = finishing.Count > 0 && letFinishWait > wait ? letFinishWait : wait;
+
+        if (running.Count > 0 && maxWait > TimeSpan.Zero) {
             try {
-                Task.WhenAll(running).Wait(wait);
+                Task.WhenAll(running.Select(entry => entry.Completion)).Wait(maxWait);
             } catch (AggregateException) {
                 // Completions never fault; nothing to report.
             }

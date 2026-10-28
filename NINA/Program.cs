@@ -17,6 +17,7 @@ using NINA.WPF.Base.Interfaces.ViewModel;
 using NINA.Equipment.Interfaces.ViewModel;
 using NINA.Interfaces;
 using NINA.Profile.Interfaces;
+using NINA.ViewModel;
 using NINA.ViewModel.Sequencer;
 using NINA.ViewModel.Interfaces;
 using NINA.Plugin.Interfaces;
@@ -185,9 +186,10 @@ System.Windows.Application.ApplicationLifetime = lifetime;
 lifetime.ApplicationStopping.Register(() => {
     Logger.Info("Application shutting down...");
 
-    // Halt MCP jobs (slews, focuser moves, exposures) through their tokens before the equipment goes away under them
+    // Halt MCP jobs (slews, focuser moves, exposures) through their tokens before the equipment goes away under them;
+    // a park (also as part of secure_observatory) is let finish instead, within systemd's 90 s stop timeout
     try {
-        var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5));
+        var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(60));
         if (stillRunning > 0) {
             Logger.Warning($"{stillRunning} MCP job(s) did not stop before shutdown");
         }
@@ -204,6 +206,20 @@ lifetime.ApplicationStopping.Register(() => {
         });
     } catch (Exception ex) {
         Logger.Error("Failed to disconnect the guide camera", ex);
+    }
+
+    // ApplicationVM.Closing disposes the INDI client before it disconnects the equipment, which would cut off the
+    // DISCONNECT that INDI devices send in the background, and the drivers then never close their hardware (cooler,
+    // ports). So disconnect the equipment here first and let those handshakes finish while the server still runs;
+    // Closing then finds it disconnected.
+    try {
+        if (app.Services.GetService<IApplicationDeviceConnectionVM>() is ApplicationDeviceConnectionVM deviceConnection) {
+            Nito.AsyncEx.AsyncContext.Run(deviceConnection.DisconnectEquipment);
+        }
+
+        INDIClient.Instance.WaitForDeviceDisconnects(TimeSpan.FromSeconds(10));
+    } catch (Exception ex) {
+        Logger.Error("Failed to disconnect the equipment", ex);
     }
 
     // Call ApplicationVM.Closing() to properly disconnect equipment and cleanup

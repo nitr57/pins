@@ -64,19 +64,24 @@ public static class McpServiceCollectionExtensions {
         return endpoints;
     }
 
+    // Job kinds of park_mount (MountMotionTool) and secure_observatory (SafetyTools). Cancelling them at shutdown would
+    // stop the mount short of its park position and skip closing the dome and cover.
+    private static readonly string[] FinishOnShutdown = ["park", "secure"];
+
     /// <summary>
-    /// Cancels every running MCP job, refuses new ones and waits up to <paramref name="wait"/> for them to stop. Call it
-    /// at the start of shutdown, before equipment is disconnected. Does nothing when the server is not registered.
+    /// Cancels the running MCP jobs, refuses new ones and waits up to <paramref name="wait"/> for them to stop. A running
+    /// park or secure_observatory job is not cancelled but given up to <paramref name="parkWait"/> to finish. Call it at
+    /// the start of shutdown, before equipment is disconnected. Does nothing when the server is not registered.
     /// </summary>
     /// <returns>The number of jobs still running after the wait.</returns>
-    public static int StopPinsMcpJobs(this IServiceProvider services, TimeSpan wait) {
+    public static int StopPinsMcpJobs(this IServiceProvider services, TimeSpan wait, TimeSpan parkWait) {
         var options = services.GetService<McpServerOptions>();
 
         if (options is null || !options.Enabled) {
             return 0;
         }
 
-        return services.GetRequiredService<IJobManager>().Shutdown(wait);
+        return services.GetRequiredService<IJobManager>().Shutdown(wait, FinishOnShutdown, parkWait);
     }
 
     private static McpHttpEndpoint Resolve(HttpContext context) {

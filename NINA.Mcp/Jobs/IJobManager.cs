@@ -76,9 +76,11 @@ public interface IJobManager {
 
     /// <summary>
     /// Refuses new jobs and reservations, cancels every running job and waits up to <paramref name="wait"/> for them to
-    /// end. Returns how many are still running.
+    /// end. Running jobs of a kind in <paramref name="letFinish"/> are not cancelled (cancelling a park stops the mount
+    /// short of its park position); while one runs the wait is up to <paramref name="letFinishWait"/>. Returns how many
+    /// are still running.
     /// </summary>
-    int Shutdown(TimeSpan wait);
+    int Shutdown(TimeSpan wait, IReadOnlyCollection<string>? letFinish = null, TimeSpan letFinishWait = default);
 }
 
 public enum JobState {

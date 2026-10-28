@@ -155,6 +155,30 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
+        public async Task WaitForDeviceDisconnects_LetsTheDisconnectHandshakeFinish() {
+            var focuser = await ConnectFocuserAsync();
+
+            // As at shutdown: the equipment disconnects, and the device sends its DISCONNECT in the background
+            focuser.Disconnect();
+            await main.WaitUntilAsync(
+                r => r.Contains("name=\"CONNECTION\"", StringComparison.Ordinal) && r.Contains("<oneSwitch name=\"DISCONNECT\">On</oneSwitch>", StringComparison.Ordinal),
+                "the DISCONNECT is sent",
+                Timeout);
+            _ = Task.Run(async () => {
+                await Task.Delay(500);
+                main.Send($"<setSwitchVector device=\"{Focuser}\" name=\"CONNECTION\" state=\"Ok\" timeout=\"60\" timestamp=\"2026-10-28T20:00:00\">"
+                    + "<oneSwitch name=\"CONNECT\">Off</oneSwitch><oneSwitch name=\"DISCONNECT\">On</oneSwitch></setSwitchVector>\n");
+            });
+
+            var watch = Stopwatch.StartNew();
+            client.WaitForDeviceDisconnects(Timeout);
+
+            Assert.That(focuser.DisconnectTask.IsCompleted, Is.True, "the handshake finished before the wait returned");
+            Assert.That(watch.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromMilliseconds(400)), "the wait lasted until the driver answered");
+            Assert.That(watch.Elapsed, Is.LessThan(Timeout));
+        }
+
+        [Test]
         public async Task Disconnect_IsNotRecovered() {
             client.Disconnect();
 

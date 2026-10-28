@@ -928,6 +928,36 @@ namespace NINA.INDI {
             return _serverPlatformVersion ?? new Version(0, 0, 0, 0);
         }
 
+        /// <summary>
+        /// Waits up to <paramref name="timeout"/> for the DISCONNECT handshakes that registered devices still have in
+        /// flight (INDIDevice.Disconnect sends it in the background), so a shutdown that disposes this client right
+        /// after disconnecting the equipment does not cut them off.
+        /// </summary>
+        public void WaitForDeviceDisconnects(TimeSpan timeout) {
+            List<Task> pending;
+            lock (_lock) {
+                pending = _registeredDevices.Values
+                    .SelectMany(list => list)
+                    .Select(device => device.DisconnectTask)
+                    .Where(task => !task.IsCompleted)
+                    .Distinct()
+                    .ToList();
+            }
+
+            if (pending.Count == 0) {
+                return;
+            }
+
+            Logger.Info($"INDI: waiting for {pending.Count} device disconnect(s) to finish");
+            try {
+                if (!Task.WhenAll(pending).Wait(timeout)) {
+                    Logger.Warning($"INDI: {pending.Count(task => !task.IsCompleted)} device disconnect(s) did not finish within {timeout.TotalSeconds:F0}s");
+                }
+            } catch (AggregateException) {
+                // The disconnect tasks log their own failures
+            }
+        }
+
         public void Dispose() {
             Logger.Info("INDIClient.Dispose() starting cleanup");
             // The server and its connection now go away on purpose
