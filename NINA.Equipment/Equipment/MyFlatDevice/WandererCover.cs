@@ -146,82 +146,124 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
         public int MaxBrightness => 255;
         public int MinBrightness => 0;
 
+        // Cover states of WC_COVER_STATUS.coverState
+        private const int StateClosed = 0;
+        private const int StateOpen = 1;
+        private const int StateMoving = 3;
+
+        // The cover takes about 10 s from one end to the other
+        private static readonly TimeSpan MoveTimeout = TimeSpan.FromSeconds(60);
+
+        // Right after the command the cover can still report the end it is leaving until its motor starts
+        private static readonly TimeSpan MotionStartGrace = TimeSpan.FromSeconds(5);
+
         public async Task<bool> Open(CancellationToken ct, int delay = 300) {
+            return await MoveCover(CoverOpenCover, StateOpen, "open", ct, delay);
+        }
+
+        public async Task<bool> Close(CancellationToken ct, int delay = 300) {
+            return await MoveCover(CoverCloseCover, StateClosed, "close", ct, delay);
+        }
+
+        private async Task<bool> MoveCover(Func<int, WC_ERROR_TYPE> command, int targetState, string action, CancellationToken ct, int delay) {
             if (!Connected) return await Task.Run(() => false, ct);
             return await Task.Run(async () => {
                 try {
-                    var err = CoverOpenCover(_uniqueId);
+                    var err = command(_uniqueId);
                     if (err != WC_ERROR_TYPE.WC_SUCCESS) {
                         if (err == WC_ERROR_TYPE.WC_ERROR_COMMUNICATION) {
-                            Logger.Error($"WandererCover communication error to open cover {err}");
+                            Logger.Error($"WandererCover communication error to {action} cover {err}");
                             DisconnectOnRemovedError();
                         } else {
-                            Logger.Error($"WandererCover error to open cover {err}");
+                            Logger.Error($"WandererCover error to {action} cover {err}");
                         }
                         return false;
                     }
-                    while (!ct.IsCancellationRequested) {
-                        await CoreUtil.Delay(delay, ct);
-                        _ = CoverGetStatus(_uniqueId, out var status);
-                        if (status.coverState == 3) {
-                            // Still moving
-                            continue;
-                        }
-                        if (status.coverState == 0) {
-                            // Return true on open state
+
+                    var (result, statusError, state) = await WaitForCoverStateAsync(
+                        () => (CoverGetStatus(_uniqueId, out var status), status.coverState),
+                        targetState,
+                        TimeSpan.FromMilliseconds(delay),
+                        MoveTimeout,
+                        MotionStartGrace,
+                        ct);
+
+                    switch (result) {
+                        case CoverMoveResult.Reached:
                             return true;
-                        }
-                        return false;
+
+                        case CoverMoveResult.StatusError when statusError == WC_ERROR_TYPE.WC_ERROR_COMMUNICATION:
+                            Logger.Error($"WandererCover communication error to get the cover state while it should {action} {statusError}");
+                            DisconnectOnRemovedError();
+                            return false;
+
+                        case CoverMoveResult.StatusError:
+                            Logger.Error($"WandererCover error to get the cover state while it should {action} {statusError}");
+                            return false;
+
+                        case CoverMoveResult.TimedOut:
+                            Logger.Error($"WandererCover did not {action} within {MoveTimeout.TotalSeconds:F0}s (cover state {state})");
+                            return false;
+
+                        default:
+                            Logger.Error($"WandererCover did not {action}: it stopped in cover state {state}");
+                            return false;
                     }
-                    return false;
                 } catch (OperationCanceledException) {
-                    Logger.Info("WandererCover Open cancelled by user");
+                    Logger.Info($"WandererCover {action} cancelled by user");
                     return false;
                 } catch (Exception ex) {
-                    Logger.Error($"WandererCover Open crashed: {ex}");
+                    Logger.Error($"WandererCover {action} crashed: {ex}");
                     DisconnectOnRemovedError();
                     return false;
                 }
             }, ct);
         }
 
-        public async Task<bool> Close(CancellationToken ct, int delay = 300) {
-            if (!Connected) return await Task.Run(() => false, ct);
-            return await Task.Run(async () => {
-                try {
-                    var err = CoverCloseCover(_uniqueId);
-                    if (err != WC_ERROR_TYPE.WC_SUCCESS) {
-                        if (err == WC_ERROR_TYPE.WC_ERROR_COMMUNICATION) {
-                            Logger.Error($"WandererCover communication error to close cover {err}");
-                            DisconnectOnRemovedError();
-                        } else {
-                            Logger.Error($"WandererCover error to close cover {err}");
-                        }
-                        return false;
-                    }
-                    while (!ct.IsCancellationRequested) {
-                        await CoreUtil.Delay(delay, ct);
-                        _ = CoverGetStatus(_uniqueId, out var status);
-                        if (status.coverState == 3) {
-                            // Still moving
-                            continue;
-                        }
-                        if (status.coverState == 1) {
-                            // Return true on closed state
-                            return true;
-                        }
-                        return false;
-                    }
-                    return false;
-                } catch (OperationCanceledException) {
-                    Logger.Info("WandererCover Close cancelled by user");
-                    return false;
-                } catch (Exception ex) {
-                    Logger.Error($"WandererCover Close crashed: {ex}");
-                    DisconnectOnRemovedError();
-                    return false;
+        internal enum CoverMoveResult {
+            Reached,
+            Stopped,
+            TimedOut,
+            StatusError
+        }
+
+        /// <summary>
+        /// Polls the cover until it reports <paramref name="targetState"/> (0 = closed, 1 = open). Until it was seen moving
+        /// (3) or <paramref name="startGrace"/> has passed it may still report the end it is leaving; after that any other
+        /// state means it stopped short. Gives up after <paramref name="timeout"/>.
+        /// </summary>
+        internal static async Task<(CoverMoveResult Result, WC_ERROR_TYPE Error, int State)> WaitForCoverStateAsync(
+            Func<(WC_ERROR_TYPE Error, int State)> readStatus,
+            int targetState,
+            TimeSpan pollInterval,
+            TimeSpan timeout,
+            TimeSpan startGrace,
+            CancellationToken ct) {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var seenMoving = false;
+
+            while (true) {
+                await Task.Delay(pollInterval, ct);
+
+                var (error, state) = readStatus();
+                if (error != WC_ERROR_TYPE.WC_SUCCESS) {
+                    return (CoverMoveResult.StatusError, error, state);
                 }
-            }, ct);
+
+                if (state == targetState) {
+                    return (CoverMoveResult.Reached, error, state);
+                }
+
+                if (state == StateMoving) {
+                    seenMoving = true;
+                } else if (seenMoving || watch.Elapsed > startGrace) {
+                    return (CoverMoveResult.Stopped, error, state);
+                }
+
+                if (watch.Elapsed > timeout) {
+                    return (CoverMoveResult.TimedOut, error, state);
+                }
+            }
         }
 
         public bool LightOn {
