@@ -655,32 +655,6 @@ public class JobManagerTests {
         stuck.SetResult(JobOutcome.Ok());
     }
 
-    [Test]
-    public async Task Shutdown_LetsJobsOfTheGivenKindsFinish_AndWaitsLongerForThem() {
-        var park = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var parkToken = CancellationToken.None;
-        var parkJob = jobs.Start("park", "Park mount", "mount", token => {
-            parkToken = token;
-            return park.Task;
-        });
-        var slew = jobs.Start("slew", "Slew", "camera", async token => {
-            await Task.Delay(Timeout.Infinite, token);
-            return JobOutcome.Ok();
-        });
-
-        // The park ends after the normal wait but within the longer one it gets
-        _ = Task.Run(async () => {
-            await Task.Delay(300);
-            park.SetResult(JobOutcome.Ok());
-        });
-        var stillRunning = jobs.Shutdown(TimeSpan.FromMilliseconds(50), ["park", "secure"], TimeSpan.FromSeconds(10));
-
-        Assert.That(stillRunning, Is.EqualTo(0));
-        Assert.That(parkToken.IsCancellationRequested, Is.False, "the park is not cancelled");
-        Assert.That((await WaitFinishedAsync(parkJob.Id)).State, Is.EqualTo(JobState.Succeeded));
-        Assert.That((await WaitFinishedAsync(slew.Id)).State, Is.EqualTo(JobState.Cancelled));
-    }
-
     private async Task<JobInfo> WaitFinishedAsync(string id) {
         var deadline = DateTime.UtcNow + TestTimeout;
 

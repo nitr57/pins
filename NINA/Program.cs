@@ -198,10 +198,10 @@ lifetime.ApplicationStopping.Register(() => {
     // First: indiserver ending from now on is the shutdown, not a crash, so no recovery may restart it and its drivers
     INDIClient.Instance.BeginShutdown();
 
-    // Halt MCP jobs (slews, focuser moves, exposures) through their tokens before the equipment goes away under them;
-    // a park (also as part of secure_observatory) is let finish instead, within the 150 s stop timeout of pins.service
+    // Halt MCP jobs (slews, focuser moves, exposures, also a park) through their tokens before the equipment goes away
+    // under them: whoever stops pins wants it stopped, and a park can be started again afterwards
     try {
-        var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(60));
+        var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5));
         if (stillRunning > 0) {
             Logger.Warning($"{stillRunning} MCP job(s) did not stop before shutdown");
         }
