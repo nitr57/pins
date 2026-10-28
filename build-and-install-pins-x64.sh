@@ -327,6 +327,8 @@ install_bootstrap_tools_if_needed() {
 
   command -v git >/dev/null 2>&1 || missing+=("git")
   command -v curl >/dev/null 2>&1 || missing+=("curl")
+  # without git-lfs the clone gets pointer files (e.g. NOVAS31/NOVAS31/CIO_RA.TXT) instead of their content
+  git lfs version >/dev/null 2>&1 || missing+=("git-lfs")
 
   if [[ ${#missing[@]} -eq 0 ]]; then
     return
@@ -340,7 +342,8 @@ install_bootstrap_tools_if_needed() {
 
   log "Installing missing bootstrap tools: ${missing[*]}"
   run_as_root apt-get update
-  run_as_root apt-get install -y --no-install-recommends ca-certificates curl git
+  run_as_root apt-get install -y --no-install-recommends ca-certificates curl git git-lfs
+  git lfs install
 }
 
 ensure_repo_root() {
@@ -876,6 +879,8 @@ update_submodules_except_external() {
   log "Updating git submodules (excluding NINA/External)"
 
   git lfs install
+  # a checkout made before git-lfs was installed still holds pointer files
+  git lfs pull
 
   local excluded_path="NINA/External"
   while IFS= read -r key; do

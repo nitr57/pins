@@ -15,7 +15,8 @@ EXCLUDE := $(SRCDIR)/example.c \
 		   $(SRCDIR)/checkout-stars-usno.txt \
 		   $(SRCDIR)/checkout-stars-full-usno.txt \
 		   $(SRCDIR)/solsys2.c \
-		   $(SRCDIR)/solsys3.c
+		   $(SRCDIR)/solsys3.c \
+		   $(SRCDIR)/cio_file.c
 
 SRCS := $(filter-out $(EXCLUDE),$(ALL_SRCS))
 
@@ -35,6 +36,10 @@ cio-file: cio_ra.bin
 
 # Build the CIO file utility and run it to generate cio_ra.bin
 cio_ra.bin: $(SRCDIR)/cio_file.c $(SRCDIR)/CIO_RA.TXT | $(BUILDDIR)
+	@if head -c 200 $(SRCDIR)/CIO_RA.TXT | grep -q 'git-lfs.github.com/spec'; then \
+		echo "ERROR: $(SRCDIR)/CIO_RA.TXT is a git-lfs pointer; run 'git lfs install && git lfs pull' first"; \
+		exit 1; \
+	fi
 	@echo "Building cio_file utility..."
 	$(CC) $(CFLAGS) -o $(BUILDDIR)/cio_file $(SRCDIR)/cio_file.c $(LDLIBS)
 	@echo "Generating cio_ra.bin from CIO_RA.TXT..."
