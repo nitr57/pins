@@ -82,26 +82,39 @@ namespace NINA.Image.FileFormat.FITS {
                 if (compressionFlag > 0) {
                     // When the image is compresse, we decompress it into a temporary file
                     var tempFile = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".fits");
-                    CfitsioNative.fits_create_diskfile(out var ptr, tempFile, out status);
-                    CfitsioNative.CheckStatus("fits_create_diskfile", status);
+                    try {
+                        CfitsioNative.fits_create_diskfile(out var ptr, tempFile, out status);
+                        CfitsioNative.CheckStatus("fits_create_diskfile", status);
 
-                    CfitsioNative.fits_img_decompress(fitsPtr, ptr, out status);
-                    CfitsioNative.CheckStatus("fits_img_decompress", status);
+                        try {
+                            CfitsioNative.fits_img_decompress(fitsPtr, ptr, out status);
+                            CfitsioNative.CheckStatus("fits_img_decompress", status);
+                        } catch {
+                            CfitsioNative.fits_close_file(ptr, out _);
+                            throw;
+                        }
 
-                    // Free resources for current file
-                    if (fitsPtr != IntPtr.Zero) {
-                        CfitsioNative.fits_close_file(fitsPtr, out status);
-                        CfitsioNative.CheckStatus("fits_close_file", status);
+                        // Closing flushes the decompressed copy, so its status counts
                         CfitsioNative.fits_close_file(ptr, out status);
                         CfitsioNative.CheckStatus("fits_close_file", status);
-                    }
-                    if (buffer != IntPtr.Zero) {
-                        Marshal.FreeHGlobal(buffer);
-                    }
 
-                    // Read the temp file and clean it up once in memory
-                    bytes = File.ReadAllBytes(tempFile);
-                    File.Delete(tempFile);
+                        // Free resources for current file. ffclos frees the handle even when it fails, so both are
+                        // cleared before the check: the finally at the end must not close or free them again.
+                        CfitsioNative.fits_close_file(fitsPtr, out status);
+                        fitsPtr = IntPtr.Zero;
+                        Marshal.FreeHGlobal(buffer);
+                        buffer = IntPtr.Zero;
+                        CfitsioNative.CheckStatus("fits_close_file", status);
+
+                        // Read the temp file once in memory
+                        bytes = File.ReadAllBytes(tempFile);
+                    } finally {
+                        try {
+                            File.Delete(tempFile);
+                        } catch (Exception ex) {
+                            Logger.Warning($"{nameof(FITS)} - could not delete the temporary decompressed file {tempFile}: {ex.Message}");
+                        }
+                    }
 
                     buffer = Marshal.AllocHGlobal(bytes.Length);
                     size = new UIntPtr((uint)bytes.Length);

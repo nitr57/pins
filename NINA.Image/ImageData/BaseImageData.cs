@@ -539,14 +539,25 @@ namespace NINA.Image.ImageData {
 
                 CFitsioFITS f = null;
                 try {
-                    if (Data.FlatArrayInt != null) {
-                        f = new CFitsioFITS(uniquePath, Data.FlatArrayInt, Properties.Width, Properties.Height, compression);
-                    } else {
-                        f = new CFitsioFITS(uniquePath, Data.FlatArray, Properties.Width, Properties.Height, compression);
+                    try {
+                        if (Data.FlatArrayInt != null) {
+                            f = new CFitsioFITS(uniquePath, Data.FlatArrayInt, Properties.Width, Properties.Height, compression);
+                        } else {
+                            f = new CFitsioFITS(uniquePath, Data.FlatArray, Properties.Width, Properties.Height, compression);
+                        }
+                        f.PopulateHeaderCards(MetaData);
+                    } finally {
+                        f?.Close();
                     }
-                    f.PopulateHeaderCards(MetaData);
-                } finally {
-                    f?.Close();
+                } catch {
+                    // An incomplete file (e.g. a full disk) must not stay behind looking like a saved frame
+                    try {
+                        File.Delete(uniquePath);
+                    } catch (Exception ex) {
+                        Logger.Warning($"Could not delete the incomplete FITS file {uniquePath}: {ex.Message}");
+                    }
+
+                    throw;
                 }
                 // cfitsio manages its own file handle; fsync after close via a short-lived write handle.
                 using (FileStream fsync = new FileStream(uniquePath, FileMode.Open, FileAccess.Write, FileShare.None)) {

@@ -37,5 +37,31 @@ namespace NINA.Test.Image.FileFormat {
             Assert.That(reader.Height, Is.EqualTo(2));
             Assert.That(reader.ReadAllPixels<ushort>(), Is.EqualTo(pixels));
         }
+
+        /// <summary>
+        /// FITS.Load unpacks a compressed image into a temporary file. A failed decompression used to leave
+        /// that file and its handle behind, and a failure while closing freed the source handle and buffer
+        /// twice (in the finally), which glibc answers by aborting the process.
+        /// </summary>
+        [Test]
+        [NonParallelizable]
+        public void Load_FailsCleanly_AndRemovesItsTemporaryFile_WhenTheCompressedDataIsCut() {
+            var pixels = Enumerable.Range(0, 64 * 64).Select(i => (ushort)(i * 7919 % 65536)).ToArray();
+            var fits = new CFitsioFITS(path, pixels, width: 64, height: 64, CfitsioNative.COMPRESSION.RICE_1);
+            fits.Close();
+
+            var bytes = File.ReadAllBytes(path);
+            Assert.That(bytes.Length % 2880, Is.Zero);
+            // Keep the headers, drop the last data block with the compressed tiles
+            var cut = bytes[..(bytes.Length - 2880)];
+
+            var tempBefore = Directory.GetFiles(Path.GetTempPath(), "*.fits").ToHashSet();
+            var factory = new ImageDataFactoryTestUtility().ImageDataFactory;
+
+            Assert.That(
+                async () => await FITS.Load(cut, isBayered: false, factory, CancellationToken.None),
+                Throws.TypeOf<CfitsioNative.cfitsioException>().With.Property(nameof(CfitsioNative.cfitsioException.Op)).EqualTo("fits_img_decompress"));
+            Assert.That(Directory.GetFiles(Path.GetTempPath(), "*.fits").Where(f => !tempBefore.Contains(f)), Is.Empty, "the temporary decompressed file is deleted");
+        }
     }
 }
