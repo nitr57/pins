@@ -39,23 +39,26 @@ namespace NINA.Core.Utility.SerialCommunication {
 
         private readonly Dictionary<string, bool> dtrEnableValue;
         private readonly string ttyClassPath;
+        private readonly string serialByIdPath;
 
-        public SerialPortProvider() : this("/sys/class/tty") {
+        public SerialPortProvider() : this("/sys/class/tty", "/dev/serial/by-id") {
         }
 
         /// <summary>
-        /// <paramref name="ttyClassPath"/>: the sysfs tty class directory, /sys/class/tty on Linux; a test can point it at
-        /// a fake tree.
+        /// <paramref name="ttyClassPath"/>: the sysfs tty class directory, /sys/class/tty on Linux.
+        /// <paramref name="serialByIdPath"/>: udev's /dev/serial/by-id, whose names stay the same when a device is plugged
+        /// into another USB socket or the ttyUSB numbers change at boot. A test can point both at a fake tree.
         /// </summary>
-        public SerialPortProvider(string ttyClassPath) {
+        public SerialPortProvider(string ttyClassPath, string serialByIdPath) {
             this.ttyClassPath = ttyClassPath;
+            this.serialByIdPath = serialByIdPath;
             dtrEnableValue = new Dictionary<string, bool>();
             
             // On Linux, detect Arduino Leonardo devices that need DTR enabled
             // Leonardo has VID:PID = 2341:8036
             try {
                 var ports = EnumerateSerialPortsWithDeviceInfo();
-                foreach (var (portName, vendorId, productId) in ports) {
+                foreach (var (portName, vendorId, productId, _) in ports) {
                     // Arduino Leonardo needs DTR enabled
                     bool needsDtr = (vendorId == "2341" && productId == "8036");
                     if (!dtrEnableValue.ContainsKey(portName)) {
@@ -68,8 +71,8 @@ namespace NINA.Core.Utility.SerialCommunication {
             }
         }
 
-        private List<(string portName, string vendorId, string productId)> EnumerateSerialPortsWithDeviceInfo() {
-            var result = new List<(string, string, string)>();
+        private List<(string portName, string vendorId, string productId, string serialNumber)> EnumerateSerialPortsWithDeviceInfo() {
+            var result = new List<(string, string, string, string)>();
             
             // On Linux, get device info from /sys/class/tty/*/device
             if (!Directory.Exists(ttyClassPath)) {
@@ -97,16 +100,63 @@ namespace NINA.Core.Utility.SerialCommunication {
                     if (usbDevicePath != null) {
                         var vendorId = ReadSysfsFile(Path.Combine(usbDevicePath, "idVendor"));
                         var productId = ReadSysfsFile(Path.Combine(usbDevicePath, "idProduct"));
-                        result.Add((portName, vendorId, productId));
+                        var serialNumber = ReadSysfsFile(Path.Combine(usbDevicePath, "serial"));
+                        result.Add((portName, vendorId, productId, serialNumber));
                     } else {
-                        result.Add((portName, "", ""));
+                        result.Add((portName, "", "", ""));
                     }
                 } else {
-                    result.Add((portName, "", ""));
+                    result.Add((portName, "", "", ""));
                 }
             }
             
             return result;
+        }
+
+        // tty name (ttyUSB0) -> its /dev/serial/by-id path, for the ports that have one
+        private Dictionary<string, string> GetByIdNames() {
+            var result = new Dictionary<string, string>();
+            try {
+                if (!Directory.Exists(serialByIdPath)) {
+                    return result;
+                }
+
+                foreach (var link in Directory.GetFiles(serialByIdPath).OrderBy(name => name)) {
+                    var target = new FileInfo(link).ResolveLinkTarget(returnFinalTarget: true);
+                    if (target != null) {
+                        result.TryAdd(Path.GetFileName(target.FullName), link);
+                    }
+                }
+            } catch (Exception ex) {
+                Logger.Debug($"Error reading {serialByIdPath}: {ex.Message}");
+            }
+
+            return result;
+        }
+
+        // A /dev/serial/by-id name to the /dev/tty* it points at; any other name unchanged
+        private static string ToDevicePath(string portName) {
+            try {
+                var target = new FileInfo(portName).ResolveLinkTarget(returnFinalTarget: true);
+                return target != null ? $"/dev/{Path.GetFileName(target.FullName)}" : portName;
+            } catch (Exception) {
+                return portName;
+            }
+        }
+
+        /// <summary>
+        /// The serial-number part of a WMI device query as a regex over "+&lt;serial&gt;\0000", the end of an FTDIBUS device
+        /// id (FTDIBUS\VID_0403+PID_6001+A8xxxxxx\0000): the LIKE pattern after the PID, e.g. "+A8%" (Alnitak) or
+        /// "%FM%" (Pegasus FlatMaster). Null when the query does not filter by serial number.
+        /// </summary>
+        private static Regex ParseSerialNumberFilter(string deviceQuery) {
+            var tail = Regex.Match(deviceQuery, @"PID_[0-9A-Fa-f]{4}([^']*)'");
+            if (!tail.Success || tail.Groups[1].Value.Trim('%').Length == 0) {
+                return null;
+            }
+
+            var pattern = Regex.Escape(tail.Groups[1].Value).Replace("%", ".*").Replace("_", ".");
+            return new Regex($"^{pattern}$", RegexOptions.IgnoreCase);
         }
 
         private static string ResolveLink(string path) {
@@ -149,7 +199,7 @@ namespace NINA.Core.Utility.SerialCommunication {
         public ISerialPort GetSerialPort(string portName, int baudRate, Parity parity, int dataBits, StopBits stopBits,
             Handshake handShake, bool dtrEnable, string newLine, int readTimeout, int writeTimeout) {
             if (string.IsNullOrEmpty(portName)) return null;
-            dtrEnableValue.TryGetValue(portName, out var dtrEnableForLeonardo);
+            dtrEnableValue.TryGetValue(ToDevicePath(portName), out var dtrEnableForLeonardo);
             var dtr = dtrEnable || dtrEnableForLeonardo;
             return new SerialPortWrapper {
                 PortName = portName,
@@ -180,15 +230,20 @@ namespace NINA.Core.Utility.SerialCommunication {
                     if (vidMatch.Success || pidMatch.Success) {
                         var targetVid = vidMatch.Success ? vidMatch.Groups[1].Value.ToLower() : null;
                         var targetPid = pidMatch.Success ? pidMatch.Groups[1].Value.ToLower() : null;
+                        var serialNumberFilter = ParseSerialNumberFilter(deviceQuery);
+                        var byIdNames = GetByIdNames();
                         
                         var portsWithInfo = EnumerateSerialPortsWithDeviceInfo();
-                        foreach (var (portName, vendorId, productId) in portsWithInfo) {
+                        foreach (var (portName, vendorId, productId, serialNumber) in portsWithInfo) {
                             bool matches = true;
                             if (targetVid != null && vendorId.ToLower() != targetVid) matches = false;
                             if (targetPid != null && productId.ToLower() != targetPid) matches = false;
+                            // E.g. only FTDI chips whose serial number Alnitak programmed, not any other FTDI adapter
+                            if (serialNumberFilter != null && !serialNumberFilter.IsMatch($"+{serialNumber}\\0000")) matches = false;
                             
                             if (matches) {
-                                deviceSpecificPorts.Add(portName);
+                                // The by-id name stays valid when the device moves to another USB socket
+                                deviceSpecificPorts.Add(byIdNames.TryGetValue(Path.GetFileName(portName), out var byIdName) ? byIdName : portName);
                             }
                         }
                     }
@@ -201,7 +256,14 @@ namespace NINA.Core.Utility.SerialCommunication {
                 }
                 
                 if (addGenericPorts) {
-                    // Get all available serial ports
+                    // The stable by-id names first, then all ports as before, so a profile holding /dev/ttyUSB0 still
+                    // finds its entry
+                    foreach (var byIdName in GetByIdNames().Values.OrderBy(s => s)) {
+                        if (!result.Contains(byIdName)) {
+                            result.Add(byIdName);
+                        }
+                    }
+
                     var allPorts = SerialPort.GetPortNames().OrderBy(s => s);
                     foreach (var portName in allPorts) {
                         if (!result.Contains(portName)) {
