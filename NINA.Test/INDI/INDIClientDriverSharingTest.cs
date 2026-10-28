@@ -13,7 +13,9 @@
 #endregion "copyright"
 
 using NINA.INDI;
+using NINA.INDI.Devices;
 using NINA.INDI.Enums;
+using NINA.INDI.Protocol;
 using NUnit.Framework;
 using System;
 using System.Collections.Generic;
@@ -118,6 +120,55 @@ namespace NINA.Test.INDI {
                 Throws.InstanceOf<OperationCanceledException>(), "the closed connection is not reopened");
             Assert.That(main.Received, Does.Not.Contain("enableBLOB"), "nor does it fall back to the main connection");
             Assert.That(toupTekImages.Closed.IsCompleted, Is.False, "the guide camera's driver is still loaded");
+        }
+
+        [Test]
+        public async Task ConnectedDriver_StaysLoaded_WhenItsCategorySwitches() {
+            var info = (await client.GetDevices(DeviceInterface.CCD_INTERFACE, Asi, "Camera")).Single();
+            // INDIDevice registers with INDIClient.Instance
+            var previousInstance = INDIClient.SetInstanceForTests(client);
+            try {
+                var camera = new INDIDevice(info) { Connected = true };
+
+                await ScanAsync("Camera", ToupTek);
+
+                Assert.That(Commands(), Is.EqualTo(new[] { $"start {Asi}", $"start {ToupTek}" }), "the connected camera keeps its driver");
+                Assert.That(camera.Connected, Is.True);
+            } finally {
+                // keep the test client rather than restoring null, as in INDIFilterWheelMoveTest
+                INDIClient.SetInstanceForTests(previousInstance ?? client);
+            }
+        }
+
+        [Test]
+        public async Task Elements_AreParsed_WithALineBreakAfterTheTagName() {
+            // an element with an end tag: before, the newline became part of the tag name, its end tag was never
+            // found and the stream stalled
+            main.Send("<message\ndevice=\"OnStep\" message=\"Slew refused\"></message>\n");
+            main.Send("<message device=\"OnStep\" message=\"Next\"/>\n");
+
+            await WaitUntilAsync(() => client.GetMessages().Count == 2);
+
+            Assert.That(client.GetMessages().Select(m => m.Message), Is.EqualTo(new[] { "Slew refused", "Next" }));
+        }
+
+        [Test]
+        public async Task RepeatedDriverMessages_AreAllKept() {
+            for (var i = 0; i < 3; i++) {
+                main.Send("<message device=\"CCD Simulator\" message=\"Telescope focal length is missing.\"/>\n");
+            }
+
+            await WaitUntilAsync(() => client.GetMessages().Count == 3);
+
+            Assert.That(client.GetMessages(), Has.All.Matches<INDIMessage>(m => m.Message == "Telescope focal length is missing."));
+        }
+
+        private static async Task WaitUntilAsync(Func<bool> condition) {
+            var deadline = DateTime.UtcNow + Timeout;
+            while (!condition()) {
+                Assert.That(DateTime.UtcNow, Is.LessThan(deadline), "timed out");
+                await Task.Delay(20);
+            }
         }
 
         private async Task<List<string>> ScanAsync(string category, string driver) {

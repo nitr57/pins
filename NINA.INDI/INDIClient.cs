@@ -136,6 +136,12 @@ namespace NINA.INDI {
         private readonly List<INDIMessage> _messages = [];
         private readonly object _messagesLock = new();
 
+        // When each driver message was last logged at Info (guarded by _messagesLock): some drivers repeat
+        // the same warning with every frame, e.g. "Telescope focal length is missing"
+        private static readonly TimeSpan MessageRepeatInterval = TimeSpan.FromMinutes(10);
+        private const int MaxLoggedMessages = 500;
+        private readonly Dictionary<string, DateTime> _messageLastLogged = [];
+
         // Private: the class manages a machine-wide indiserver (pkill on start, a fixed FIFO
         // path), so a second instance would fight the first. Use INDIClient.Instance.
         private INDIClient(int port) : this(port, startServer: true) {
@@ -732,6 +738,34 @@ namespace NINA.INDI {
             }
         }
 
+        private bool IsMessageRepeat(string deviceName, string message) {
+            var key = deviceName + "\n" + message;
+            var now = DateTime.UtcNow;
+            lock (_messagesLock) {
+                if (_messageLastLogged.TryGetValue(key, out var last) && now - last < MessageRepeatInterval) {
+                    return true;
+                }
+
+                if (_messageLastLogged.Count >= MaxLoggedMessages) {
+                    _messageLastLogged.Clear();
+                }
+
+                _messageLastLogged[key] = now;
+                return false;
+            }
+        }
+
+        private bool IsDriverConnected(string driver) {
+            List<string> deviceIds;
+            lock (_driverLock) {
+                deviceIds = _discoveredDevices.Values.Where(d => d.Driver == driver).Select(d => d.Id).ToList();
+            }
+
+            lock (_lock) {
+                return deviceIds.Any(id => _registeredDevices.TryGetValue(id, out var devices) && devices.Any(d => d.Connected));
+            }
+        }
+
         private bool HasRegisteredBlobProperty(string deviceName, string propertyName) {
             lock (_lock) {
                 return _registeredDevices.TryGetValue(deviceName, out var devices) && devices.Count > 0
@@ -833,6 +867,9 @@ namespace NINA.INDI {
                                 .ToList();
                             if (stillUsedBy.Count > 0) {
                                 Logger.Info($"Keeping previous {deviceTypeCategory} driver '{oldDriver}', still used by {string.Join(", ", stillUsedBy)}");
+                            } else if (IsDriverConnected(oldDriver)) {
+                                // e.g. the device list of another driver is browsed while the device is connected
+                                Logger.Info($"Keeping previous {deviceTypeCategory} driver '{oldDriver}', one of its devices is connected");
                             } else {
                                 Logger.Info($"Evicting previous {deviceTypeCategory} driver '{oldDriver}' before loading '{driver}'");
                                 UnloadDriver(oldDriver);
@@ -1395,7 +1432,8 @@ namespace NINA.INDI {
                 var tagNameEnd = -1;
                 for (int i = startTag + 1; i < xmlString.Length; i++) {
                     var c = xmlString[i];
-                    if (c == ' ' || c == '>' || c == '/') { tagNameEnd = i; break; }
+                    // drivers may break the line after the tag name
+                    if (char.IsWhiteSpace(c) || c == '>' || c == '/') { tagNameEnd = i; break; }
                 }
                 if (tagNameEnd == -1) break;
 
@@ -1651,10 +1689,13 @@ namespace NINA.INDI {
                         }
                     case "message": {
                             var message = element.Attribute("message")?.Value ?? element.Value;
-                            // DIAGNOSTIC (rejected-coordinates investigation): surface driver messages
-                            // at Info. A genuine slew refusal (e.g. 10micron below horizon / past limits)
-                            // is accompanied by a message here; a phantom rejection will not be.
-                            Logger.Info($"[INDI Message][{deviceName}] {message}");
+                            // Driver messages go to the log at Info, e.g. why a slew was refused (10micron
+                            // below the horizon or past its limits); a repeat within 10 minutes only at Debug.
+                            if (IsMessageRepeat(deviceName, message)) {
+                                Logger.Debug($"[INDI Message][{deviceName}] {message}");
+                            } else {
+                                Logger.Info($"[INDI Message][{deviceName}] {message}");
+                            }
 
                             // Also retain it in the rolling buffer for the control panel log window.
                             if (!string.IsNullOrWhiteSpace(message)) {
