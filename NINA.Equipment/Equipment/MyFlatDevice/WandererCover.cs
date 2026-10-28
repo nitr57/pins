@@ -231,9 +231,12 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
         }
 
         /// <summary>
-        /// Polls the cover until it reports <paramref name="targetState"/> (0 = closed, 1 = open). Until it was seen moving
-        /// (3) or <paramref name="startGrace"/> has passed it may still report the end it is leaving; after that any other
-        /// state means it stopped short. Gives up after <paramref name="timeout"/>.
+        /// Polls the cover until it reports <paramref name="targetState"/> (0 = closed, 1 = open). Within
+        /// <paramref name="startGrace"/> it may still report the end it is leaving, also after it was seen moving (3): a
+        /// status from before the move that arrives late clears the SDK's moving state, and the old end then stays
+        /// reported until the move is done. Any other state after it was seen moving, or anything but the target once
+        /// the grace is over, means it stopped short; a cover that really returns to its start is therefore only reported
+        /// at the end of the grace. Gives up after <paramref name="timeout"/>.
         /// </summary>
         internal static async Task<(CoverMoveResult Result, WC_ERROR_TYPE Error, int State)> WaitForCoverStateAsync(
             Func<(WC_ERROR_TYPE Error, int State)> readStatus,
@@ -244,6 +247,7 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
             CancellationToken ct) {
             var watch = System.Diagnostics.Stopwatch.StartNew();
             var seenMoving = false;
+            var leavingState = targetState == StateOpen ? StateClosed : StateOpen;
 
             while (true) {
                 await Task.Delay(pollInterval, ct);
@@ -259,7 +263,7 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
 
                 if (state == StateMoving) {
                     seenMoving = true;
-                } else if (seenMoving || watch.Elapsed > startGrace) {
+                } else if (watch.Elapsed > startGrace || (seenMoving && state != leavingState)) {
                     return (CoverMoveResult.Stopped, error, state);
                 }
 

@@ -24,8 +24,9 @@ namespace NINA.Test.FlatDevice {
 
     /// <summary>
     /// WandererCover's open/close wait against scripted cover states (0 = closed, 1 = open, 2 = intermediate,
-    /// 3 = moving): it succeeds only at the requested end, tolerates the old end until the motor starts, and fails on a
-    /// stop short of it, a cover that never arrives and a status read error.
+    /// 3 = moving): it succeeds only at the requested end, tolerates the old end within the start grace (before the motor
+    /// starts and as a late status after it), and fails on a stop short of it, a cover that never arrives and a status
+    /// read error.
     /// </summary>
     [TestFixture]
     public class WandererCoverTest {
@@ -71,10 +72,34 @@ namespace NINA.Test.FlatDevice {
         }
 
         [Test]
-        public async Task Open_FailsWhenTheCoverReturnsToWhereItStarted() {
-            var (result, _, _) = await WaitAsync(Open, Moving, Closed);
+        public async Task Open_FailsWhenTheCoverReturnsToWhereItStarted_OnceTheStartGraceIsOver() {
+            var sequence = new[] { Moving, Closed };
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var (result, _, _) = await WaitAsync(
+                poll => (WC_ERROR_TYPE.WC_SUCCESS, sequence[Math.Min(poll, sequence.Length - 1)]),
+                Open,
+                Timeout,
+                TimeSpan.FromMilliseconds(200));
 
             Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Stopped));
+            Assert.That(watch.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromMilliseconds(190)), "the old end counts as a late status until the grace is over");
+        }
+
+        [Test]
+        public async Task Open_WaitsThroughALateStatusOfTheOldEnd_AfterTheMoveStarted() {
+            // The SDK reports moving at once; a status sent before the move arrives after the first poll and the old end
+            // stays reported until the cover arrives
+            var (result, _, state) = await WaitAsync(Open, Moving, Closed, Closed, Closed, Open);
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+            Assert.That(state, Is.EqualTo(Open));
+        }
+
+        [Test]
+        public async Task Close_WaitsThroughALateStatusOfTheOldEnd_AfterTheMoveStarted() {
+            var (result, _, _) = await WaitAsync(Closed, Moving, Open, Open, Closed);
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
         }
 
         [Test]
