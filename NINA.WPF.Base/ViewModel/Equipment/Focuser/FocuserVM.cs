@@ -254,7 +254,7 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
                             await waitForUpdate;
                             BroadcastFocuserInfo();
                         } else {
-                            ReadFocuserAfterMove();
+                            await ReadFocuserAfterMove(timeoutCts.Token);
                         }
                     }
                 } catch (OperationCanceledException) {
@@ -282,14 +282,17 @@ namespace NINA.WPF.Base.ViewModel.Equipment.Focuser {
         }
 
         // IFocuserReportsMoveEnd: Move returned once the device itself reported a stop at the target, so instead
-        // of waiting one to two polling intervals for the update timer, read the focuser once right away
-        private void ReadFocuserAfterMove() {
+        // of waiting one to two polling intervals for the update timer, read the focuser once right away. Through the
+        // timer, in turn with its polls: a poll that read the focuser while it was still moving would otherwise apply
+        // that position and IsMoving after this read, and FocuserInfo (which autofocus reads its start position from)
+        // would be stale until the next poll.
+        private async Task ReadFocuserAfterMove(CancellationToken ct) {
             if (!FocuserInfo.Connected) {
                 return;
             }
 
             try {
-                updateTimer.UpdateValuesFunc(updateTimer.GetValuesFunc());
+                await updateTimer.UpdateNow(ct);
             } catch (Exception ex) {
                 Logger.Warning($"Failed to read the focuser after the move: {ex.Message}");
             }
