@@ -21,14 +21,15 @@ using System.IO.Ports;
 namespace NINA.Test.SerialCommunication {
 
     /// <summary>
-    /// The USB vendor and product IDs of a serial port come from sysfs, where /sys/class/tty/&lt;tty&gt;/device is a
-    /// symlink into /sys/devices: the provider has to follow it to reach the USB device with idVendor/idProduct.
-    /// Runs against a fake sysfs tree laid out like a real one.
+    /// The USB vendor and product IDs of a serial port come from sysfs, where /sys/class/tty/&lt;tty&gt; and its
+    /// "device" entry are both symlinks: the provider has to follow them to reach the USB device with
+    /// idVendor/idProduct. Runs against a fake sysfs tree laid out like a real one.
     /// </summary>
     [TestFixture]
     [Platform(Include = "Linux", Reason = "Builds a sysfs tree with symlinks")]
     public class SerialPortProviderTest {
         private string root = null!;
+        private int usbPorts;
 
         [SetUp]
         public void SetUp() {
@@ -65,18 +66,35 @@ namespace NINA.Test.SerialCommunication {
             Assert.That(uno.DtrEnable, Is.False);
         }
 
-        // As on a Pi: /sys/class/tty/<tty>/device -> /sys/devices/.../usb1/1-1.<n>/1-1.<n>:1.0, the USB interface,
-        // whose parent 1-1.<n> is the USB device that holds idVendor and idProduct
+        // As on a Pi 5: /sys/class/tty/<tty> is itself a symlink into /sys/devices, and "device" points relative to that
+        // physical directory, the way the kernel writes it:
+        // - usb-serial: .../3-<n>/3-<n>:1.0/ttyUSB0/tty/ttyUSB0, device -> ../../../ttyUSB0, the port
+        // - cdc_acm: .../3-<n>/3-<n>:1.0/tty/ttyACM0, device -> ../../../3-<n>:1.0, the USB interface
+        // Either way the USB device 3-<n> above holds idVendor and idProduct.
         private void AddUsbSerialPort(string tty, string vendorId, string productId) {
-            var usbDevice = Path.Combine(root, "devices", "platform", "scb", "usb1", $"1-1.{tty[^1]}{tty[3]}");
+            var usbDevice = Path.Combine(root, "devices", "platform", "axi", "usb3", $"3-{++usbPorts}");
             var usbInterface = Path.Combine(usbDevice, $"{Path.GetFileName(usbDevice)}:1.0");
-            Directory.CreateDirectory(Path.Combine(usbInterface, tty));
+            Directory.CreateDirectory(usbInterface);
             File.WriteAllText(Path.Combine(usbDevice, "idVendor"), vendorId + "\n");
             File.WriteAllText(Path.Combine(usbDevice, "idProduct"), productId + "\n");
 
-            var classDir = Path.Combine(root, "class", "tty", tty);
+            string physicalTty;
+            string deviceTarget;
+
+            if (tty.StartsWith("ttyUSB")) {
+                physicalTty = Path.Combine(usbInterface, tty, "tty", tty);
+                deviceTarget = $"../../../{tty}";
+            } else {
+                physicalTty = Path.Combine(usbInterface, "tty", tty);
+                deviceTarget = $"../../../{Path.GetFileName(usbInterface)}";
+            }
+
+            Directory.CreateDirectory(physicalTty);
+            Directory.CreateSymbolicLink(Path.Combine(physicalTty, "device"), deviceTarget);
+
+            var classDir = Path.Combine(root, "class", "tty");
             Directory.CreateDirectory(classDir);
-            Directory.CreateSymbolicLink(Path.Combine(classDir, "device"), Path.GetRelativePath(classDir, usbInterface));
+            Directory.CreateSymbolicLink(Path.Combine(classDir, tty), Path.GetRelativePath(classDir, physicalTty));
         }
     }
 }

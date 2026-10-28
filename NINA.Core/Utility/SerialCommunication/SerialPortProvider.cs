@@ -86,11 +86,13 @@ namespace NINA.Core.Utility.SerialCommunication {
                 
                 var portName = $"/dev/{ttyName}";
                 
-                // Try to read USB vendor and product IDs
-                var devicePath = Path.Combine(ttyDir, "device");
+                // Try to read USB vendor and product IDs. /sys/class/tty/<tty> is itself a symlink into /sys/devices, and
+                // its "device" entry points relative to that physical directory (e.g. ../../../ttyUSB0). .NET joins a
+                // relative target to the link's own path and drops the ".." as text, which from /sys/class/tty/<tty> lands
+                // outside /sys/devices. So resolve the tty first, then "device" from its physical directory.
+                var devicePath = Path.Combine(ResolveLink(ttyDir), "device");
                 if (Directory.Exists(devicePath)) {
-                    // Navigate up to find the USB device. "device" is a symlink into /sys/devices; walking up the
-                    // link's own path would only reach /sys/class, so walk up its target.
+                    // Navigate up from the link's target to find the USB device
                     var usbDevicePath = FindUsbDeviceParent(ResolveLink(devicePath));
                     if (usbDevicePath != null) {
                         var vendorId = ReadSysfsFile(Path.Combine(usbDevicePath, "idVendor"));
