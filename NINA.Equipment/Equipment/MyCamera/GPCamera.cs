@@ -300,7 +300,11 @@ namespace NINA.Equipment.Equipment.MyCamera {
         // download can fail or stall on that read.
         private int lastGain = -1;
 
-        private bool ExposureInProgress => downloadExposure is { Task.IsCompleted: false };
+        // From StartExposure until the image is downloaded or the exposure is aborted. downloadExposure completes as
+        // soon as the image is on the camera, before its download.
+        private volatile bool _exposureBusy;
+
+        private bool ExposureInProgress => _exposureBusy;
 
         public int Gain {
             get {
@@ -409,9 +413,14 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private string _lastCapturedFolder;
         private string _lastCapturedFilename;
 
+        // Held by StartExposure and CancelDownloadExposure. A bulb abort waits up to BulbFileEventTimeoutMs for the
+        // camera's file event; a new exposure must not start under it, or the abort would stop the new exposure's bulb
+        // timer, take its file event or delete its file.
+        private readonly object _exposureLock = new object();
+
         public void AbortExposure() {
             Logger.Debug("libgphoto2: AbortExposure");
-            CancelDownloadExposure();
+            CancelDownloadExposure(downloadExposure);
         }
 
         private bool Initialize() {
@@ -768,6 +777,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         public void Disconnect() {
             StopBatteryPolling();
+            _exposureBusy = false;
             lock (_gpLock) {
                 if (!_cameraExited) {
                     CheckError(GpCameraExit(_camera, _context));
@@ -805,9 +815,11 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         public async Task WaitUntilExposureIsReady(CancellationToken token) {
-            // Off the cancelling thread: a bulb abort releases the shutter and waits for the camera's file event
-            using (token.Register(() => _ = Task.Run(AbortExposure))) {
-                await downloadExposure.Task;
+            // Off the cancelling thread: a bulb abort releases the shutter and waits for the camera's file event. Bound
+            // to this exposure, so an abort that only runs once the next one has started leaves that one alone.
+            var exposure = downloadExposure;
+            using (token.Register(() => _ = Task.Run(() => CancelDownloadExposure(exposure)))) {
+                await exposure.Task;
             }
         }
 
@@ -874,14 +886,18 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         public Task<IExposureData> DownloadExposure(CancellationToken token) {
             return Task.Run<IExposureData>(async () => {
+                var exposure = downloadExposure;
 
-                if (downloadExposure.Task.IsCanceled) { return null; }
+                if (exposure.Task.IsCanceled) {
+                    EndExposure(exposure);
+                    return null;
+                }
 
                 byte[] rawImageData = null;
 
                 try {
-                    using (token.Register(() => CancelDownloadExposure())) {
-                        await downloadExposure.Task;
+                    using (token.Register(() => CancelDownloadExposure(exposure))) {
+                        await exposure.Task;
                     }
 
                     using (MyStopWatch.Measure("libgphoto2 - Image Download")) {
@@ -932,37 +948,61 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 } catch (Exception ex) {
                     Logger.Error($"Exception during DownloadExposure: {ex.Message}");
                     return null;
+                } finally {
+                    EndExposure(exposure);
                 }
             });
         }
 
-        private void CancelDownloadExposure() {
-            Logger.Debug("CancelDownloadExposure");
-            try {
-                // Release the shutter only if we're currently in a bulb mode exposure
-                if (_currentExposureIsBulb) {
-                    Logger.Debug("libgphoto2: Canceling bulb exposure - releasing shutter");
-                    ReleaseShutter();
-
-                    // Wait for the file event to get the image location, then delete it
-                    Logger.Debug("libgphoto2: Waiting for file event to delete aborted image...");
-                    SetCapturedFileFromEvent(BulbFileEventTimeoutMs);
-                    if (!string.IsNullOrEmpty(_lastCapturedFolder) && !string.IsNullOrEmpty(_lastCapturedFilename)) {
-                        Logger.Debug($"libgphoto2: Aborted image location: {_lastCapturedFolder}/{_lastCapturedFilename}");
-                        DeleteFileFromCamera(_lastCapturedFolder, _lastCapturedFilename);
-                    } else {
-                        Logger.Warning("Could not get file event for aborted image to delete it");
-                    }
-                    _lastCapturedFolder = null;
-                    _lastCapturedFilename = null;
-                }
-                _currentExposureIsBulb = false;
-                activeBulbExposureControl = BulbExposureControl.None;
-                bulbCompletionCTS?.Cancel();
-            } catch (Exception ex) {
-                Logger.Error($"Exception in CancelDownloadExposure: {ex.Message}");
+        // The camera is free for config reads again, unless a later exposure has started meanwhile
+        private void EndExposure(TaskCompletionSource<object> exposure) {
+            if (ReferenceEquals(exposure, downloadExposure)) {
+                _exposureBusy = false;
             }
-            downloadExposure?.TrySetCanceled();
+        }
+
+        private void CancelDownloadExposure(TaskCompletionSource<object> exposure) {
+            Logger.Debug("CancelDownloadExposure");
+            lock (_exposureLock) {
+                // The fields below belong to the exposure that is current now; under the lock no new one can replace
+                // them. An abort that was asked for an earlier exposure leaves a later one alone.
+                if (!ReferenceEquals(exposure, downloadExposure)) {
+                    Logger.Debug("libgphoto2: The exposure to abort has already ended and another one started; leaving that one alone");
+                    exposure?.TrySetCanceled();
+                    return;
+                }
+
+                try {
+                    // Release the shutter only if we're currently in a bulb mode exposure
+                    if (_currentExposureIsBulb) {
+                        Logger.Debug("libgphoto2: Canceling bulb exposure - releasing shutter");
+                        ReleaseShutter();
+
+                        // Wait for the file event to get the image location, then delete it
+                        Logger.Debug("libgphoto2: Waiting for file event to delete aborted image...");
+                        SetCapturedFileFromEvent(BulbFileEventTimeoutMs);
+                        if (!string.IsNullOrEmpty(_lastCapturedFolder) && !string.IsNullOrEmpty(_lastCapturedFilename)) {
+                            Logger.Debug($"libgphoto2: Aborted image location: {_lastCapturedFolder}/{_lastCapturedFilename}");
+                            DeleteFileFromCamera(_lastCapturedFolder, _lastCapturedFilename);
+                        } else {
+                            Logger.Warning("Could not get file event for aborted image to delete it");
+                        }
+                        _lastCapturedFolder = null;
+                        _lastCapturedFilename = null;
+                    }
+                    _currentExposureIsBulb = false;
+                    activeBulbExposureControl = BulbExposureControl.None;
+                    bulbCompletionCTS?.Cancel();
+                } catch (Exception ex) {
+                    Logger.Error($"Exception in CancelDownloadExposure: {ex.Message}");
+                }
+                // A download of the image that runs already ends the busy time itself once it is done
+                if (exposure == null || !exposure.Task.IsCompletedSuccessfully) {
+                    _exposureBusy = false;
+                }
+
+                exposure?.TrySetCanceled();
+            }
         }
 
         public void SetBinning(short x, short y) {
@@ -1094,24 +1134,30 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private bool _shutterReleased = true;
 
         public void StartExposure(CaptureSequence sequence) {
-            if (downloadExposure?.Task?.Status <= TaskStatus.Running) {
-                Logger.Warning("An exposure was still in progress. Cancelling it to start another.");
-                CancelDownloadExposure();
-            }
-
             var exposureTime = sequence.ExposureTime;
+            bool useBulb;
 
-            // Validate before any exposure state is touched: if this throws, no exposure has
-            // started and a subsequent AbortExposure must find the camera idle instead of
-            // releasing the shutter and hunting for a file event that will never come.
-            ValidateModeForExposure(exposureTime);
+            // Not while an abort still waits for its file event, as it works on the fields set here. The capture
+            // itself runs outside the lock: a timed one blocks for the whole exposure.
+            lock (_exposureLock) {
+                if (downloadExposure?.Task?.Status <= TaskStatus.Running) {
+                    Logger.Warning("An exposure was still in progress. Cancelling it to start another.");
+                    CancelDownloadExposure(downloadExposure);
+                }
 
-            downloadExposure = new TaskCompletionSource<object>();
-            _lastCapturedFolder = null;
-            _lastCapturedFilename = null;
-            activeBulbExposureControl = BulbExposureControl.None;
-            bool useBulb = ShouldUseBulbExposure(exposureTime);
-            _currentExposureIsBulb = useBulb;
+                // Validate before any exposure state is touched: if this throws, no exposure has
+                // started and a subsequent AbortExposure must find the camera idle instead of
+                // releasing the shutter and hunting for a file event that will never come.
+                ValidateModeForExposure(exposureTime);
+
+                downloadExposure = new TaskCompletionSource<object>();
+                _lastCapturedFolder = null;
+                _lastCapturedFilename = null;
+                activeBulbExposureControl = BulbExposureControl.None;
+                useBulb = ShouldUseBulbExposure(exposureTime);
+                _currentExposureIsBulb = useBulb;
+                _exposureBusy = true;
+            }
 
             // Set exposure time first if not using bulb mode
             if (!useBulb) {
@@ -1123,6 +1169,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
             // Start exposure
             bool success = SendStartExposureCmd(useBulb);
             if (!success) {
+                _exposureBusy = false;
                 throw new Exception("Failed to start exposure");
             }
 
@@ -1808,10 +1855,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
             // Poll once per minute
             _batteryPolling = new System.Timers.Timer(TimeSpan.FromMinutes(1));
             _batteryPolling.Elapsed += (sender, e) => {
-                // Skip while an exposure is in progress. Reading camera config mid-capture
+                // Skip while an exposure or its download is in progress. Reading camera config mid-capture
                 // (in particular during an open-shutter bulb exposure) can disturb or fail it.
-                var dl = downloadExposure;
-                if (dl != null && !dl.Task.IsCompleted) {
+                if (ExposureInProgress) {
                     return;
                 }
                 GetBatteryLevel();
