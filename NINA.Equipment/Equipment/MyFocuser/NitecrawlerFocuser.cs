@@ -75,7 +75,11 @@ namespace NINA.Equipment.Equipment.MyFocuser {
                     mask = (uint)MASK_FOCUSER_MAX_STEP,
                     maxStep = value
                 };
-                _ = SetFocuserConfig(_uniqueId, config);
+                var err = SetFocuserConfig(_uniqueId, config);
+                if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                    Logger.Error($"Nitecrawler failed to set the max step to {value}: {err}");
+                }
+
                 RaisePropertyChanged(nameof(MaxStep));
                 RaisePropertyChanged(nameof(MaxIncrement));
             }
@@ -202,11 +206,22 @@ namespace NINA.Equipment.Equipment.MyFocuser {
         [ObservableProperty]
         private int targetMaxStep;
 
+        // Set while TargetMaxStep takes the value read from the focuser, which must not be written back
+        private bool readingMaxStepFromFocuser;
+
         partial void OnTargetMaxStepChanged(int value) {
+            if (readingMaxStepFromFocuser) {
+                return;
+            }
+
             NC_FOCUSER_CONFIG config = new NC_FOCUSER_CONFIG();
             config.mask = (uint)MASK_FOCUSER_MAX_STEP;
             config.maxStep = value;
-            _ = SetFocuserConfig(_uniqueId, config);
+            var err = SetFocuserConfig(_uniqueId, config);
+            if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                Logger.Error($"Nitecrawler failed to set the max step to {value}: {err}");
+            }
+
             RaisePropertyChanged(nameof(MaxStep));
             RaisePropertyChanged(nameof(MaxIncrement));
         }
@@ -261,8 +276,18 @@ namespace NINA.Equipment.Equipment.MyFocuser {
                 if (FocuserOpen(_uniqueId) == NC_ERROR_TYPE.NC_SUCCESS) {
                     DriverInfo = $"SDK: {DriverVersion}; FW: {GetFwVersionString()}";
 
-                    GetFocuserConfig(_uniqueId, out var config);
-                    TargetMaxStep = config.maxStep;
+                    // A failed read leaves maxStep 0, which written back would set the focuser's max step to 0
+                    var configErr = GetFocuserConfig(_uniqueId, out var config);
+                    if (configErr == NC_ERROR_TYPE.NC_SUCCESS) {
+                        readingMaxStepFromFocuser = true;
+                        try {
+                            TargetMaxStep = config.maxStep;
+                        } finally {
+                            readingMaxStepFromFocuser = false;
+                        }
+                    } else {
+                        Logger.Error($"Nitecrawler could not read the focuser configuration: {configErr}; leaving its max step as it is");
+                    }
 
                     RaisePropertyChanged(nameof(MaxStep));
 
