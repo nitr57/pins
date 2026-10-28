@@ -38,8 +38,17 @@ namespace NINA.Core.Utility.SerialCommunication {
          **/
 
         private readonly Dictionary<string, bool> dtrEnableValue;
+        private readonly string ttyClassPath;
 
-        public SerialPortProvider() {
+        public SerialPortProvider() : this("/sys/class/tty") {
+        }
+
+        /// <summary>
+        /// <paramref name="ttyClassPath"/>: the sysfs tty class directory, /sys/class/tty on Linux; a test can point it at
+        /// a fake tree.
+        /// </summary>
+        public SerialPortProvider(string ttyClassPath) {
+            this.ttyClassPath = ttyClassPath;
             dtrEnableValue = new Dictionary<string, bool>();
             
             // On Linux, detect Arduino Leonardo devices that need DTR enabled
@@ -63,7 +72,6 @@ namespace NINA.Core.Utility.SerialCommunication {
             var result = new List<(string, string, string)>();
             
             // On Linux, get device info from /sys/class/tty/*/device
-            var ttyClassPath = "/sys/class/tty";
             if (!Directory.Exists(ttyClassPath)) {
                 return result;
             }
@@ -81,8 +89,9 @@ namespace NINA.Core.Utility.SerialCommunication {
                 // Try to read USB vendor and product IDs
                 var devicePath = Path.Combine(ttyDir, "device");
                 if (Directory.Exists(devicePath)) {
-                    // Navigate up to find the USB device
-                    var usbDevicePath = FindUsbDeviceParent(devicePath);
+                    // Navigate up to find the USB device. "device" is a symlink into /sys/devices; walking up the
+                    // link's own path would only reach /sys/class, so walk up its target.
+                    var usbDevicePath = FindUsbDeviceParent(ResolveLink(devicePath));
                     if (usbDevicePath != null) {
                         var vendorId = ReadSysfsFile(Path.Combine(usbDevicePath, "idVendor"));
                         var productId = ReadSysfsFile(Path.Combine(usbDevicePath, "idProduct"));
@@ -96,6 +105,14 @@ namespace NINA.Core.Utility.SerialCommunication {
             }
             
             return result;
+        }
+
+        private static string ResolveLink(string path) {
+            try {
+                return new DirectoryInfo(path).ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? path;
+            } catch (IOException) {
+                return path;
+            }
         }
 
         private string FindUsbDeviceParent(string devicePath) {
