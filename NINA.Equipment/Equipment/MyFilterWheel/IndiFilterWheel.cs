@@ -39,10 +39,18 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
 
         public string[] Names => GetProperty(nameof(IINDIFilterWheel.Names), new string[] { });
 
+        // FilterWheelVM waits while the position reads -1 and then checks it against the target, after resuming the
+        // guiding it stopped. A change that the lost INDI server connection ended reads as no slot from then on (without
+        // properties the device would read slot 0), also once the lost device was disposed, until the next change or
+        // connect: the check then fails instead of a setter exception skipping the guiding.
+        private const short NoSlotAfterLostServer = -2;
+        private volatile bool changeEndedByLostServer;
+
         public short Position {
-            get => (short)(device?.Position ?? -1);
+            get => changeEndedByLostServer ? NoSlotAfterLostServer : (short)(device?.Position ?? -1);
             set {
                 if (device != null && ShouldBeConnected) {
+                    changeEndedByLostServer = false;
                     device.Position = (int)value;
                     WaitForReadyState();
                     InvalidatePropertyCache();
@@ -71,10 +79,10 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
                 Thread.Sleep(100);
             }
 
-            // The wait also ends when the INDI server connection is lost. Without properties the position
-            // reads as slot 0, which would pass FilterWheelVM's check for a change to the first filter.
+            // The wait also ends when the INDI server connection is lost
             if (device.ServerConnectionLost) {
-                throw new InvalidOperationException("Filter change failed: the connection to the INDI server was lost");
+                Logger.Error("Filter change failed: the connection to the INDI server was lost");
+                changeEndedByLostServer = true;
             }
         }
 
@@ -100,6 +108,8 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
         }
 
         protected override Task PostConnect() {
+            changeEndedByLostServer = false;
+
             var filtersList = profileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters;
 
             // Find duplicate positions due to data corruption and remove duplicates
