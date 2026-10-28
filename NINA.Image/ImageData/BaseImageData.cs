@@ -329,7 +329,8 @@ namespace NINA.Image.ImageData {
             try {
                 if (pattern.Contains(ImagePatternKeys.SensorTemp) && double.IsNaN(MetaData.Camera.Temperature) && ShouldSaveNativeRaw(fileSaveInfo, forceFileType)) {
                     // For DSLRs we need to retrieve the temperature after the file is written. Hence we replace the pattern with this special placeholder
-                    pattern = pattern.Replace(ImagePatternKeys.SensorTemp, "$$DSLR_SENSORTEMP$$");
+                    // pins has no exiftool to fill the placeholder in afterwards, so the temperature stays empty like for any camera without one
+                    //pattern = pattern.Replace(ImagePatternKeys.SensorTemp, "$$DSLR_SENSORTEMP$$");
                 }
 
                 var imagePatterns = GetImagePatterns();
