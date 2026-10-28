@@ -282,7 +282,9 @@ namespace NINA.INDI.Devices
                     var result = await tcs.Task;
                     if (!result)
                     {
-                        Logger.Error($"SetNumberValuesAsync ({propertyName}) - server rejected operation (Alert state)");
+                        Logger.Error(_serverConnectionLost
+                            ? $"SetNumberValuesAsync ({propertyName}) - the connection to the INDI server was lost"
+                            : $"SetNumberValuesAsync ({propertyName}) - server rejected operation (Alert state)");
                         return false;
                     }
 
@@ -375,7 +377,9 @@ namespace NINA.INDI.Devices
                     var result = await tcs.Task;
                     if (!result)
                     {
-                        Logger.Error($"SetSwitchValueAsync ({propertyName}) - server rejected operation (Alert state)");
+                        Logger.Error(_serverConnectionLost
+                            ? $"SetSwitchValueAsync ({propertyName}) - the connection to the INDI server was lost"
+                            : $"SetSwitchValueAsync ({propertyName}) - server rejected operation (Alert state)");
                         return false;
                     }
 
@@ -610,7 +614,9 @@ namespace NINA.INDI.Devices
                     var result = await tcs.Task;
                     if (!result)
                     {
-                        Logger.Error($"SetTextValueAsync ({propertyName}) - server rejected operation (Alert state)");
+                        Logger.Error(_serverConnectionLost
+                            ? $"SetTextValueAsync ({propertyName}) - the connection to the INDI server was lost"
+                            : $"SetTextValueAsync ({propertyName}) - server rejected operation (Alert state)");
                         return false;
                     }
 
@@ -783,7 +789,7 @@ namespace NINA.INDI.Devices
 
                         // Poll for properties with timeout
                         var propStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                        while (!HasProperties(requiredProps) && propStopwatch.Elapsed < TimeSpan.FromSeconds(20) && !ct.IsCancellationRequested)
+                        while (!HasProperties(requiredProps) && propStopwatch.Elapsed < TimeSpan.FromSeconds(20) && !ct.IsCancellationRequested && !_serverConnectionLost)
                         {
                             await CoreUtil.Wait(TimeSpan.FromMilliseconds(200), ct);
                         }
@@ -821,6 +827,16 @@ namespace NINA.INDI.Devices
 
                 Logger.Info($"[{DeviceName}] Setting Connected to {success}");
                 Connected = success;
+
+                // A loss during the connect leaves no session, also when the driver was already connected at the
+                // server and the final CONNECT check above was skipped. Checked after setting Connected: the loss
+                // sets its flag before it clears _connected, so a loss at any point ends disconnected.
+                if (success && _serverConnectionLost)
+                {
+                    Logger.Error($"[{DeviceName}] The connection to the INDI server was lost while connecting");
+                    _connected = false;
+                    success = false;
+                }
 
                 return success;
             });

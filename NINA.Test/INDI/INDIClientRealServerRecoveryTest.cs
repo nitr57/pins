@@ -26,8 +26,8 @@ namespace NINA.Test.INDI {
 
     /// <summary>
     /// Kills a real indiserver under the client and checks the recovery end to end: the devices report the
-    /// loss, the server and its drivers are restarted, and the equipment can be connected again without a
-    /// rescan and gets its images. Needs indiserver and the INDI simulator drivers, and kills every indiserver
+    /// loss, the server and its drivers are restarted (a rescan right after readiness finds them), and new
+    /// device objects, as the equipment layer builds after a loss, connect without a rescan and get images. Needs indiserver and the INDI simulator drivers, and kills every indiserver
     /// on the machine (as INDIClient's start does), so it only runs when selected explicitly.
     /// </summary>
     [TestFixture]
@@ -73,17 +73,22 @@ namespace NINA.Test.INDI {
             Assert.That(camera.ServerConnectionLost, Is.True);
 
             Assert.That(await client.WaitForServerReadyAsync(Timeout), Is.True, "indiserver was restarted");
-            await WaitUntilAsync(() => focuser.GetSwitchProperty("CONNECTION") != null && camera.GetSwitchProperty("CONNECTION") != null,
-                "the restarted drivers define their properties again");
+            // Readiness only comes once the restarted drivers have described themselves
+            Assert.That(await client.GetDevices(DeviceInterface.FOCUSER_INTERFACE, FocuserDriver, "Focuser"), Has.Count.EqualTo(1), "a rescan right after readiness finds the focuser");
+            Assert.That(await client.GetDevices(DeviceInterface.CCD_INTERFACE, CameraDriver, "Camera"), Has.Count.EqualTo(1), "a rescan right after readiness finds the camera");
             // The old drivers end once their server is gone; a second instance would fight the first for the device
             await WaitUntilAsync(() => CountProcesses(FocuserDriver) == 1, "the focuser driver runs once");
             await WaitUntilAsync(() => CountProcesses(CameraDriver) == 1, "the camera driver runs once");
             Assert.That(CountProcesses("indiserver"), Is.EqualTo(1), "one indiserver");
 
-            // The same device objects, as the equipment layer keeps them, without a rescan
-            await ConnectAndExposeAsync(focuser, camera, "after the recovery");
-            Assert.That(focuser.ServerConnectionLost, Is.False);
-            Assert.That(camera.ServerConnectionLost, Is.False);
+            // The equipment layer disposes the lost device objects and builds new ones on the next connect
+            focuser.Dispose();
+            camera.Dispose();
+            var newFocuser = new INDIFocuser(focuserInfo);
+            var newCamera = new INDICamera(cameraInfo);
+            await ConnectAndExposeAsync(newFocuser, newCamera, "after the recovery");
+            Assert.That(newFocuser.ServerConnectionLost, Is.False);
+            Assert.That(newCamera.ServerConnectionLost, Is.False);
         }
 
         private async Task ConnectAndExposeAsync(INDIFocuser focuser, INDICamera camera, string when) {

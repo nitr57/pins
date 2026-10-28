@@ -355,6 +355,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 while (Slewing) {
                     await CoreUtil.Wait(TimeSpan.FromSeconds(profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval));
                 }
+
+                ThrowIfServerConnectionLost("Setting the pier side");
                 return true;
             } catch (Exception ex) {
                 Logger.Error("Failed to flip side of pier", ex);
@@ -637,6 +639,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                         while (Slewing) {
                             await CoreUtil.Wait(TimeSpan.FromSeconds(profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval), token);
                         }
+
+                        ThrowIfServerConnectionLost("Slew");
                     }
 
                     // Some AltAz mount INDI drivers reset tracking state when a SLEW goto
@@ -674,6 +678,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                         while (Slewing) {
                             await CoreUtil.Wait(TimeSpan.FromSeconds(profileService.ActiveProfile.ApplicationSettings.DevicePollingInterval), token);
                         }
+
+                        ThrowIfServerConnectionLost("Slew");
                     }
 
                     return true;

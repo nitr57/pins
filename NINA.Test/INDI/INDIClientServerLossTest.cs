@@ -139,6 +139,22 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
+        public async Task LostConnectionDuringConnect_EndsDisconnected() {
+            // The driver is connected at the server, so the connect skips CONNECT and waits for
+            // ABS_FOCUS_POSITION, which never comes
+            var focuser = await RegisterFocuserAsync(withPosition: false);
+            var connect = focuser.Connect(CancellationToken.None);
+            await Task.Delay(500);
+
+            main.Close();
+
+            Assert.That(await Task.WhenAny(connect, Task.Delay(Timeout)), Is.SameAs(connect), "the connect ends instead of waiting 20 s for the property");
+            Assert.That(await connect, Is.False);
+            Assert.That(focuser.Connected, Is.False);
+            Assert.That(focuser.ServerConnectionLost, Is.True);
+        }
+
+        [Test]
         public async Task Disconnect_IsNotRecovered() {
             client.Disconnect();
 
@@ -148,23 +164,36 @@ namespace NINA.Test.INDI {
         }
 
         private async Task<INDIFocuser> ConnectFocuserAsync() {
-            var create = Task.Run(() => new INDIFocuser(new INDIDeviceInfo { Id = Focuser, Name = Focuser, Interface = DeviceInterface.FOCUSER_INTERFACE }));
-            // The new device asks for its properties and waits for CONNECTION. The driver is already
-            // connected, so Connect sends no CONNECT and needs no answer.
-            await main.WaitForAsync($"<getProperties version=\"1.7\" device=\"{Focuser}\" />", Timeout);
-            main.Send(FocuserDefinitions());
-            Assert.That(await Task.WhenAny(create, Task.Delay(Timeout)), Is.SameAs(create), "the focuser registers");
-            var focuser = await create;
-
-            await WaitUntilAsync(() => focuser.GetNumberProperty("ABS_FOCUS_POSITION") != null, "ABS_FOCUS_POSITION is defined");
+            var focuser = await RegisterFocuserAsync(withPosition: true);
             Assert.That(await focuser.Connect(CancellationToken.None), Is.True);
             Assert.That(focuser.Connected, Is.True);
             return focuser;
         }
 
-        private static string FocuserDefinitions() {
-            return $"<defSwitchVector device=\"{Focuser}\" name=\"CONNECTION\" label=\"Connection\" group=\"Main\" state=\"Ok\" perm=\"rw\" rule=\"OneOfMany\" timeout=\"60\">"
-                + "<defSwitch name=\"CONNECT\" label=\"Connect\">On</defSwitch><defSwitch name=\"DISCONNECT\" label=\"Disconnect\">Off</defSwitch></defSwitchVector>\n"
+        private async Task<INDIFocuser> RegisterFocuserAsync(bool withPosition) {
+            var create = Task.Run(() => new INDIFocuser(new INDIDeviceInfo { Id = Focuser, Name = Focuser, Interface = DeviceInterface.FOCUSER_INTERFACE }));
+            // The new device asks for its properties and waits for CONNECTION. The driver is already
+            // connected, so Connect sends no CONNECT and needs no answer.
+            await main.WaitForAsync($"<getProperties version=\"1.7\" device=\"{Focuser}\" />", Timeout);
+            main.Send(FocuserDefinitions(withPosition));
+            Assert.That(await Task.WhenAny(create, Task.Delay(Timeout)), Is.SameAs(create), "the focuser registers");
+            var focuser = await create;
+
+            if (withPosition) {
+                await WaitUntilAsync(() => focuser.GetNumberProperty("ABS_FOCUS_POSITION") != null, "ABS_FOCUS_POSITION is defined");
+            }
+
+            return focuser;
+        }
+
+        private static string FocuserDefinitions(bool withPosition = true) {
+            var connection = $"<defSwitchVector device=\"{Focuser}\" name=\"CONNECTION\" label=\"Connection\" group=\"Main\" state=\"Ok\" perm=\"rw\" rule=\"OneOfMany\" timeout=\"60\">"
+                + "<defSwitch name=\"CONNECT\" label=\"Connect\">On</defSwitch><defSwitch name=\"DISCONNECT\" label=\"Disconnect\">Off</defSwitch></defSwitchVector>\n";
+            if (!withPosition) {
+                return connection;
+            }
+
+            return connection
                 + $"<defNumberVector device=\"{Focuser}\" name=\"ABS_FOCUS_POSITION\" label=\"Absolute Position\" group=\"Main Control\" state=\"Ok\" perm=\"rw\" timeout=\"60\">"
                 + "<defNumber name=\"FOCUS_ABSOLUTE_POSITION\" label=\"Steps\" format=\"%.f\" min=\"0\" max=\"100000\" step=\"1\">1000</defNumber></defNumberVector>\n";
         }

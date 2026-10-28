@@ -89,6 +89,17 @@ namespace NINA.INDI {
         private const int MaxRecoveries = 3;
         private static readonly TimeSpan RecoveryWindow = TimeSpan.FromMinutes(10);
 
+        // Only a server that was ready once is recovered; a failed start stays a start error.
+        private volatile bool _everReady;
+
+        // Set when the client gave up recovering, so later reports of the same loss stay quiet.
+        private volatile bool _gaveUp;
+
+        // The session whose main receive loop ended, set before the loss is reported. FinishRecovery finds a
+        // loss that was turned away during a recovery through it: the loop's task itself only completes after
+        // that report has returned.
+        private volatile CancellationTokenSource _endedSession;
+
         private readonly Dictionary<string, INDIDeviceInfo> _discoveredDevices = [];
         // Multiple devices can share the same INDI device name when the driver exposes
         // both a telescope and a focuser interface (e.g. indi_lx200generic).
@@ -149,11 +160,13 @@ namespace NINA.INDI {
                     try {
                         ready = await StartServerInFifoMode();
                     } finally {
+                        _everReady = ready;
                         _serverReadyTcs.TrySetResult(ready);
-                        FinishRecovery();
+                        FinishRecovery(ready);
                     }
                 });
             } else {
+                _everReady = true;
                 _serverReadyTcs.SetResult(true);
             }
         }
@@ -212,9 +225,10 @@ namespace NINA.INDI {
                     // A lost session is cancelled first, so it applies no element it still has buffered
                     await ReceiveLoop(stream, token, xml => {
                         if (!token.IsCancellationRequested) {
-                            ProcessMainElement(xml);
+                            ProcessMainElement(xml, token);
                         }
                     }, "main connection");
+                    _endedSession = session;
                     OnMainConnectionEnded(session);
                 });
 
@@ -254,7 +268,7 @@ namespace NINA.INDI {
             try {
                 // Unload drivers - devices will see IsConnected=false and skip waiting
                 // Only try to gracefully unload drivers if server process is still alive
-                if (_process != null && !_process.HasExited) {
+                if (IsServerProcessRunning()) {
                     List<string> driversToUnload;
                     lock (_driverLock) {
                         driversToUnload = _loadedDrivers.ToList();
@@ -707,8 +721,8 @@ namespace NINA.INDI {
             }
         }
 
-        private void ProcessMainElement(string xmlText) {
-            ProcessElement(XElement.Parse(xmlText));
+        private void ProcessMainElement(string xmlText, CancellationToken session) {
+            ProcessElement(XElement.Parse(xmlText), session);
         }
 
         private void ProcessBlobElement(string xmlText) {
@@ -1426,7 +1440,9 @@ namespace NINA.INDI {
             }
         }
 
-        private void ProcessElement(XElement element) {
+        // <paramref name="session"/>: the main connection's session. Checked again under _lock, since a lost
+        // session is torn down under that lock and must not apply an element after its stores were cleared.
+        private void ProcessElement(XElement element, CancellationToken session = default) {
             var deviceName = element.Attribute("device")?.Value ?? string.Empty;
             var propertyName = element.Attribute("name")?.Value ?? string.Empty;
 
@@ -1438,6 +1454,10 @@ namespace NINA.INDI {
             }
 
             lock (_lock) {
+                if (session.IsCancellationRequested) {
+                    return;
+                }
+
                 INDIProperty property;
                 switch (element.Name.LocalName) {
                     case "defNumberVector": {
@@ -1756,8 +1776,18 @@ namespace NINA.INDI {
         /// reconnects to, or restarts, indiserver. Equipment is not reconnected: after the recovery it can
         /// be connected again as usual.
         /// </summary>
-        private void HandleServerConnectionLost(string reason) {
-            if (_shuttingDown || Interlocked.Exchange(ref _recovering, 1) == 1) {
+        private void HandleServerConnectionLost(string reason, bool announce = true) {
+            if (_shuttingDown || _gaveUp) {
+                return;
+            }
+
+            if (!_everReady) {
+                // The server never came up, so there is nothing to recover; the start already reported its failure
+                Logger.Error($"INDI: {reason} before the INDI server was ever ready");
+                return;
+            }
+
+            if (Interlocked.Exchange(ref _recovering, 1) == 1) {
                 // During a start or recovery FinishRecovery picks the loss up
                 return;
             }
@@ -1777,9 +1807,13 @@ namespace NINA.INDI {
                 Logger.Error($"INDI: cleaning up the lost INDI server connection failed: {ex.Message}");
             } finally {
                 if (recover) {
-                    Notification.ShowError("Lost the connection to the INDI server. Reconnecting to it; connect the INDI equipment again afterwards.");
+                    if (announce) {
+                        Notification.ShowError("Lost the connection to the INDI server. Reconnecting to it; connect the INDI equipment again afterwards.");
+                    }
+
                     _ = Task.Run(RecoverServerAsync);
                 } else {
+                    _gaveUp = true;
                     Logger.Error($"INDI: the INDI server connection was lost {MaxRecoveries} times within {RecoveryWindow.TotalMinutes:F0} minutes; not recovering it again. Restart pins to use INDI devices.");
                     Notification.ShowError("The INDI server keeps stopping, so pins stopped reconnecting to it. Restart pins to use INDI equipment.");
                     _serverReadyTcs.TrySetResult(false);
@@ -1840,75 +1874,136 @@ namespace NINA.INDI {
 
                 if (recovered) {
                     Notification.ShowInformation("The INDI server is back. Connect the INDI equipment again.");
-                } else if (!_shuttingDown) {
-                    Logger.Error("INDI: could not recover the INDI server");
-                    Notification.ShowError("Could not reconnect to the INDI server. Restart pins to use INDI equipment.");
                 }
             } catch (Exception ex) {
                 Logger.Error($"INDI: recovering the INDI server failed: {ex.Message}");
             } finally {
                 _serverReadyTcs.TrySetResult(recovered);
-                FinishRecovery();
+                FinishRecovery(recovered);
             }
         }
 
-        // The drivers died with the old server. They are started again under the new one, so connecting
-        // the equipment works without a rescan; readiness is only signalled after that, so a GetDevices
-        // waiting for it cannot start a driver a second time.
+        // The drivers died with the old server. They are started again under the new one, so connecting the
+        // equipment works without a rescan, through LoadDriver, which tracks each one and waits until it has
+        // described itself. Readiness is only signalled after that, so a rescan right after it finds the devices.
+        // _getDriversSemaphore keeps a GetDevices that passed the readiness check before the loss from starting
+        // a driver of its own in between, which would run it twice.
         private async Task<bool> RestartServerAsync() {
             Logger.Warning("INDI: restarting indiserver");
 
-            List<string> drivers;
-            lock (_driverLock) {
-                drivers = _loadedDrivers.ToList();
-                _loadedDrivers.Clear();
-                _discoveredDevices.Clear();
-            }
-
-            var oldProcess = _process;
-            _process = null;
+            await _getDriversSemaphore.WaitAsync();
             try {
-                oldProcess?.Dispose();
-            } catch (Exception) {
-                // Only releasing the handle of a process that is gone
-            }
-
-            if (!await StartServerInFifoMode()) {
-                return false;
-            }
-
-            foreach (var driver in drivers) {
-                if (WriteFifoCommand($"start {driver}", TimeSpan.FromSeconds(5))) {
-                    lock (_driverLock) {
-                        _loadedDrivers.Add(driver);
-                    }
-
-                    Logger.Info($"INDI: started driver '{driver}' again");
+                Dictionary<string, DeviceInterface> drivers;
+                lock (_driverLock) {
+                    drivers = _loadedDrivers.ToDictionary(
+                        driver => driver,
+                        driver => _discoveredDevices.Values.Where(d => d.Driver == driver).Aggregate((DeviceInterface)0, (all, d) => all | d.Interface));
+                    _loadedDrivers.Clear();
+                    _discoveredDevices.Clear();
                 }
-            }
 
-            return true;
+                var oldProcess = _process;
+                _process = null;
+                try {
+                    oldProcess?.Dispose();
+                } catch (Exception) {
+                    // Only releasing the handle of a process that is gone
+                }
+
+                if (!await StartServerInFifoMode()) {
+                    return false;
+                }
+
+                await EndOldDriverProcessesAsync(drivers.Keys);
+
+                foreach (var (driver, deviceInterface) in drivers) {
+                    if (await LoadDriver(driver, deviceInterface)) {
+                        Logger.Info($"INDI: started driver '{driver}' again");
+                    } else {
+                        Logger.Error($"INDI: driver '{driver}' did not come back after the restart");
+                    }
+                }
+
+                // As GetDevices: multi-device drivers announce their further devices shortly after the first
+                await Task.Delay(TimeSpan.FromMilliseconds(500));
+                return true;
+            } finally {
+                _getDriversSemaphore.Release();
+            }
         }
 
-        // Ends a start or recovery. A loss during it was ignored (one recovery at a time), so check again.
-        private void FinishRecovery() {
+        // A driver ends when its server is gone (EOF on stdin), but one stuck in an SDK or USB call can outlive
+        // it for a moment and still hold its device, which the new instance then cannot open. Waits for them
+        // and kills what is left after DriverExitTimeout.
+        private static async Task EndOldDriverProcessesAsync(IEnumerable<string> drivers) {
+            var remaining = drivers.ToList();
+            var deadline = DateTime.UtcNow + DriverExitTimeout;
+            while (remaining.Count > 0) {
+                remaining = remaining.Where(driver => RunPgrep("-c", driver) > 0).ToList();
+                if (remaining.Count == 0 || DateTime.UtcNow > deadline) {
+                    break;
+                }
+
+                await Task.Delay(200);
+            }
+
+            foreach (var driver in remaining) {
+                Logger.Warning($"INDI: driver '{driver}' outlived its server, killing it");
+                using var pkill = Process.Start(new ProcessStartInfo("pkill", $"-9 -f \"^{driver}( |$)\"") {
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                });
+                pkill?.WaitForExit();
+            }
+        }
+
+        private static readonly TimeSpan DriverExitTimeout = TimeSpan.FromSeconds(5);
+
+        // Matches driver processes by command line: Linux cuts process names to 15 characters, which many
+        // INDI driver names share
+        private static int RunPgrep(string options, string driver) {
+            try {
+                var startInfo = new ProcessStartInfo("pgrep", $"{options} -f \"^{driver}( |$)\"") {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true
+                };
+                using var pgrep = Process.Start(startInfo);
+                var output = pgrep!.StandardOutput.ReadToEnd();
+                pgrep.WaitForExit();
+                return int.TryParse(output.Trim(), out var count) ? count : 0;
+            } catch (Exception ex) {
+                Logger.Warning($"INDI: could not look for old '{driver}' processes: {ex.Message}");
+                return 0;
+            }
+        }
+
+        // Ends a start or recovery. A loss during it was turned away (one recovery at a time), so check again.
+        // After a failed recovery a loss found here is retried without announcing it a second time.
+        private void FinishRecovery(bool recovered) {
+            // Released before checking, so a loss reported from now on starts a recovery by itself, and one
+            // reported before was marked in _endedSession or shows in the process state
             Interlocked.Exchange(ref _recovering, 0);
 
-            if (_shuttingDown) {
+            if (_shuttingDown || _gaveUp || !_everReady) {
                 return;
             }
 
-            var receiveTask = _receiveTask;
-            if (receiveTask != null && receiveTask.IsCompleted) {
-                HandleServerConnectionLost("the connection to indiserver ended during the recovery");
+            var session = _cts;
+            if (session != null && ReferenceEquals(_endedSession, session) && !session.IsCancellationRequested) {
+                HandleServerConnectionLost("the connection to indiserver ended during the recovery", announce: recovered);
             } else if (_managesServer && _process != null && !IsServerProcessRunning()) {
-                HandleServerConnectionLost("indiserver exited during the recovery");
+                HandleServerConnectionLost("indiserver exited during the recovery", announce: recovered);
+            } else if (!recovered) {
+                Logger.Error("INDI: could not recover the INDI server");
+                Notification.ShowError("Could not reconnect to the INDI server. Restart pins to use INDI equipment.");
             }
         }
 
         private bool IsServerProcessRunning() {
+            var process = _process;
             try {
-                return _process != null && !_process.HasExited;
+                return process != null && !process.HasExited;
             } catch (InvalidOperationException) {
                 return false;
             }

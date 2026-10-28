@@ -129,6 +129,16 @@ namespace NINA.Equipment.Equipment {
 
         protected bool ShouldBeConnected => connectedExpectation;
 
+        /// <summary>
+        /// For waits in this layer that a lost INDI server connection ends early (the device's properties are
+        /// gone, so e.g. Slewing reads false): the operation then fails instead of reporting success.
+        /// </summary>
+        protected void ThrowIfServerConnectionLost(string operation) {
+            if (device?.ServerConnectionLost == true) {
+                throw new InvalidOperationException($"{operation} failed: the connection to the INDI server was lost");
+            }
+        }
+
         public bool Connected {
             get {
                 lock (lockObj) {
