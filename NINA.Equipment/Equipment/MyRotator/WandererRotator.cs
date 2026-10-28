@@ -62,7 +62,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     } else {
                         if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
                             Logger.Error($"WandererRotator communication error to get moving state {err}");
-                            DisconnectOnRemovedError();
+                            OnCommunicationError();
                         } else {
                             Logger.Error($"WandererRotator error to get moving state {err}");
                         }
@@ -70,7 +70,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator IsMoving crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return false;
                 }
             }
@@ -92,7 +92,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator Reverse getter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return false;
                 }
             }
@@ -106,7 +106,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     RaisePropertyChanged(nameof(Reverse));
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator Reverse setter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                 }
             }
         }
@@ -127,7 +127,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator Overshoot getter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return false;
                 }
             }
@@ -141,7 +141,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     RaisePropertyChanged();
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator Overshoot setter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                 }
             }
         }
@@ -161,7 +161,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator OvershootAngle getter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return float.NaN;
                 }
             }
@@ -175,7 +175,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     RaisePropertyChanged();
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator OvershootAngle setter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                 }
             }
         }
@@ -195,7 +195,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator OvershootDirection getter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return false;
                 }
             }
@@ -209,7 +209,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     RaisePropertyChanged();
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator OvershootDirection setter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                 }
             }
         }
@@ -230,7 +230,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator Backlash getter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return float.NaN;
                 }
             }
@@ -244,7 +244,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     RaisePropertyChanged();
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator Backlash setter crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                 }
             }
         }
@@ -275,7 +275,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     } else {
                         if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
                             Logger.Error($"WandererRotator communication error to get Position state {err}");
-                            DisconnectOnRemovedError();
+                            OnCommunicationError();
                         } else {
                             Logger.Error($"WandererRotator error to get Position {err}");
                         }
@@ -283,7 +283,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator MechanicalPosition crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return -1;
                 }
             }
@@ -296,7 +296,32 @@ namespace NINA.Equipment.Equipment.MyRotator {
             Logger.Debug($"Mechanical Position is {MechanicalPosition}° - Sync Position to Sky Angle {skyAngle}° using offset {offset}");
         }
 
-        private void DisconnectOnRemovedError() {
+        // A single failed read (e.g. a status poll timing out under USB load) must not tear down the connection, as
+        // for the Nitecrawler: the rotator only counts as lost after MaxCommunicationErrors within CommunicationErrorWindow.
+        private const int MaxCommunicationErrors = 3;
+        private static readonly TimeSpan CommunicationErrorWindow = TimeSpan.FromSeconds(30);
+        private readonly Queue<DateTime> communicationErrors = new();
+
+        /// <summary>
+        /// Counts a communication error and disconnects once there were too many in a short time. Returns true while the
+        /// connection is kept.
+        /// </summary>
+        private bool OnCommunicationError() {
+            lock (communicationErrors) {
+                var now = DateTime.UtcNow;
+                communicationErrors.Enqueue(now);
+                while (communicationErrors.Count > 0 && now - communicationErrors.Peek() > CommunicationErrorWindow) {
+                    communicationErrors.Dequeue();
+                }
+
+                if (communicationErrors.Count < MaxCommunicationErrors) {
+                    Logger.Warning($"WandererRotator communication error {communicationErrors.Count}/{MaxCommunicationErrors} within {CommunicationErrorWindow.TotalSeconds:F0}s, keeping the connection");
+                    return true;
+                }
+
+                communicationErrors.Clear();
+            }
+
             try {
                 Notification.ShowWarning(Loc.Instance["LblRotatorConnectionLost"]);
                 Logger.Error($"WandererRotator device was removed");
@@ -304,6 +329,8 @@ namespace NINA.Equipment.Equipment.MyRotator {
             } catch (Exception ex) {
                 Logger.Error(ex);
             }
+
+            return false;
         }
 
         public float StepSize {
@@ -318,7 +345,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     } else {
                         if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
                             Logger.Error($"WandererRotator communication error to get step size state {err}");
-                            DisconnectOnRemovedError();
+                            OnCommunicationError();
                         } else {
                             Logger.Error($"WandererRotator error to get Position {err}");
                         }
@@ -326,7 +353,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     }
                 } catch (Exception ex) {
                     Logger.Error($"WandererRotator StepSize crashed: {ex}");
-                    DisconnectOnRemovedError();
+                    OnCommunicationError();
                     return -1;
                 }
             }
@@ -351,7 +378,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 }
             } catch (Exception ex) {
                 Logger.Error($"WandererRotator ResetPosition crashed: {ex}");
-                DisconnectOnRemovedError();
+                OnCommunicationError();
             }
         }
 
@@ -377,7 +404,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 }
             } catch (Exception ex) {
                 Logger.Error($"WandererRotator SyncToPosition crashed: {ex}");
-                DisconnectOnRemovedError();
+                OnCommunicationError();
             }
         }
 
@@ -498,7 +525,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 RotatorStopMove(_uniqueId);
             } catch (Exception ex) {
                 Logger.Error($"WandererRotator Halt crashed: {ex}");
-                DisconnectOnRemovedError();
+                OnCommunicationError();
             }
         }
 
@@ -528,18 +555,26 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 do {
                     err = RotatorGetStatus(_uniqueId, out status);
 
+                    var moving = status.moving == 1;
                     if (err != WR_ERROR_TYPE.WR_SUCCESS) {
-                        if (err == WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
-                            DisconnectOnRemovedError();
-                        } else {
+                        if (err != WR_ERROR_TYPE.WR_ERROR_COMMUNICATION) {
                             Logger.Error($"WandererRotator error to get moving state {err}");
+                            throw new Exception($"Rotator error {err}");
                         }
 
-                        throw new Exception($"Rotator error {err}");
+                        if (!OnCommunicationError()) {
+                            throw new Exception($"Rotator error {err}");
+                        }
+
+                        // A single failed poll: keep waiting for the move rather than aborting it
+                        moving = true;
                     }
 
                     await CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
-                } while (status.moving == 1 && !ct.IsCancellationRequested);
+                    if (!moving) {
+                        break;
+                    }
+                } while (!ct.IsCancellationRequested);
 
                 return true;
             } catch (OperationCanceledException) {
@@ -548,7 +583,11 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 return false;
             } catch (Exception ex) {
                 Logger.Error($"WandererRotator Move crashed: {ex}");
-                DisconnectOnRemovedError();
+                // Not again when the status poll's error already disconnected it
+                if (Connected) {
+                    OnCommunicationError();
+                }
+
                 return false;
             }
         }
