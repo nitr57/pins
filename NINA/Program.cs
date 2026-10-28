@@ -7,6 +7,7 @@ using NINA.Core.Utility.Notification;
 using NINA.Core.SignalR;
 using System;
 using System.Globalization;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
@@ -51,6 +52,14 @@ AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
 
 // A faulted task nobody awaited doesn't end the process, but its exception would otherwise vanish
 TaskScheduler.UnobservedTaskException += (sender, e) => {
+    // ASCOM Alpaca discovery closes its UDP sockets with a receive still pending and never ends it
+    var onlyAbortedSocketReceives = e.Exception.InnerExceptions.All(ex => ex is SocketException { SocketErrorCode: SocketError.OperationAborted });
+
+    if (onlyAbortedSocketReceives) {
+        Logger.Debug($"An unobserved socket receive was aborted when its socket closed: {e.Exception.InnerException?.Message}");
+        return;
+    }
+
     Logger.Error($"An unobserved task exception has occurred of type {e.Exception.InnerException?.GetType() ?? e.Exception.GetType()}", e.Exception);
 };
 
