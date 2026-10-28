@@ -21,5 +21,11 @@ namespace NINA.INDI.Interfaces {
         string[] Names { get; }
         int Position { get; set; }
         bool IsMoving { get; }
+
+        /// <summary>
+        /// Gives up on a move the driver did not report done in time. When no FILTER_SLOT update arrived
+        /// since the command, Position reads the slot from before it again instead of the target that was sent.
+        /// </summary>
+        void AbandonMove();
     }
 }

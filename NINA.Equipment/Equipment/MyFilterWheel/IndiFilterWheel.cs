@@ -62,6 +62,9 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
             while (device.IsMoving) {
                 if (DateTime.UtcNow > deadline) {
                     Logger.Warning($"Filter wheel did not report move completion within {MoveTimeout.TotalSeconds:F0}s - giving up waiting");
+                    // Without any answer the position still reads the target that was sent, which would pass
+                    // FilterWheelVM's position check and turn a retry to the same filter into a no-op
+                    device.AbandonMove();
                     return;
                 }
 

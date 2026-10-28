@@ -18,6 +18,7 @@ using NINA.INDI.Interfaces;
 using NINA.INDI.Protocol;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -47,6 +48,9 @@ namespace NINA.INDI.Devices {
 
             switch (p.Name) {
                 case "FILTER_SLOT":
+                    // The local copy now holds the driver's value, so AbandonMove leaves it alone
+                    Interlocked.Increment(ref _slotUpdates);
+
                     // Check if moving based on state
                     _isMoving = p.State == PropertyState.Busy;
                     break;
@@ -77,6 +81,14 @@ namespace NINA.INDI.Devices {
 
         private bool _isMoving;
         public bool IsMoving => _isMoving;
+
+        // SetNumberValue writes the target into the local FILTER_SLOT_VALUE before sending it, so
+        // Position reads the target until the driver answers. The slot from before the command and
+        // the count of FILTER_SLOT updates at that time let AbandonMove put the old slot back when
+        // no answer arrived.
+        private int _slotUpdates;
+        private int _slotUpdatesAtCommand;
+        private double? _slotBeforeCommand;
 
         public int[] FocusOffsets {
             get {
@@ -111,17 +123,37 @@ namespace NINA.INDI.Devices {
                     Logger.Warning("Cannot set filter position: not connected");
                     return;
                 }
+
+                _slotBeforeCommand =GetNumberPropertyValue("FILTER_SLOT", "FILTER_SLOT_VALUE");
+                _slotUpdatesAtCommand = Volatile.Read(ref _slotUpdates);
                 _isMoving = true;
                 SetNumberValue("FILTER_SLOT", "FILTER_SLOT_VALUE", value + 1);
                 Logger.Info($"Commanded filter wheel to position {value}");
             }
         }
 
+        public void AbandonMove() {
+            _isMoving = false;
+
+            if (Volatile.Read(ref _slotUpdates) != _slotUpdatesAtCommand || _slotBeforeCommand is not double slotBefore) {
+                // The driver answered, so the local copy holds its value
+                return;
+            }
+
+            var number = GetNumberProperty("FILTER_SLOT")?.Numbers.FirstOrDefault(n => n.Name == "FILTER_SLOT_VALUE");
+            if (number == null) {
+                return;
+            }
+
+            Logger.Warning($"Filter wheel driver never answered the move to position {(int)number.Value - 1}, position stays at {(int)slotBefore - 1}");
+            number.Value = slotBefore;
+        }
+
         // Ceiling for MoveToPositionAsync's poll loop. _isMoving is only ever cleared by a
         // driver update (FILTER_SLOT leaving Busy state), so a driver that stops replying
         // mid-move would otherwise leave the caller polling forever with only its own
-        // cancellation token as a way out.
-        private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(1);
+        // cancellation token as a way out. Internal so tests can shorten it.
+        internal TimeSpan MoveTimeout { get; set; } = TimeSpan.FromMinutes(1);
 
         public async Task MoveToPositionAsync(int position, CancellationToken ct = default) {
             if (!Connected) {
@@ -135,8 +167,8 @@ namespace NINA.INDI.Devices {
             var started = DateTime.UtcNow;
             while (_isMoving && !ct.IsCancellationRequested) {
                 if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Filter wheel did not report move completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
+                    AbandonMove();
+                    throw new TimeoutException($"Filter wheel did not report move completion within {MoveTimeout.TotalSeconds:F0}s");
                 }
                 await Task.Delay(100, ct);
             }
