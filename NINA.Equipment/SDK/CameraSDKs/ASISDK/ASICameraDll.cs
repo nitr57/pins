@@ -13,9 +13,49 @@ using System.Threading;
 
 namespace ZWOptical.ASISDK {
 
+    /// <summary>
+    /// The locks around the ASI SDK calls. SDK-wide calls (the camera list and properties by index, open, init, close,
+    /// the SDK version) run alone, as every call did before pins drove two ZWO cameras in one process. A call for one
+    /// camera only waits for calls on the same camera and for the SDK-wide ones, so a guide camera can start an exposure
+    /// or download while the imaging camera downloads its frame; indi_asi_ccd also drives several cameras in one process
+    /// without a lock across them.
+    /// </summary>
+    internal static class AsiSdkGate {
+        private static readonly ReaderWriterLockSlim sdkLock = new(LockRecursionPolicy.NoRecursion);
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<int, Lock> cameraLocks = new();
+
+        public static SdkScope Sdk() => new SdkScope(0);
+
+        public static CameraScope Camera(int cameraId) => new CameraScope(cameraId);
+
+        public ref struct SdkScope {
+            internal SdkScope(int _) => sdkLock.EnterWriteLock();
+
+            public void Dispose() => sdkLock.ExitWriteLock();
+        }
+
+        public ref struct CameraScope {
+            private Lock.Scope camera;
+
+            internal CameraScope(int cameraId) {
+                sdkLock.EnterReadLock();
+                try {
+                    camera = cameraLocks.GetOrAdd(cameraId, _ => new Lock()).EnterScope();
+                } catch {
+                    sdkLock.ExitReadLock();
+                    throw;
+                }
+            }
+
+            public void Dispose() {
+                camera.Dispose();
+                sdkLock.ExitReadLock();
+            }
+        }
+    }
+
     public static class ASICameraDll {
         private const string DLLNAME = "libASICamera2.so";
-        private static readonly Lock lockobj = new ();
 
         static ASICameraDll() {
             DllLoader.LoadDll(Path.Combine("ASI", DLLNAME));
@@ -302,7 +342,7 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static ASI_CAMERA_INFO GetCameraProperties(int cameraIndex) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Sdk();
             ASI_CAMERA_INFO result;
             CheckReturn(ASIGetCameraProperty(out result, cameraIndex), MethodBase.GetCurrentMethod(), cameraIndex);
             return result;
@@ -310,7 +350,7 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static ASI_CAMERA_INFO GetCameraPropertiesByCameraId(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             ASI_CAMERA_INFO result;
             CheckReturn(ASIGetCameraPropertyByID(cameraId, out result), MethodBase.GetCurrentMethod(), cameraId);
             return result;
@@ -352,31 +392,31 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static int GetNumOfConnectedCameras() {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Sdk();
             return ASIGetNumOfConnectedCameras();
         }
 
         [SecurityCritical]
         public static void OpenCamera(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Sdk();
             CheckReturn(ASIOpenCamera(cameraId), MethodBase.GetCurrentMethod(), cameraId);
         }
 
         [SecurityCritical]
         public static void InitCamera(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Sdk();
             CheckReturn(ASIInitCamera(cameraId), MethodBase.GetCurrentMethod(), cameraId);
         }
 
         [SecurityCritical]
         public static void CloseCamera(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Sdk();
             CheckReturn(ASICloseCamera(cameraId), MethodBase.GetCurrentMethod(), cameraId);
         }
 
         [SecurityCritical]
         public static int GetNumOfControls(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             int result;
             CheckReturn(ASIGetNumOfControls(cameraId, out result), MethodBase.GetCurrentMethod(), cameraId);
             return result;
@@ -384,7 +424,7 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static ASI_CONTROL_CAPS GetControlCaps(int cameraIndex, int controlIndex) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraIndex);
             ASI_CONTROL_CAPS result;
             CheckReturn(ASIGetControlCaps(cameraIndex, controlIndex, out result), MethodBase.GetCurrentMethod(), cameraIndex, controlIndex);
             return result;
@@ -392,7 +432,7 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static long GetControlValue(int cameraId, ASI_CONTROL_TYPE controlType, out bool isAuto) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             ASI_BOOL auto;
             long result;
             CheckReturn(ASIGetControlValue(cameraId, controlType, out result, out auto), MethodBase.GetCurrentMethod(), cameraId, controlType);
@@ -402,19 +442,19 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static void SetControlValue(int cameraId, ASI_CONTROL_TYPE controlType, long value, bool auto) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASISetControlValue(cameraId, controlType, value, auto ? ASI_BOOL.ASI_TRUE : ASI_BOOL.ASI_FALSE), MethodBase.GetCurrentMethod(), cameraId, controlType, value, auto);
         }
 
         [SecurityCritical]
         public static void SetROIFormat(int cameraId, Size size, int bin, ASI_IMG_TYPE imageType) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASISetROIFormat(cameraId, size.Width, size.Height, bin, imageType), MethodBase.GetCurrentMethod(), cameraId, size, bin, imageType);
         }
 
         [SecurityCritical]
         public static Size GetROIFormat(int cameraId, out int bin, out ASI_IMG_TYPE imageType) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             int width, height;
             CheckReturn(ASIGetROIFormat(cameraId, out width, out height, out bin, out imageType), MethodBase.GetCurrentMethod(), cameraId, bin);
             return new Size(width, height);
@@ -422,20 +462,20 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static void SetStartPos(int cameraId, Point startPos) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASISetStartPos(cameraId, startPos.X, startPos.Y), MethodBase.GetCurrentMethod(), cameraId, startPos);
         }
 
         [SecurityCritical]
         public static Point GetStartPos(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             int x, y;
             CheckReturn(ASIGetStartPos(cameraId, out x, out y), MethodBase.GetCurrentMethod(), cameraId);
             return new Point(x, y);
         }
 
         public static int GetDroppedFrames(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             int result;
             CheckReturn(ASIGetDroppedFrames(cameraId, out result), MethodBase.GetCurrentMethod(), cameraId);
             return result;
@@ -443,19 +483,19 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static void StartVideoCapture(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASIStartVideoCapture(cameraId), MethodBase.GetCurrentMethod(), cameraId);
         }
 
         [SecurityCritical]
         public static void StopVideoCapture(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASIStopVideoCapture(cameraId), MethodBase.GetCurrentMethod(), cameraId);
         }
 
         [SecurityCritical]
         public static bool GetVideoData(int cameraId, ushort[] buffer, long bufferSize, int waitMs) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             var result = ASIGetVideoData(cameraId, buffer, bufferSize, waitMs);
 
             if (result == ASI_ERROR_CODE.ASI_ERROR_TIMEOUT)
@@ -467,31 +507,31 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static void PulseGuideOn(int cameraId, ASI_GUIDE_DIRECTION direction) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASIPulseGuideOn(cameraId, direction), MethodBase.GetCurrentMethod(), cameraId, direction);
         }
 
         [SecurityCritical]
         public static void PulseGuideOff(int cameraId, ASI_GUIDE_DIRECTION direction) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASIPulseGuideOff(cameraId, direction), MethodBase.GetCurrentMethod(), cameraId, direction);
         }
 
         [SecurityCritical]
         public static void StartExposure(int cameraId, bool isDark) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASIStartExposure(cameraId, isDark ? ASI_BOOL.ASI_TRUE : ASI_BOOL.ASI_FALSE), MethodBase.GetCurrentMethod(), cameraId, isDark);
         }
 
         [SecurityCritical]
         public static void StopExposure(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             CheckReturn(ASIStopExposure(cameraId), MethodBase.GetCurrentMethod(), cameraId);
         }
 
         [SecurityCritical]
         public static ASI_EXPOSURE_STATUS GetExposureStatus(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             ASI_EXPOSURE_STATUS result;
             CheckReturn(ASIGetExpStatus(cameraId, out result), MethodBase.GetCurrentMethod(), cameraId);
             return result;
@@ -499,7 +539,7 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static bool GetDataAfterExp(int cameraId, ushort[] buffer, long bufferSize) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             var result = ASIGetDataAfterExp(cameraId, buffer, bufferSize);
             if (result == ASI_ERROR_CODE.ASI_ERROR_TIMEOUT)
                 return false;
@@ -510,7 +550,7 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static string GetSDKVersion() {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Sdk();
             IntPtr p = ASIGetSDKVersion();
             string version = System.Runtime.InteropServices.Marshal.PtrToStringAnsi(p);
 
@@ -519,13 +559,13 @@ namespace ZWOptical.ASISDK {
 
         [SecurityCritical]
         public static string GetId(int cameraId) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             return ASIGetID(cameraId, out ASI_ID id) == ASI_ERROR_CODE.ASI_SUCCESS ? id.ID : string.Empty;
         }
 
         [SecurityCritical]
         public static void SetId(int cameraId, string id) {
-            using var scope = lockobj.EnterScope();
+            using var scope = AsiSdkGate.Camera(cameraId);
             ASI_ID asiId = default;
             asiId.id = new byte[8];
 
