@@ -53,7 +53,8 @@ AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
 
 // A faulted task nobody awaited doesn't end the process, but its exception would otherwise vanish
 TaskScheduler.UnobservedTaskException += (sender, e) => {
-    // ASCOM Alpaca discovery closes its UDP sockets with a receive still pending and never ends it
+    // A socket closed with a receive still pending ends it as aborted; when nobody awaited it, that is no error. Seen
+    // from ASCOM Alpaca discovery's UDP sockets, but this matches any unobserved task that only holds such aborts.
     var onlyAbortedSocketReceives = e.Exception.InnerExceptions.All(ex => ex is SocketException { SocketErrorCode: SocketError.OperationAborted });
 
     if (onlyAbortedSocketReceives) {
