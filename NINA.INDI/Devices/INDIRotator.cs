@@ -126,8 +126,8 @@ namespace NINA.INDI.Devices {
         // Ceiling for MoveAsync's poll loop. IsMoving is only ever cleared by a driver update
         // (ABS_ROTATOR_ANGLE ending the move), so a driver that stops replying mid-move
         // (crash, cable pull) would otherwise leave the caller polling forever with only its
-        // own cancellation token as a way out.
-        private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(5);
+        // own cancellation token as a way out. Internal so tests can shorten it.
+        internal TimeSpan MoveTimeout { get; set; } = TimeSpan.FromMinutes(5);
 
         public async Task MoveAsync(float position, CancellationToken ct = default) {
             if (!Connected) {
@@ -141,9 +141,9 @@ namespace NINA.INDI.Devices {
             var started = DateTime.UtcNow;
             while (_move.IsMoving && !ct.IsCancellationRequested) {
                 if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Rotator did not report move completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    // A failure rather than a return: RotatorVM would otherwise wait without limit for the position
                     _move.Ended();
-                    break;
+                    throw new TimeoutException($"Rotator did not report move completion within {MoveTimeout.TotalSeconds:F0}s");
                 }
                 await Task.Delay(100, ct);
             }

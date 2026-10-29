@@ -39,6 +39,29 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
+        public void SecondUpdateAwayFromTheTarget_WithoutBusy_EndsTheMove() {
+            tracker.Commanded(90);
+            tracker.Updated(PropertyState.Ok, 10);
+
+            // the driver's own answer: it refused or limited the target without an Alert
+            tracker.Updated(PropertyState.Ok, 10);
+
+            Assert.That(tracker.IsMoving, Is.False);
+        }
+
+        [Test]
+        public void ANewCommand_IgnoresAStaleUpdateAgain() {
+            tracker.Commanded(90);
+            tracker.Updated(PropertyState.Ok, 10);
+            tracker.Updated(PropertyState.Ok, 10);
+
+            tracker.Commanded(180);
+            tracker.Updated(PropertyState.Ok, 10);
+
+            Assert.That(tracker.IsMoving, Is.True);
+        }
+
+        [Test]
         public void OkAfterBusy_EndsTheMove_WhereverItStopped() {
             tracker.Commanded(90);
             tracker.Updated(PropertyState.Busy, 40);

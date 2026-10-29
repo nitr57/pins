@@ -21,9 +21,11 @@ namespace NINA.INDI.Devices {
     /// Whether a move commanded through a number property (FILTER_SLOT, ABS_ROTATOR_ANGLE) is still running. A driver
     /// that polls its device sends the property with its old value and state Ok now and then, also between the command
     /// and its own Busy answer; taken for the end of the move, that let a filter change report done at the old slot.
-    /// So once a move was commanded, only an update that ends it counts: Alert (refused or failed), or an update that is
-    /// not Busy after a Busy one or at the target (a driver that answers a short move without Busy). Without a commanded
-    /// move, e.g. one started from the INDI control panel, the property's Busy state is the answer as before.
+    /// So once a move was commanded, only an update that ends it counts: Alert (refused or failed), an update that is not
+    /// Busy after a Busy one or at the target (a driver that answers a short move without Busy), or the second update away
+    /// from the target without Busy. Only one stale update can cross the command (the driver answers it as soon as it
+    /// reads it), so the second is the driver's own: it refused or limited the target without an Alert, or stopped short.
+    /// Without a commanded move, e.g. one started from the INDI control panel, the property's Busy state is the answer.
     /// </summary>
     internal sealed class MoveTracker {
         private readonly Func<double, double, bool> atTarget;
@@ -31,6 +33,7 @@ namespace NINA.INDI.Devices {
         private bool moving;
         private bool commanded;
         private bool busySeen;
+        private bool offTargetSeen;
         private double target;
 
         public MoveTracker(Func<double, double, bool> atTarget) {
@@ -51,6 +54,7 @@ namespace NINA.INDI.Devices {
                 moving = true;
                 commanded = true;
                 busySeen = false;
+                offTargetSeen = false;
                 this.target = target;
             }
         }
@@ -76,10 +80,13 @@ namespace NINA.INDI.Devices {
                     return;
                 }
 
-                if (state == PropertyState.Alert || busySeen || (value is double v && atTarget(v, target))) {
+                if (state == PropertyState.Alert || busySeen || offTargetSeen || (value is double v && atTarget(v, target))) {
                     moving = false;
                     commanded = false;
+                    return;
                 }
+
+                offTargetSeen = true;
             }
         }
     }
