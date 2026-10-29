@@ -132,6 +132,74 @@ namespace NINA.Test.SystemWindowsCompat {
             Assert.That(timer.Interval, Is.EqualTo(TimeSpan.FromMilliseconds(123)));
         }
 
+        // WPF runs every tick on its one dispatcher thread, so a handler slower than the interval delays the next tick
+        [Test]
+        public void DispatcherTimer_TicksNeverOverlap() {
+            using var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(10) };
+            int running = 0;
+            int maxRunning = 0;
+            int ticks = 0;
+            timer.Tick += (s, e) => {
+                int now = Interlocked.Increment(ref running);
+                InterlockedMax(ref maxRunning, now);
+                Thread.Sleep(50);
+                Interlocked.Decrement(ref running);
+                Interlocked.Increment(ref ticks);
+            };
+
+            timer.Start();
+            Thread.Sleep(600);
+            timer.Stop();
+
+            Assert.That(Volatile.Read(ref ticks), Is.GreaterThan(2), "it keeps ticking");
+            Assert.That(Volatile.Read(ref maxRunning), Is.EqualTo(1));
+        }
+
+        [Test]
+        public void DispatcherTimer_StopInATick_EndsTheTicks_AndIsEnabledStaysTrueWhileRunning() {
+            using var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+            int ticks = 0;
+            bool enabledInTick = false;
+            timer.Tick += (s, e) => {
+                enabledInTick = timer.IsEnabled;
+                Interlocked.Increment(ref ticks);
+                timer.Stop();
+            };
+
+            timer.Start();
+            Thread.Sleep(300);
+
+            Assert.That(Volatile.Read(ref ticks), Is.EqualTo(1));
+            Assert.That(enabledInTick, Is.True);
+            Assert.That(timer.IsEnabled, Is.False);
+        }
+
+        [Test]
+        public void DispatcherTimer_AfterDispose_DoesNothing() {
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+            int ticks = 0;
+            timer.Tick += (s, e) => Interlocked.Increment(ref ticks);
+            timer.Dispose();
+
+            Assert.DoesNotThrow(() => {
+                timer.Start();
+                timer.IsEnabled = true;
+                timer.Interval = TimeSpan.FromMilliseconds(30);
+                _ = timer.Interval;
+                timer.Stop();
+                timer.Dispose();
+            });
+            Thread.Sleep(100);
+            Assert.That(Volatile.Read(ref ticks), Is.Zero);
+            Assert.That(timer.IsEnabled, Is.False);
+        }
+
+        private static void InterlockedMax(ref int target, int value) {
+            int current;
+            while (value > (current = Volatile.Read(ref target)) && Interlocked.CompareExchange(ref target, value, current) != current) {
+            }
+        }
+
         // REVIEW.md F18: DispatcherOperation.Status was fixed to Completed at creation time even
         // though the backing Task.Run may still be executing, and Wait() returned immediately
         // without actually waiting.

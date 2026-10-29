@@ -164,34 +164,33 @@ namespace System.Windows.Threading {
     }
 
     /// <summary>
-    /// Timer that executes on the dispatcher (stub - uses System.Timers.Timer in headless mode)
+    /// Timer that executes on the dispatcher (stub - uses System.Timers.Timer in headless mode). Like WPF's, its ticks
+    /// never overlap: the inner timer fires once and is started again after the Tick handlers have run, so a slow
+    /// handler delays the next tick instead of running alongside it. Stop() or IsEnabled = false in a handler keeps it
+    /// from starting again, and after Dispose every member is a no-op instead of a NullReferenceException.
     /// </summary>
     public class DispatcherTimer : IDisposable {
-        private System.Timers.Timer _timer;
-
-        private volatile bool _disposed;
+        private readonly System.Timers.Timer _timer;
+        private readonly object _gate = new object();
+        private bool _enabled;
+        private bool _disposed;
 
         public DispatcherTimer() {
-            _timer = new System.Timers.Timer();
+            _timer = new System.Timers.Timer { AutoReset = false };
             _timer.Elapsed += OnTimerElapsed;
         }
 
-        public DispatcherTimer(DispatcherPriority priority) {
+        public DispatcherTimer(DispatcherPriority priority) : this() {
             // Ignore priority in headless mode
-            _timer = new System.Timers.Timer();
-            _timer.Elapsed += OnTimerElapsed;
         }
 
-        public DispatcherTimer(DispatcherPriority priority, Dispatcher dispatcher) {
+        public DispatcherTimer(DispatcherPriority priority, Dispatcher dispatcher) : this() {
             // Ignore priority and dispatcher in headless mode
-            _timer = new System.Timers.Timer();
-            _timer.Elapsed += OnTimerElapsed;
         }
 
-        public DispatcherTimer(System.TimeSpan interval, DispatcherPriority priority, System.EventHandler callback, Dispatcher dispatcher) {
+        public DispatcherTimer(System.TimeSpan interval, DispatcherPriority priority, System.EventHandler callback, Dispatcher dispatcher) : this() {
             // Ignore priority and dispatcher in headless mode
-            _timer = new System.Timers.Timer(interval.TotalMilliseconds);
-            _timer.Elapsed += OnTimerElapsed;
+            Interval = interval;
             Tick += callback;
             // WPF's 4-argument constructor starts the timer as part of construction; callers
             // (e.g. ProfileSelectVM.Wait100msNonBlocking) rely on that and never call Start().
@@ -199,29 +198,86 @@ namespace System.Windows.Threading {
         }
 
         private void OnTimerElapsed(object sender, System.Timers.ElapsedEventArgs e) {
-            if (_disposed) return;
-            Tick?.Invoke(this, EventArgs.Empty);
+            lock (_gate) {
+                if (_disposed || !_enabled) {
+                    return;
+                }
+            }
+
+            try {
+                Tick?.Invoke(this, EventArgs.Empty);
+            } finally {
+                lock (_gate) {
+                    // a handler may have stopped or disposed the timer
+                    if (!_disposed && _enabled) {
+                        _timer.Start();
+                    }
+                }
+            }
         }
 
         public TimeSpan Interval {
-            get => TimeSpan.FromMilliseconds(_timer.Interval);
-            set => _timer.Interval = value.TotalMilliseconds;
+            get {
+                lock (_gate) {
+                    return TimeSpan.FromMilliseconds(_timer.Interval);
+                }
+            }
+            set {
+                lock (_gate) {
+                    if (!_disposed) {
+                        _timer.Interval = value.TotalMilliseconds;
+                    }
+                }
+            }
         }
 
         public bool IsEnabled {
-            get => _timer.Enabled;
-            set => _timer.Enabled = value;
+            get {
+                lock (_gate) {
+                    return _enabled;
+                }
+            }
+            set {
+                if (value) {
+                    Start();
+                } else {
+                    Stop();
+                }
+            }
         }
 
         public event EventHandler Tick;
 
-        public void Start() => _timer.Start();
-        public void Stop() => _timer.Stop();
+        public void Start() {
+            lock (_gate) {
+                if (_disposed) {
+                    return;
+                }
+
+                _enabled = true;
+                _timer.Start();
+            }
+        }
+
+        public void Stop() {
+            lock (_gate) {
+                _enabled = false;
+                if (!_disposed) {
+                    _timer.Stop();
+                }
+            }
+        }
 
         public void Dispose() {
-            _disposed = true;
-            _timer?.Dispose();
-            _timer = null;
+            lock (_gate) {
+                if (_disposed) {
+                    return;
+                }
+
+                _disposed = true;
+                _enabled = false;
+                _timer.Dispose();
+            }
         }
     }
 }
