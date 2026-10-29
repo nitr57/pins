@@ -1004,6 +1004,16 @@ namespace NINA.INDI {
             _shuttingDown = true;
         }
 
+        /// <summary>
+        /// Runs <paramref name="action"/> under the lock the receive loop holds while it writes a property update and
+        /// calls the devices' handlers, for a device that checks and changes a stored property as one step.
+        /// </summary>
+        internal static void RunUnderPropertyLock(Action action) {
+            lock (_lock) {
+                action();
+            }
+        }
+
         public void Dispose() {
             Logger.Info("INDIClient.Dispose() starting cleanup");
             // The server and its connection now go away on purpose
