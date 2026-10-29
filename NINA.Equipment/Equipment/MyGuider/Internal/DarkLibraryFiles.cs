@@ -165,6 +165,8 @@ internal static class DarkLibraryFiles
                 ["GAIN"] = (gain ?? -1).ToString(CultureInfo.InvariantCulture),
                 ["OFFSET"] = (offset ?? -1).ToString(CultureInfo.InvariantCulture),
             })).ToList());
+            // on the disk before it replaces the library, which a power cut would otherwise leave empty
+            fs.Flush(flushToDisk: true);
         }
 
         File.Move(tmp, path, overwrite: true);

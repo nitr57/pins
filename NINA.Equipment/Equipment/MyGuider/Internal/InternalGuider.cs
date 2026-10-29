@@ -700,11 +700,14 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         guider?.ClearCalibration();
         try
         {
-            var store = LoadStore();
-            if (CalibrationKeyNow() is { } key && store.Remove(key))
+            StoreFile.Locked(StorePath, () =>
             {
-                SaveStore(store);
-            }
+                var store = LoadStore();
+                if (CalibrationKeyNow() is { } key && store.Remove(key))
+                {
+                    SaveStore(store);
+                }
+            });
         }
         catch (Exception ex)
         {
@@ -1863,27 +1866,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     private static CalibrationStore LoadStore()
     {
-        try
-        {
-            if (File.Exists(StorePath))
-            {
-                return CalibrationStore.FromJson(File.ReadAllText(StorePath));
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning($"InternalGuider: could not read calibrations: {ex.Message}");
-        }
-
-        return new CalibrationStore();
+        return StoreFile.Read(StorePath, CalibrationStore.FromJson, () => new CalibrationStore(), "calibrations");
     }
 
     private static void SaveStore(CalibrationStore store)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(StorePath)!);
-        var tmp = StorePath + ".tmp";
-        File.WriteAllText(tmp, store.ToJson());
-        File.Move(tmp, StorePath, overwrite: true);
+        StoreFile.Write(StorePath, store.ToJson());
     }
 
     private CalibrationKey? CalibrationKeyNow()
@@ -1948,9 +1936,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 return;
             }
 
-            var store = LoadStore();
-            store.Set(key, cu.Calibration);
-            SaveStore(store);
+            StoreFile.Locked(StorePath, () =>
+            {
+                var store = LoadStore();
+                store.Set(key, cu.Calibration);
+                SaveStore(store);
+            });
         }
         catch (Exception ex)
         {
@@ -1970,27 +1961,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     private PeriodicErrorStore LoadPeriodicErrorStore()
     {
-        try
-        {
-            if (File.Exists(periodicErrorStorePath))
-            {
-                return PeriodicErrorStore.FromJson(File.ReadAllText(periodicErrorStorePath));
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning($"InternalGuider: could not read the periodic error store: {ex.Message}");
-        }
-
-        return new PeriodicErrorStore();
+        return StoreFile.Read(periodicErrorStorePath, PeriodicErrorStore.FromJson, () => new PeriodicErrorStore(), "periodic error store");
     }
 
     private void SavePeriodicErrorStore(PeriodicErrorStore store)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(periodicErrorStorePath)!);
-        var tmp = periodicErrorStorePath + ".tmp";
-        File.WriteAllText(tmp, store.ToJson());
-        File.Move(tmp, periodicErrorStorePath, overwrite: true);
+        StoreFile.Write(periodicErrorStorePath, store.ToJson());
     }
 
     private void RestoreStoredPeriodicError()
@@ -2020,9 +1996,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     {
         try
         {
-            var store = LoadPeriodicErrorStore();
-            store.Set(PeriodicErrorKeyNow(), model);
-            SavePeriodicErrorStore(store);
+            StoreFile.Locked(periodicErrorStorePath, () =>
+            {
+                var store = LoadPeriodicErrorStore();
+                store.Set(PeriodicErrorKeyNow(), model);
+                SavePeriodicErrorStore(store);
+            });
         }
         catch (Exception ex)
         {
@@ -2035,13 +2014,16 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     {
         try
         {
-            var store = LoadPeriodicErrorStore();
-            var key = PeriodicErrorKeyNow();
-            if (store.Get(key) is { } stored && Math.Abs(stored.PeriodSeconds - model.PeriodSeconds) <= SameStoredPeriodTolerance * model.PeriodSeconds && store.Remove(key))
+            StoreFile.Locked(periodicErrorStorePath, () =>
             {
-                SavePeriodicErrorStore(store);
-                Logger.Info(FormattableString.Invariant($"InternalGuider: stored periodic error with period {model.PeriodSeconds:F1} s discarded: it no longer holds"));
-            }
+                var store = LoadPeriodicErrorStore();
+                var key = PeriodicErrorKeyNow();
+                if (store.Get(key) is { } stored && Math.Abs(stored.PeriodSeconds - model.PeriodSeconds) <= SameStoredPeriodTolerance * model.PeriodSeconds && store.Remove(key))
+                {
+                    SavePeriodicErrorStore(store);
+                    Logger.Info(FormattableString.Invariant($"InternalGuider: stored periodic error with period {model.PeriodSeconds:F1} s discarded: it no longer holds"));
+                }
+            });
         }
         catch (Exception ex)
         {
@@ -2054,11 +2036,14 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         guider?.ForgetPeriodicError();
         try
         {
-            var store = LoadPeriodicErrorStore();
-            if (store.Remove(PeriodicErrorKeyNow()))
+            StoreFile.Locked(periodicErrorStorePath, () =>
             {
-                SavePeriodicErrorStore(store);
-            }
+                var store = LoadPeriodicErrorStore();
+                if (store.Remove(PeriodicErrorKeyNow()))
+                {
+                    SavePeriodicErrorStore(store);
+                }
+            });
 
             Logger.Info("InternalGuider: periodic error of this mount forgotten");
         }
@@ -2079,19 +2064,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     private PulseModelStore LoadPulseModelStore()
     {
-        try
-        {
-            if (File.Exists(pulseModelStorePath))
-            {
-                return PulseModelStore.FromJson(File.ReadAllText(pulseModelStorePath));
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning($"InternalGuider: could not read the pulse model store: {ex.Message}");
-        }
-
-        return new PulseModelStore();
+        return StoreFile.Read(pulseModelStorePath, PulseModelStore.FromJson, () => new PulseModelStore(), "pulse model store");
     }
 
     private void RestoreStoredPulseModel()
@@ -2113,12 +2086,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     {
         try
         {
-            var store = LoadPulseModelStore();
-            store.Set(PulseModelKeyNow(), state);
-            Directory.CreateDirectory(Path.GetDirectoryName(pulseModelStorePath)!);
-            var tmp = pulseModelStorePath + ".tmp";
-            File.WriteAllText(tmp, store.ToJson());
-            File.Move(tmp, pulseModelStorePath, overwrite: true);
+            StoreFile.Locked(pulseModelStorePath, () =>
+            {
+                var store = LoadPulseModelStore();
+                store.Set(PulseModelKeyNow(), state);
+                StoreFile.Write(pulseModelStorePath, store.ToJson());
+            });
         }
         catch (Exception ex)
         {
@@ -2128,19 +2101,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     private BacklashStore LoadBacklashStore()
     {
-        try
-        {
-            if (File.Exists(backlashStorePath))
-            {
-                return BacklashStore.FromJson(File.ReadAllText(backlashStorePath));
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning($"InternalGuider: could not read the backlash store: {ex.Message}");
-        }
-
-        return new BacklashStore();
+        return StoreFile.Read(backlashStorePath, BacklashStore.FromJson, () => new BacklashStore(), "backlash store");
     }
 
     private void RestoreStoredBacklash()
@@ -2162,12 +2123,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     {
         try
         {
-            var store = LoadBacklashStore();
-            store.Set(PulseModelKeyNow(), state);
-            Directory.CreateDirectory(Path.GetDirectoryName(backlashStorePath)!);
-            var tmp = backlashStorePath + ".tmp";
-            File.WriteAllText(tmp, store.ToJson());
-            File.Move(tmp, backlashStorePath, overwrite: true);
+            StoreFile.Locked(backlashStorePath, () =>
+            {
+                var store = LoadBacklashStore();
+                store.Set(PulseModelKeyNow(), state);
+                StoreFile.Write(backlashStorePath, store.ToJson());
+            });
         }
         catch (Exception ex)
         {
@@ -2177,19 +2138,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     private PlayModelStore LoadPlayModelStore()
     {
-        try
-        {
-            if (File.Exists(playModelStorePath))
-            {
-                return PlayModelStore.FromJson(File.ReadAllText(playModelStorePath));
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning($"InternalGuider: could not read the backlash play model store: {ex.Message}");
-        }
-
-        return new PlayModelStore();
+        return StoreFile.Read(playModelStorePath, PlayModelStore.FromJson, () => new PlayModelStore(), "backlash play model store");
     }
 
     // the Dec gear belongs to the mount: stored per profile and mount like the pulse model
@@ -2251,12 +2200,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     {
         try
         {
-            var store = LoadPlayModelStore();
-            store.Set(key, state);
-            Directory.CreateDirectory(Path.GetDirectoryName(playModelStorePath)!);
-            var tmp = playModelStorePath + ".tmp";
-            File.WriteAllText(tmp, store.ToJson());
-            File.Move(tmp, playModelStorePath, overwrite: true);
+            StoreFile.Locked(playModelStorePath, () =>
+            {
+                var store = LoadPlayModelStore();
+                store.Set(key, state);
+                StoreFile.Write(playModelStorePath, store.ToJson());
+            });
         }
         catch (Exception ex)
         {

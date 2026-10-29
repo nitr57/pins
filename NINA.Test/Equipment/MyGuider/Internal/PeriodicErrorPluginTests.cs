@@ -143,7 +143,9 @@ public class PeriodicErrorPluginTests
             Serilog.Log.Logger = previous;
         }
 
-        File.ReadAllText(storePath).Should().Be("{ not json", "nothing is written over it");
+        // kept aside, so that the next save can't write over it
+        var aside = Directory.GetFiles(dir, Path.GetFileName(storePath) + ".unreadable-*").Should().ContainSingle().Subject;
+        File.ReadAllText(aside).Should().Be("{ not json", "nothing is written over it");
         sink.Events.Where(e => e.Level >= LogEventLevel.Warning)
             .Should().ContainSingle().Which.Level.Should().Be(LogEventLevel.Warning);
         sink.Events.Single(e => e.Level == LogEventLevel.Warning).Properties["message"].ToString()
