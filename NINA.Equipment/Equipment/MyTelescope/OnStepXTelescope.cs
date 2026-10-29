@@ -139,6 +139,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private TimeSpan clockOffset;
         private double siteLatitude;
         private double siteLongitude;
+        // whether siteElevation came from the controller (:Gv#) or a write to it, not from the profile
+        private bool siteElevationKnown;
         private double siteElevation;
         private double guideRate = double.NaN;
         private double slewSpeed = double.NaN;
@@ -390,7 +392,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private void ReadMountSetup(OnStepXDevice d) {
             (siteLatitude, siteLongitude) = d.GetSite();
             double elevation = d.GetElevation();
-            siteElevation = double.IsNaN(elevation) ? profileService.ActiveProfile.AstrometrySettings.Elevation : elevation;
+            siteElevationKnown = !double.IsNaN(elevation);
+            siteElevation = siteElevationKnown ? elevation : profileService.ActiveProfile.AstrometrySettings.Elevation;
             slewSpeed = d.GetSlewSpeed();
             try {
                 guideRate = d.GetPulseGuideRate();
@@ -774,6 +777,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         #region Site
 
+        // The controller keeps its site in NV memory, and with the location sync set to "Sync to mount" TelescopeVM sets
+        // latitude, longitude and elevation on every connect: only a change is written. The controller stores 0.01″ and
+        // 0.1 m; what it already holds within 1″ or 0.1 m is not written again.
+        private const double SiteTolerance = 1.0 / 3600;
+        private const double ElevationTolerance = 0.1;
+
         public double SiteLatitude {
             get => siteLatitude;
             set => SetSite(value, siteLongitude);
@@ -788,17 +797,27 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         public double SiteElevation {
             get => siteElevation;
             set {
+                if (siteElevationKnown && Math.Abs(value - siteElevation) <= ElevationTolerance) {
+                    return;
+                }
+
                 if (Run(d => {
                     d.SetElevation(value);
                     return true;
                 }, false)) {
                     siteElevation = value;
+                    siteElevationKnown = true;
                     RaisePropertyChanged();
                 }
             }
         }
 
         private void SetSite(double latitude, double longitude) {
+            double longitudeChange = Math.Abs(AstroUtil.EuclidianModulus(longitude - siteLongitude + 180, 360) - 180);
+            if (Math.Abs(latitude - siteLatitude) <= SiteTolerance && longitudeChange <= SiteTolerance) {
+                return;
+            }
+
             if (Run(d => {
                 d.SetSite(latitude, longitude);
                 return true;

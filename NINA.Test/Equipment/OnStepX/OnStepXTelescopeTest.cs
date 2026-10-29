@@ -208,6 +208,46 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(telescope.EquatorialSystem, Is.EqualTo(Epoch.JNOW));
         }
 
+        // TelescopeVM's "Sync to mount" sets the site on every connect; the controller keeps it in NV memory
+        [Test]
+        public async Task TheSiteTheControllerHolds_IsNotWrittenAgain() {
+            var port = FakeOnStepXPort.Umi17S().On(":Gv#", "520.0#");
+            var (telescope, _) = await Connected(port);
+            port.DefaultReply = "1";
+
+            telescope.SiteLatitude = 48 + 40 / 60.0;
+            telescope.SiteLongitude = 8 + 14 / 60.0 + 0.5 / 3600;
+            telescope.SiteElevation = 520.05;
+
+            Assert.That(port.Written.Where(c => c.StartsWith(":St") || c.StartsWith(":Sg") || c.StartsWith(":Sv")), Is.Empty);
+        }
+
+        [Test]
+        public async Task AChangedSite_IsWritten() {
+            var port = FakeOnStepXPort.Umi17S().On(":Gv#", "520.0#");
+            var (telescope, _) = await Connected(port);
+            port.DefaultReply = "1";
+
+            telescope.SiteLatitude = 48.5;
+            telescope.SiteLongitude = 8 + 14 / 60.0;
+            telescope.SiteElevation = 300;
+
+            Assert.That(port.Written.Count(c => c.StartsWith(":St")), Is.EqualTo(1), "the longitude it then sets is the one already written");
+            Assert.That(port.Written, Does.Contain(":St+48:30:0.00#"));
+            Assert.That(port.Written, Does.Contain(":Sv+300.0#"));
+            Assert.That(telescope.SiteLatitude, Is.EqualTo(48.5).Within(1e-9));
+        }
+
+        [Test]
+        public async Task AnElevationTheControllerDoesNotReport_IsWritten() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.DefaultReply = "1";
+
+            telescope.SiteElevation = telescope.SiteElevation;
+
+            Assert.That(port.Written.Any(c => c.StartsWith(":Sv")), Is.True, "the value shown is the profile's, not the controller's");
+        }
+
         [Test]
         public async Task Connect_WithTimeSync_SetsTheControllerClock() {
             // the clock commands' replies depend on the time; accept them all
