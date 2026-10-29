@@ -258,7 +258,21 @@ namespace NINA.INDI.Devices {
             }
         }
 
-        public AlignmentMode AlignmentMode { get; }
+        // From INDI's standard TELESCOPE_MOUNT_TYPE; a driver without it is taken for a German equatorial mount
+        public AlignmentMode AlignmentMode {
+            get {
+                if (GetSwitchPropertyValue("TELESCOPE_MOUNT_TYPE", "ALTAZ") == true) {
+                    return AlignmentMode.AltAz;
+                }
+
+                if (GetSwitchPropertyValue("TELESCOPE_MOUNT_TYPE", "EQ_FORK") == true) {
+                    return AlignmentMode.Polar;
+                }
+
+                return AlignmentMode.GermanPolar;
+            }
+        }
+
         public double Altitude {
             get {
                 var altitude = GetNumberPropertyValue("HORIZONTAL_COORD", "ALT");
@@ -686,11 +700,12 @@ namespace NINA.INDI.Devices {
             }
 
             int clamped = Math.Max(0, Math.Min(index, prop.Switches.Count - 1));
-            foreach (var sw in prop.Switches) {
-                sw.Value = false;
-            }
-            prop.Switches[clamped].Value = true;
-            INDIClient.Instance.SendProperty(prop);
+            ChangeAndSend(prop, () => {
+                foreach (var sw in prop.Switches) {
+                    sw.Value = false;
+                }
+                prop.Switches[clamped].Value = true;
+            });
             Logger.Debug($"SetSlewRateIndex: selected {clamped}/{prop.Switches.Count - 1} '{prop.Switches[clamped].Label}'");
         }
 
@@ -746,10 +761,11 @@ namespace NINA.INDI.Devices {
                     var targetSwitch = slewRateProp.Switches[targetIndex];
                     Logger.Debug($"SetSlewRateForMotion: {absRate}°/s → switch {targetIndex}/{slewRateProp.Switches.Count - 1} '{targetSwitch.Label}' ({targetSwitch.Name})");
 
-                    foreach (var sw in slewRateProp.Switches) {
-                        sw.Value = (sw.Name == targetSwitch.Name);
-                    }
-                    INDIClient.Instance.SendProperty(slewRateProp);
+                    ChangeAndSend(slewRateProp, () => {
+                        foreach (var sw in slewRateProp.Switches) {
+                            sw.Value = (sw.Name == targetSwitch.Name);
+                        }
+                    });
                     Task.Delay(100).Wait();
                     return;
                 }
@@ -799,28 +815,24 @@ namespace NINA.INDI.Devices {
                             // Set the direction switch
                             var prop = GetSwitchProperty("TELESCOPE_MOTION_WE");
                             if (prop != null) {
-                                if (rate < 0) {
-                                    // Negative rate = West
+                                // Negative rate = West, positive rate = East
+                                var direction = rate < 0 ? "MOTION_WEST" : "MOTION_EAST";
+                                ChangeAndSend(prop, () => {
                                     foreach (var sw in prop.Switches) {
-                                        sw.Value = (sw.Name == "MOTION_WEST");
+                                        sw.Value = (sw.Name == direction);
                                     }
-                                } else {
-                                    // Positive rate = East
-                                    foreach (var sw in prop.Switches) {
-                                        sw.Value = (sw.Name == "MOTION_EAST");
-                                    }
-                                }
-                                INDIClient.Instance.SendProperty(prop);
+                                });
                             }
                         } else {
                             // Stop motion - only send if actually moving
                             var prop = GetSwitchProperty("TELESCOPE_MOTION_WE");
                             if (prop != null) {
                                 if (prop.Switches.Any(sw => sw.Value)) {
-                                    foreach (var sw in prop.Switches) {
-                                        sw.Value = false;
-                                    }
-                                    INDIClient.Instance.SendProperty(prop);
+                                    ChangeAndSend(prop, () => {
+                                        foreach (var sw in prop.Switches) {
+                                            sw.Value = false;
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -834,28 +846,24 @@ namespace NINA.INDI.Devices {
                             // Set the direction switch
                             var prop = GetSwitchProperty("TELESCOPE_MOTION_NS");
                             if (prop != null) {
-                                if (rate > 0) {
-                                    // Positive rate = North
+                                // Positive rate = North, negative rate = South
+                                var direction = rate > 0 ? "MOTION_NORTH" : "MOTION_SOUTH";
+                                ChangeAndSend(prop, () => {
                                     foreach (var sw in prop.Switches) {
-                                        sw.Value = (sw.Name == "MOTION_NORTH");
+                                        sw.Value = (sw.Name == direction);
                                     }
-                                } else {
-                                    // Negative rate = South
-                                    foreach (var sw in prop.Switches) {
-                                        sw.Value = (sw.Name == "MOTION_SOUTH");
-                                    }
-                                }
-                                INDIClient.Instance.SendProperty(prop);
+                                });
                             }
                         } else {
                             // Stop motion - only send if actually moving
                             var prop = GetSwitchProperty("TELESCOPE_MOTION_NS");
                             if (prop != null) {
                                 if (prop.Switches.Any(sw => sw.Value)) {
-                                    foreach (var sw in prop.Switches) {
-                                        sw.Value = false;
-                                    }
-                                    INDIClient.Instance.SendProperty(prop);
+                                    ChangeAndSend(prop, () => {
+                                        foreach (var sw in prop.Switches) {
+                                            sw.Value = false;
+                                        }
+                                    });
                                 }
                             }
                         }
@@ -885,10 +893,11 @@ namespace NINA.INDI.Devices {
                 if (sign == 0) {
                     // Stop this axis — only send if it was actually moving.
                     if (prop.Switches.Any(sw => sw.Value)) {
-                        foreach (var sw in prop.Switches) {
-                            sw.Value = false;
-                        }
-                        INDIClient.Instance.SendProperty(prop);
+                        ChangeAndSend(prop, () => {
+                            foreach (var sw in prop.Switches) {
+                                sw.Value = false;
+                            }
+                        });
                     }
                     return;
                 }
@@ -897,10 +906,11 @@ namespace NINA.INDI.Devices {
                 string target = axis == TelescopeAxes.Primary
                     ? (sign > 0 ? "MOTION_EAST" : "MOTION_WEST")
                     : (sign > 0 ? "MOTION_NORTH" : "MOTION_SOUTH");
-                foreach (var sw in prop.Switches) {
-                    sw.Value = (sw.Name == target);
-                }
-                INDIClient.Instance.SendProperty(prop);
+                ChangeAndSend(prop, () => {
+                    foreach (var sw in prop.Switches) {
+                        sw.Value = (sw.Name == target);
+                    }
+                });
             } catch (ArgumentException ex) {
                 throw new NotImplementedException(ex.Message, ex);
             }

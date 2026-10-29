@@ -93,7 +93,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private bool canSetPark = true;
         public bool CanSetPark => canSetPark;
 
-        private bool canSetPierSide = true;
+        // INDI's TELESCOPE_PIER_SIDE is read-only (and INDITelescope.SideOfPier has no setter), so a meridian flip slews
+        // instead; before, every flip logged an error trying to set it and waited 2 s
+        private bool canSetPierSide = false;
         public bool CanSetPierSide => canSetPierSide;
 
         private bool canSetRightAscensionRate = true;

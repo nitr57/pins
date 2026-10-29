@@ -117,6 +117,51 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
+        public async Task Move_IgnoresAStaleUpdate_SentBeforeTheDriversAnswer() {
+            var wheel = await ConnectWheelAsync();
+
+            // A driver's status poll with the old slot, crossing the command
+            var move = wheel.MoveToPositionAsync(2);
+            await WaitForMoveCommandsAsync(1);
+            main.Send(SetSlotVector("Ok", 1));
+            await Task.Delay(300);
+
+            Assert.That(move.IsCompleted, Is.False, "the stale update does not end the move");
+            Assert.That(wheel.IsMoving, Is.True);
+
+            main.Send(SetSlotVector("Busy", 1));
+            await Task.Delay(100);
+            main.Send(SetSlotVector("Ok", 3));
+
+            Assert.That(async () => await move, Throws.Nothing);
+            Assert.That(wheel.Position, Is.EqualTo(2));
+        }
+
+        [Test]
+        public async Task Move_Succeeds_WhenTheDriverAnswersAtTheTargetWithoutBusy() {
+            var wheel = await ConnectWheelAsync();
+
+            var move = wheel.MoveToPositionAsync(2);
+            await WaitForMoveCommandsAsync(1);
+            main.Send(SetSlotVector("Ok", 3));
+
+            Assert.That(async () => await move, Throws.Nothing);
+            Assert.That(wheel.Position, Is.EqualTo(2));
+        }
+
+        [Test]
+        public async Task Move_Ends_WhenTheDriverRefusesIt() {
+            var wheel = await ConnectWheelAsync();
+
+            var move = wheel.MoveToPositionAsync(2);
+            await WaitForMoveCommandsAsync(1);
+            main.Send(SetSlotVector("Alert", 1));
+
+            Assert.That(await Task.WhenAny(move, Task.Delay(MoveTimeout / 2)), Is.SameAs(move), "the move ends before its timeout");
+            Assert.That(wheel.Position, Is.EqualTo(0), "the wheel stays where the driver says it is");
+        }
+
+        [Test]
         public async Task AbandonMove_KeepsTheDriversPosition_OnceTheDriverAnswered() {
             var wheel = await ConnectWheelAsync();
 

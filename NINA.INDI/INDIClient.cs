@@ -578,6 +578,11 @@ namespace NINA.INDI {
             SendMessage(prop.ToXml());
         }
 
+        // For a property serialized under the property lock (INDIDevice.ChangeAndSend)
+        internal void SendElement(XElement element) {
+            SendMessage(element);
+        }
+
         // Every camera receives its images on a connection of its own (enableBLOB Only), so the
         // main connection carries the control traffic alone: guide pulse states, exposure states
         // and mount positions never wait behind a multi-megabyte image, and one camera's image

@@ -18,6 +18,7 @@ using NINA.INDI.Interfaces;
 using NINA.INDI.Protocol;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -25,7 +26,8 @@ namespace NINA.INDI.Devices {
 
     public class INDIRotator : INDIDevice, IINDIRotator {
 
-        private bool _isMoving;
+        // Within half a degree, also across 0°/360°
+        private readonly MoveTracker _move = new((angle, target) => Math.Abs(((angle - target) % 360 + 540) % 360 - 180) <= 0.5);
 
 
 
@@ -36,9 +38,9 @@ namespace NINA.INDI.Devices {
             base.OnTextPropertyUpdated(p);
         }
 
-        // The move waits on _isMoving, which only an ABS_ROTATOR_ANGLE update that is no longer Busy clears
+        // The move waits on IsMoving, which only an ABS_ROTATOR_ANGLE update that ends the move clears (see MoveTracker)
         protected override void OnConnectionLost() {
-            _isMoving = false;
+            _move.Ended();
         }
 
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
@@ -46,8 +48,7 @@ namespace NINA.INDI.Devices {
 
             switch (p.Name) {
                 case "ABS_ROTATOR_ANGLE":
-                    // Check if moving based on state
-                    _isMoving = p.State == PropertyState.Busy;
+                    _move.Updated(p.State, p.Numbers.FirstOrDefault(n => n.Name == "ANGLE")?.Value);
                     break;
             }
         }
@@ -81,7 +82,7 @@ namespace NINA.INDI.Devices {
             }
         }
 
-        public bool IsMoving => _isMoving;
+        public bool IsMoving => _move.IsMoving;
 
         public float MechanicalPosition => Position; // INDI doesn't distinguish mechanical vs sky position
 
@@ -115,15 +116,15 @@ namespace NINA.INDI.Devices {
             }
             try {
                 SetSwitchValue("ROTATOR_ABORT_MOTION", "ABORT", true);
-                _isMoving = false;
+                _move.Ended();
                 Logger.Info("Halted rotator");
             } catch (ArgumentException) {
                 Logger.Warning("Rotator does not support abort");
             }
         }
 
-        // Ceiling for MoveAsync's poll loop. _isMoving is only ever cleared by a driver update
-        // (ABS_ROTATOR_ANGLE leaving Busy state), so a driver that stops replying mid-move
+        // Ceiling for MoveAsync's poll loop. IsMoving is only ever cleared by a driver update
+        // (ABS_ROTATOR_ANGLE ending the move), so a driver that stops replying mid-move
         // (crash, cable pull) would otherwise leave the caller polling forever with only its
         // own cancellation token as a way out.
         private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(5);
@@ -138,9 +139,10 @@ namespace NINA.INDI.Devices {
 
             // Wait for move to complete
             var started = DateTime.UtcNow;
-            while (_isMoving && !ct.IsCancellationRequested) {
+            while (_move.IsMoving && !ct.IsCancellationRequested) {
                 if (DateTime.UtcNow - started > MoveTimeout) {
                     Logger.Warning($"Rotator did not report move completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
+                    _move.Ended();
                     break;
                 }
                 await Task.Delay(100, ct);
@@ -156,7 +158,7 @@ namespace NINA.INDI.Devices {
                 Logger.Warning("Cannot move rotator: not connected");
                 return;
             }
-            _isMoving = true;
+            _move.Commanded(position);
             SetNumberValue("ABS_ROTATOR_ANGLE", "ANGLE", position);
             Logger.Info($"Commanded rotator to move to position {position}°");
         }

@@ -213,24 +213,40 @@ namespace NINA.INDI.Devices
             var number = prop.Numbers.FirstOrDefault(n => n.Name == elementName);
             if (number == null) return;
 
-            number.Value = value;
-            INDIClient.Instance.SendProperty(prop);
+            ChangeAndSend(prop, () => number.Value = value);
+        }
+
+        /// <summary>
+        /// Changes the stored copy of a property and serializes it as one step, under the lock the receive loop holds
+        /// while it writes driver updates into the same object: an update arriving meanwhile (e.g. the mount's position
+        /// while a goto target is set) can't mix into the vector that is sent. The send itself runs outside that lock.
+        /// </summary>
+        protected static void ChangeAndSend(INDIProperty prop, Action change)
+        {
+            System.Xml.Linq.XElement xml = null;
+            INDIClient.RunUnderPropertyLock(() =>
+            {
+                change();
+                xml = prop.ToXml();
+            });
+            INDIClient.Instance.SendElement(xml);
         }
 
         public void SetNumberValues(string propertyName, params (string elementName, double value)[] values)
         {
             var prop = GetNumberProperty(propertyName) ?? throw new ArgumentException($"Number property '{propertyName}' not found");
 
-            foreach (var (elementName, value) in values)
+            ChangeAndSend(prop, () =>
             {
-                var number = prop.Numbers.FirstOrDefault(n => n.Name == elementName);
-                if (number != null)
+                foreach (var (elementName, value) in values)
                 {
-                    number.Value = value;
+                    var number = prop.Numbers.FirstOrDefault(n => n.Name == elementName);
+                    if (number != null)
+                    {
+                        number.Value = value;
+                    }
                 }
-            }
-
-            INDIClient.Instance.SendProperty(prop);
+            });
         }
 
         public async Task<bool> SetNumberValuesAsync(string propertyName, TimeSpan timeout, params (string elementName, double value)[] values)
@@ -425,55 +441,56 @@ namespace NINA.INDI.Devices
                 return;
             }
 
-            // Handle switch rules
-            if (prop.Rule == SwitchRule.OneOfMany)
+            ChangeAndSend(prop, () =>
             {
-                // For OneOfMany, only allow setting one switch to true at a time
-                // First, turn off all switches
-                foreach (var sw in prop.Switches)
+                // Handle switch rules
+                if (prop.Rule == SwitchRule.OneOfMany)
                 {
-                    sw.Value = false;
-                }
-                // Then turn on only the requested one (if value is true)
-                if (value)
-                {
-                    var targetSw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
-                    if (targetSw != null)
-                    {
-                        targetSw.Value = true;
-                    }
-                }
-            }
-            else if (prop.Rule == SwitchRule.AtMostOne)
-            {
-                if (value)
-                {
-                    // Turn off all other switches
+                    // For OneOfMany, only allow setting one switch to true at a time
+                    // First, turn off all switches
                     foreach (var sw in prop.Switches)
-                    {
-                        sw.Value = sw.Name == elementName;
-                    }
-                }
-                else
-                {
-                    // Just turn off this switch, leave others as is
-                    var sw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
-                    if (sw != null)
                     {
                         sw.Value = false;
                     }
+                    // Then turn on only the requested one (if value is true)
+                    if (value)
+                    {
+                        var targetSw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
+                        if (targetSw != null)
+                        {
+                            targetSw.Value = true;
+                        }
+                    }
                 }
-            }
-            else // AnyOfMany
-            {
-                var sw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
-                if (sw != null)
+                else if (prop.Rule == SwitchRule.AtMostOne)
                 {
-                    sw.Value = value;
+                    if (value)
+                    {
+                        // Turn off all other switches
+                        foreach (var sw in prop.Switches)
+                        {
+                            sw.Value = sw.Name == elementName;
+                        }
+                    }
+                    else
+                    {
+                        // Just turn off this switch, leave others as is
+                        var sw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
+                        if (sw != null)
+                        {
+                            sw.Value = false;
+                        }
+                    }
                 }
-            }
-
-            INDIClient.Instance.SendProperty(prop);
+                else // AnyOfMany
+                {
+                    var sw = prop.Switches.FirstOrDefault(s => s.Name == elementName);
+                    if (sw != null)
+                    {
+                        sw.Value = value;
+                    }
+                }
+            });
         }
 
         public void SetSwitchProperty(string propertyName, Dictionary<string, bool> values)
@@ -506,31 +523,32 @@ namespace NINA.INDI.Devices
             }
             // AnyOfMany has no restrictions
 
-            if ((prop.Rule == SwitchRule.OneOfMany || prop.Rule == SwitchRule.AtMostOne) && trueCount == 1)
+            ChangeAndSend(prop, () =>
             {
-                // Radio behavior: the single 'on' element defines the whole vector. Switch
-                // everything else off, including elements the caller didn't mention — the
-                // caller may not know the full element set, and leaving another element on
-                // would violate the rule.
-                var chosen = applicable.First(sw => values[sw.Name]).Name;
-                foreach (var sw in prop.Switches)
+                if ((prop.Rule == SwitchRule.OneOfMany || prop.Rule == SwitchRule.AtMostOne) && trueCount == 1)
                 {
-                    sw.Value = sw.Name == chosen;
-                }
-            }
-            else
-            {
-                // Apply the values
-                foreach (var sw in prop.Switches)
-                {
-                    if (values.TryGetValue(sw.Name, out bool value))
+                    // Radio behavior: the single 'on' element defines the whole vector. Switch
+                    // everything else off, including elements the caller didn't mention — the
+                    // caller may not know the full element set, and leaving another element on
+                    // would violate the rule.
+                    var chosen = applicable.First(sw => values[sw.Name]).Name;
+                    foreach (var sw in prop.Switches)
                     {
-                        sw.Value = value;
+                        sw.Value = sw.Name == chosen;
                     }
                 }
-            }
-
-            INDIClient.Instance.SendProperty(prop);
+                else
+                {
+                    // Apply the values
+                    foreach (var sw in prop.Switches)
+                    {
+                        if (values.TryGetValue(sw.Name, out bool value))
+                        {
+                            sw.Value = value;
+                        }
+                    }
+                }
+            });
         }
 
         public void SetTextValue(string propertyName, string elementName, string value)
@@ -540,8 +558,7 @@ namespace NINA.INDI.Devices
             var text = prop.Texts.FirstOrDefault(t => t.Name == elementName);
             if (text == null) return;
 
-            text.Value = value;
-            INDIClient.Instance.SendProperty(prop);
+            ChangeAndSend(prop, () => text.Value = value);
         }
 
         // Sends multiple elements of the same text vector in one update.
@@ -550,14 +567,15 @@ namespace NINA.INDI.Devices
         {
             var prop = GetTextProperty(propertyName) ?? throw new ArgumentException($"Text property '{propertyName}' not found");
 
-            foreach (var (elementName, value) in values)
+            ChangeAndSend(prop, () =>
             {
-                var text = prop.Texts.FirstOrDefault(t => t.Name == elementName);
-                if (text != null)
-                    text.Value = value;
-            }
-
-            INDIClient.Instance.SendProperty(prop);
+                foreach (var (elementName, value) in values)
+                {
+                    var text = prop.Texts.FirstOrDefault(t => t.Name == elementName);
+                    if (text != null)
+                        text.Value = value;
+                }
+            });
         }
 
         public async Task<bool> SetTextValueAsync(string propertyName, string elementName, string value, TimeSpan timeout, CancellationToken ct = default)
