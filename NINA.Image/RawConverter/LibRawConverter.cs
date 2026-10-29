@@ -45,6 +45,11 @@ namespace NINA.Image.RawConverter {
         private static readonly object loadLock = new object();
         private static bool dllLoaded;
 
+        // One conversion at a time: raw2image takes 8 bytes per pixel on top of the unpacked RAW, the file bytes and
+        // the managed copy (about 300 MB at 24 MP, 600 MB at 45 MP), and with a save queue of 2 two of them at once
+        // could get pins killed for lack of memory on a 4 GB Pi
+        private static readonly SemaphoreSlim conversionGate = new SemaphoreSlim(1, 1);
+
         private readonly IImageDataFactory imageDataFactory;
 
         public LibRawConverter(IImageDataFactory imageDataFactory) {
@@ -60,40 +65,49 @@ namespace NINA.Image.RawConverter {
             ImageMetaData metaData,
             CancellationToken token = default) {
             return Task.Run(() => {
-                using (MyStopWatch.Measure()) {
-                    token.ThrowIfCancellationRequested();
-
-                    var rawBytes = s.ToArray();
-                    var handle = GCHandle.Alloc(rawBytes, GCHandleType.Pinned);
-                    var processor = IntPtr.Zero;
-                    try {
-                        processor = LibRawNative.Init(0);
-                        if (processor == IntPtr.Zero) {
-                            throw new InvalidOperationException("LibRaw initialization failed.");
-                        }
-
-                        ThrowIfError(
-                            LibRawNative.OpenBuffer(processor, handle.AddrOfPinnedObject(), (UIntPtr)rawBytes.Length),
-                            "LibRaw open buffer");
-
-                        token.ThrowIfCancellationRequested();
-
-                        ThrowIfError(LibRawNative.Unpack(processor), "LibRaw unpack");
-
-                        token.ThrowIfCancellationRequested();
-
-                        return CreateImageData(processor, rawBytes, rawType, bitDepth, bitScaling, metaData);
-                    } finally {
-                        if (processor != IntPtr.Zero) {
-                            LibRawNative.Close(processor);
-                        }
-
-                        if (handle.IsAllocated) {
-                            handle.Free();
-                        }
-                    }
+                conversionGate.Wait(token);
+                try {
+                    return ConvertCore(s, bitDepth, bitScaling, rawType, metaData, token);
+                } finally {
+                    conversionGate.Release();
                 }
             }, token);
+        }
+
+        private IImageData ConvertCore(MemoryStream s, int bitDepth, bool bitScaling, string rawType, ImageMetaData metaData, CancellationToken token) {
+            using (MyStopWatch.Measure()) {
+                token.ThrowIfCancellationRequested();
+
+                var rawBytes = s.ToArray();
+                var handle = GCHandle.Alloc(rawBytes, GCHandleType.Pinned);
+                var processor = IntPtr.Zero;
+                try {
+                    processor = LibRawNative.Init(0);
+                    if (processor == IntPtr.Zero) {
+                        throw new InvalidOperationException("LibRaw initialization failed.");
+                    }
+
+                    ThrowIfError(
+                        LibRawNative.OpenBuffer(processor, handle.AddrOfPinnedObject(), (UIntPtr)rawBytes.Length),
+                        "LibRaw open buffer");
+
+                    token.ThrowIfCancellationRequested();
+
+                    ThrowIfError(LibRawNative.Unpack(processor), "LibRaw unpack");
+
+                    token.ThrowIfCancellationRequested();
+
+                    return CreateImageData(processor, rawBytes, rawType, bitDepth, bitScaling, metaData);
+                } finally {
+                    if (processor != IntPtr.Zero) {
+                        LibRawNative.Close(processor);
+                    }
+
+                    if (handle.IsAllocated) {
+                        handle.Free();
+                    }
+                }
+            }
         }
 
         private static void EnsureDllLoaded() {
