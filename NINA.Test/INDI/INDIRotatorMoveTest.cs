@@ -77,7 +77,7 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
-        public async Task Move_Ends_AtTheDriversSecondAnswerAwayFromTheTarget() {
+        public async Task Move_Fails_AtTheDriversSecondAnswerAwayFromTheTarget() {
             var rotator = await ConnectRotatorAsync();
 
             // a driver that limits the target without an Alert, after a stale update crossed the command
@@ -87,7 +87,34 @@ namespace NINA.Test.INDI {
             main.Send(SetAngleVector("Ok", 45));
 
             Assert.That(await Task.WhenAny(move, Task.Delay(MoveTimeout / 2)), Is.SameAs(move), "the move ends before its timeout");
+            Assert.That(async () => await move, Throws.InvalidOperationException.With.Message.Contains("stopped at 45"),
+                "a failure, since RotatorVM would wait for 90° for good");
             Assert.That(rotator.Position, Is.EqualTo(45).Within(0.01), "the rotator stays where the driver says it is");
+        }
+
+        [Test]
+        public async Task Move_Fails_WhenTheRotatorStopsShortAfterBusy() {
+            var rotator = await ConnectRotatorAsync();
+
+            var move = rotator.MoveAsync(90);
+            await WaitForMoveCommandsAsync(1);
+            main.Send(SetAngleVector("Busy", 50));
+            main.Send(SetAngleVector("Ok", 87));
+
+            Assert.That(async () => await move, Throws.InvalidOperationException);
+        }
+
+        [Test]
+        public async Task Move_Succeeds_WithinOneDegreeOfTheTarget() {
+            var rotator = await ConnectRotatorAsync();
+
+            // what RotatorVM accepts as arrived, also across 0°/360°
+            var move = rotator.MoveAsync(0);
+            await WaitForMoveCommandsAsync(1);
+            main.Send(SetAngleVector("Busy", 300));
+            main.Send(SetAngleVector("Ok", 359.2));
+
+            Assert.That(async () => await move, Throws.Nothing);
         }
 
         [Test]

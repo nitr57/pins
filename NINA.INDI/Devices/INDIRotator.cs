@@ -27,7 +27,12 @@ namespace NINA.INDI.Devices {
     public class INDIRotator : INDIDevice, IINDIRotator {
 
         // Within half a degree, also across 0°/360°
-        private readonly MoveTracker _move = new((angle, target) => Math.Abs(((angle - target) % 360 + 540) % 360 - 180) <= 0.5);
+        private readonly MoveTracker _move = new((angle, target) => AngularDistance(angle, target) <= 0.5);
+
+        // RotatorVM waits, without a time limit, until the position is within 1° of the target
+        private const double ArrivalTolerance = 1.0;
+
+        private static double AngularDistance(double a, double b) => Math.Abs(((a - b) % 360 + 540) % 360 - 180);
 
 
 
@@ -149,6 +154,12 @@ namespace NINA.INDI.Devices {
             }
 
             ThrowIfServerConnectionLost("Rotator move");
+
+            // A driver that limited or refused the target without an Alert, or a rotator that stopped short: a failure
+            // here, since RotatorVM would wait for the target position for good
+            if (!ct.IsCancellationRequested && AngularDistance(Position, position) > ArrivalTolerance) {
+                throw new InvalidOperationException($"Rotator stopped at {Position:0.##}° instead of {position:0.##}°");
+            }
 
             Logger.Debug($"Rotator reached position {Position}");
         }
