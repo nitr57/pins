@@ -139,58 +139,125 @@ namespace NINA.Properties
 
         private static readonly string SettingsFilePath = Path.Combine(CoreUtil.APPLICATIONTEMPPATH, "Settings.xml");
 
+        // One save at a time: they share the temporary file
+        private static readonly object SaveLock = new();
+
         /// <summary>
         /// Load the global app settings from disk
         /// </summary>
-        public static Settings Load()
+        public static Settings Load() => LoadFrom(SettingsFilePath);
+
+        /// <summary>
+        /// Loads the settings from <paramref name="path"/>, or from the copy the last save kept next to it
+        /// (<c>.bkp</c>) when that file can't be read, e.g. after a power cut during an older, non-atomic save.
+        /// </summary>
+        public static Settings LoadFrom(string path)
         {
-            if (!File.Exists(SettingsFilePath))
+            if (!File.Exists(path) && !File.Exists(BackupPath(path)))
             {
                 // Return default settings if file doesn't exist
                 return new Settings();
             }
 
+            if (TryRead(path, out var settings, out var error))
+            {
+                return settings;
+            }
+
+            if (TryRead(BackupPath(path), out settings, out var backupError))
+            {
+                Logger.Warning($"App settings {path} could not be read ({error?.Message ?? "missing"}), using the backup of the last save");
+                return settings;
+            }
+
+            Logger.Error($"Failed to load app settings from {path} and its backup, using the defaults: {error?.Message ?? "missing"}; {backupError?.Message ?? "no backup"}");
+            return new Settings();
+        }
+
+        private static string BackupPath(string path) => path + ".bkp";
+
+        private static bool TryRead(string path, out Settings settings, out Exception error)
+        {
+            settings = null;
+            error = null;
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
             try
             {
-                using (var fs = new FileStream(SettingsFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
                     var serializer = new DataContractSerializer(typeof(Settings));
-                    return (Settings)serializer.ReadObject(fs);
+                    settings = (Settings)serializer.ReadObject(fs);
+                    return settings != null;
                 }
             }
             catch (Exception ex)
             {
-                Logger.Error($"Failed to load app settings from {SettingsFilePath}", ex);
-                return new Settings();
+                error = ex;
+                return false;
             }
         }
 
         /// <summary>
         /// Save the global app settings to disk
         /// </summary>
-        public void Save()
-        {
-            try
-            {
-                var directory = Path.GetDirectoryName(SettingsFilePath);
-                if (!Directory.Exists(directory))
-                {
-                    Directory.CreateDirectory(directory);
-                }
+        public void Save() => SaveTo(SettingsFilePath);
 
-                using (var fs = new FileStream(SettingsFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+        /// <summary>
+        /// Writes the settings to a temporary file, flushes it to the disk and only then puts it in place of
+        /// <paramref name="path"/>, keeping the previous file as <c>.bkp</c>: a power cut or a full disk during the save
+        /// leaves the old file intact instead of a truncated one, which the Reload after a failed save would read back.
+        /// </summary>
+        public void SaveTo(string path)
+        {
+            lock (SaveLock)
+            {
+                var tmp = path + ".tmp";
+                try
                 {
-                    var serializer = new DataContractSerializer(typeof(Settings));
-                    using (var writer = XmlWriter.Create(fs, new XmlWriterSettings { Indent = true }))
+                    var directory = Path.GetDirectoryName(path);
+                    if (!Directory.Exists(directory))
                     {
-                        serializer.WriteObject(writer, this);
+                        Directory.CreateDirectory(directory);
+                    }
+
+                    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                    {
+                        var serializer = new DataContractSerializer(typeof(Settings));
+                        using (var writer = XmlWriter.Create(fs, new XmlWriterSettings { Indent = true }))
+                        {
+                            serializer.WriteObject(writer, this);
+                        }
+
+                        fs.Flush(flushToDisk: true);
+                    }
+
+                    if (File.Exists(path))
+                    {
+                        File.Replace(tmp, path, BackupPath(path));
+                    }
+                    else
+                    {
+                        File.Move(tmp, path);
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"Failed to save app settings to {SettingsFilePath}", ex);
-                throw;
+                catch (Exception ex)
+                {
+                    Logger.Error($"Failed to save app settings to {path}", ex);
+                    try
+                    {
+                        File.Delete(tmp);
+                    }
+                    catch
+                    {
+                        // nothing more to do; the next save overwrites it
+                    }
+
+                    throw;
+                }
             }
         }
 
