@@ -236,6 +236,8 @@ public static class CoachSettingsMap
         "Lowpass2" => GuideAlgorithmKind.Lowpass2,
         "Lowpass" => GuideAlgorithmKind.Lowpass,
         "None" or "Identity" => GuideAlgorithmKind.Identity,
+        // what GetValue reports for it, so that a session can put a Predictive axis back
+        "Predictive" => GuideAlgorithmKind.Predictive,
         _ => throw new ArgumentException($"{name}: invalid value '{value}'"),
     };
 

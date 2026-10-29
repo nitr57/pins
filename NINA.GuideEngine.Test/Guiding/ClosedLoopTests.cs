@@ -110,6 +110,24 @@ public class ClosedLoopTests
     }
 
     [Test]
+    public async Task The_polar_alignment_estimate_uses_the_declination_guided_at()
+    {
+        // calibrated at the equator, guided at 60°: Barrett's estimate divides the Dec drift by cos δ of the latter
+        var h = new Harness(SimulatorScenario.GoodMount with { Mount = SimulatorScenario.GoodMount.Mount with { DeclinationDeg = 0 } });
+        var guide = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(3));
+        (await guide).Success.Should().BeTrue();
+        h.Guider.StopGuiding();
+
+        h.Sim.Mount.SetDeclination(60);
+        guide = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(1));
+
+        (await guide).Success.Should().BeTrue();
+        h.Guider.Statistics!.DeclinationDeg.Should().BeApproximately(60, 0.01);
+    }
+
+    [Test]
     public async Task Fails_after_reacquire_timeout()
     {
         var scenario = SimulatorScenario.GoodMount with

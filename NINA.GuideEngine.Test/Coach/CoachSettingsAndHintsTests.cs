@@ -41,6 +41,20 @@ public class CoachSettingsAndHintsTests
     }
 
     [Test]
+    public void A_Predictive_axis_can_be_put_back()
+    {
+        // a coach session restores what GetValue reported before its trial
+        var s = new GuiderSettings { DecAlgorithm = new AlgorithmSettings(GuideAlgorithmKind.Predictive) };
+        string original = CoachSettingsMap.GetValue(s, CoachSettingNames.DecAlgorithm)!;
+        var trial = CoachSettingsMap.Apply(s, [new(CoachSettingNames.DecAlgorithm, "Hysteresis")]);
+
+        var restored = CoachSettingsMap.Apply(trial, [new(CoachSettingNames.DecAlgorithm, original)]);
+
+        original.Should().Be("Predictive");
+        restored.DecAlgorithm.Kind.Should().Be(GuideAlgorithmKind.Predictive);
+    }
+
+    [Test]
     public void Settings_map_applies_changes_and_round_trips()
     {
         var s = new GuiderSettings();

@@ -1309,7 +1309,9 @@ public sealed partial class Guider : IAsyncDisposable
         transform = new MountTransform(adj.Calibration, adj.EffectiveXRate);
         var t = transform;
         tracker.CameraToMount = p => t.CameraToMount(p);
-        stats.DeclinationDeg = adj.Calibration.Declination is { } d ? d * 180 / Math.PI : null;
+        // the polar alignment estimate (Barrett: drift / cos δ) needs the declination guided at; the adjusted calibration
+        // keeps the one it was made at
+        stats.DeclinationDeg = SafeSnapshot().DeclinationDeg ?? (adj.Calibration.Declination is { } d ? d * 180 / Math.PI : null);
     }
 
     private void EnterGuiding(GuidePoint starPosition, CalibrationAdjustment adj, DateTimeOffset now)

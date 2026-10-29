@@ -82,7 +82,7 @@ public static class GuideErrorCatalog
             "The guide star could not be found in the last frame. No corrections are sent while it is lost.",
             "Check for clouds, obstructions or dew. The guider keeps searching automatically."),
         E(GuideErrorCode.StarReacquireTimeout, GuideErrorSeverity.Critical, "Guide star could not be reacquired",
-            "The star stayed lost longer than the reacquire timeout; guiding was stopped.",
+            "The star stayed lost longer than the reacquire timeout. The guider keeps searching and guides on once it finds the star again, unless it is set to stop at the timeout.",
             "Check the sky and optics, then restart guiding (the sequencer's Restore Guiding trigger can do this)."),
         E(GuideErrorCode.StarSaturated, GuideErrorSeverity.Warning, "Guide star saturated",
             "The guide star's peak is saturated, which degrades centroid precision.",
