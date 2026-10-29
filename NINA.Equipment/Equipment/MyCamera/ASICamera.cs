@@ -44,19 +44,20 @@ namespace NINA.Equipment.Equipment.MyCamera {
             _cameraId = _info.CameraID;
 
             // pins: a camera this process has open (connected in either camera slot) can be read as it is;
-            // closing it here would close it for the slot using it.
-            bool alreadyOpen;
+            // closing it here would close it for the slot using it. The check, open and close happen under the lock
+            // Connect holds while it opens the camera and records it, so a scan can't close a camera a connect has
+            // just opened but not yet recorded.
             lock (openCameraIds) {
-                alreadyOpen = openCameraIds.Contains(_cameraId);
-            }
-            if (!alreadyOpen) {
-                ASICameraDll.OpenCamera(_cameraId);
-            }
-            // We must connect to the camera to get its ID. Quickly do this if we are not (such as during building the CameraChooser list)
-            cameraAlias = ASICameraDll.GetId(_cameraId);
-            Logger.Debug($"ASI: Camera ID/Alias: {cameraAlias}");
-            if (!alreadyOpen) {
-                ASICameraDll.CloseCamera(_cameraId);
+                bool alreadyOpen = openCameraIds.Contains(_cameraId);
+                if (!alreadyOpen) {
+                    ASICameraDll.OpenCamera(_cameraId);
+                }
+                // We must connect to the camera to get its ID. Quickly do this if we are not (such as during building the CameraChooser list)
+                cameraAlias = ASICameraDll.GetId(_cameraId);
+                Logger.Debug($"ASI: Camera ID/Alias: {cameraAlias}");
+                if (!alreadyOpen) {
+                    ASICameraDll.CloseCamera(_cameraId);
+                }
             }
 
             SetId();
@@ -376,8 +377,8 @@ namespace NINA.Equipment.Equipment.MyCamera {
         public void Disconnect() {            
             _controls = null;
             Connected = false;
-            ASICameraDll.CloseCamera(_cameraId);
             lock (openCameraIds) {
+                ASICameraDll.CloseCamera(_cameraId);
                 openCameraIds.Remove(_cameraId);
             }
         }
@@ -687,8 +688,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
             return await Task.Run(() => {
                 var success = false;
                 try {
-                    ASICameraDll.OpenCamera(_cameraId);
+                    // opened and recorded as one step, see the constructor
                     lock (openCameraIds) {
+                        ASICameraDll.OpenCamera(_cameraId);
                         openCameraIds.Add(_cameraId);
                     }
                     ASICameraDll.InitCamera(_cameraId);
