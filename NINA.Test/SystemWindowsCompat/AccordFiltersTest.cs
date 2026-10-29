@@ -22,6 +22,44 @@ namespace NINA.Test.SystemWindowsCompat {
     [TestFixture]
     public class AccordFiltersTest {
 
+        // Accord/AForge: a factor f > 0 stretches [f, 255 - f] to [0, 255] (LevelsLinear, values truncated); NASASkySurvey
+        // uses it to raise the contrast of survey images
+        [TestCase(0, new byte[] { 0, 64, 128, 200, 255 }, new byte[] { 0, 64, 128, 200, 255 })]
+        [TestCase(55, new byte[] { 0, 55, 100, 128, 200, 255 }, new byte[] { 0, 0, 79, 128, 255, 255 })]
+        [TestCase(-64, new byte[] { 0, 128, 255 }, new byte[] { 64, 127, 191 })]
+        public void ContrastCorrection_StretchesLikeAccord(int factor, byte[] input, byte[] expected) {
+            var mat = new OpenCvSharp.Mat(1, input.Length, OpenCvSharp.MatType.CV_8UC1);
+            for (int i = 0; i < input.Length; i++) {
+                mat.Set(0, i, input[i]);
+            }
+
+            using var image = new Bitmap(mat);
+
+            new ContrastCorrection(factor).ApplyInPlace(image);
+
+            OpenCvSharp.Mat result = image;
+            var output = new byte[input.Length];
+            for (int i = 0; i < input.Length; i++) {
+                output[i] = result.Get<byte>(0, i);
+            }
+
+            Assert.That(output, Is.EqualTo(expected));
+        }
+
+        [Test]
+        public void ContrastCorrection_LeavesTheAlphaChannel() {
+            var mat = new OpenCvSharp.Mat(1, 1, OpenCvSharp.MatType.CV_8UC4);
+            mat.Set(0, 0, new OpenCvSharp.Vec4b(100, 100, 100, 77));
+            using var image = new Bitmap(mat);
+
+            new ContrastCorrection(55).ApplyInPlace(image);
+
+            OpenCvSharp.Mat result = image;
+            var pixel = result.Get<OpenCvSharp.Vec4b>(0, 0);
+            Assert.That(pixel.Item0, Is.EqualTo(79));
+            Assert.That(pixel.Item3, Is.EqualTo(77));
+        }
+
         [Test]
         public void Grayscale_AppliesCustomChannelWeights() {
             // BT.709 weights as used by NINA's image pipeline

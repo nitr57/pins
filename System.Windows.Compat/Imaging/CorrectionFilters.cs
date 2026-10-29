@@ -36,23 +36,60 @@ namespace Accord.Imaging.Filters {
     }
 
     /// <summary>
-    /// Contrast correction filter - adjusts image contrast
+    /// Contrast correction filter - adjusts image contrast like Accord's (AForge's LevelsLinear): a factor f in
+    /// [-127, 127] above 0 stretches [f, 255 - f] to [0, 255], one below 0 compresses [0, 255] to [-f, 255 + f], 0 leaves
+    /// the image as it is. The alpha channel of a 4-channel image is not changed.
     /// </summary>
     public class ContrastCorrection {
         private int contrastFactor;
 
         public ContrastCorrection(int contrastFactor) {
-            this.contrastFactor = contrastFactor;
+            this.contrastFactor = System.Math.Max(-127, System.Math.Min(127, contrastFactor));
         }
 
         public void ApplyInPlace(Bitmap image) {
             Mat mat = image;
-            if (mat == null || mat.Empty()) return;
+            if (mat == null || mat.Empty() || mat.Depth() != MatType.CV_8U) return;
 
-            // Contrast adjustment: pixel = (pixel - 128) * factor/128 + 128
-            // Simplified: scale around 128 (middle gray)
-            double factor = contrastFactor / 128.0;
-            mat.ConvertTo(mat, mat.Type(), factor, 128 * (1 - factor));
+            using var lut = new Mat(1, 256, MatType.CV_8UC1);
+            var table = Table(contrastFactor);
+            for (int i = 0; i < 256; i++) {
+                lut.Set(0, i, table[i]);
+            }
+
+            if (mat.Channels() == 4) {
+                var channels = mat.Split();
+                try {
+                    for (int c = 0; c < 3; c++) {
+                        Cv2.LUT(channels[c], lut, channels[c]);
+                    }
+
+                    Cv2.Merge(channels, mat);
+                } finally {
+                    foreach (var c in channels) {
+                        c.Dispose();
+                    }
+                }
+            } else {
+                Cv2.LUT(mat, lut, mat);
+            }
+        }
+
+        // AForge LevelsLinear.CalculateMap for the ranges ContrastCorrection.Factor sets
+        internal static byte[] Table(int factor) {
+            int inMin = factor > 0 ? factor : 0;
+            int inMax = factor > 0 ? 255 - factor : 255;
+            int outMin = factor > 0 ? 0 : -factor;
+            int outMax = factor > 0 ? 255 : 255 + factor;
+            double k = inMax == inMin ? 0 : (double)(outMax - outMin) / (inMax - inMin);
+            double b = outMin - k * inMin;
+
+            var table = new byte[256];
+            for (int i = 0; i < 256; i++) {
+                table[i] = i >= inMax ? (byte)outMax : i <= inMin ? (byte)outMin : (byte)(k * i + b);
+            }
+
+            return table;
         }
     }
 }
