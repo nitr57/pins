@@ -1747,9 +1747,13 @@ namespace NINA.INDI {
                 // First create the FIFO (named pipe) if it doesnt exist
                 CreateFifo(_fifoPath);
 
+                // In its own session and process group; setsid execs indiserver under the same PID. A Ctrl+C in the
+                // terminal pins runs in goes to the whole foreground process group and would end indiserver and its
+                // drivers at the same moment as pins, before the shutdown has disconnected the equipment and ended the
+                // server itself.
                 var startInfo = new ProcessStartInfo {
-                    FileName = "indiserver",
-                    Arguments = $"-v -p {_port} -m 1000 -f {_fifoPath}",
+                    FileName = "setsid",
+                    Arguments = $"indiserver -v -p {_port} -m 1000 -f {_fifoPath}",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
