@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using NINA.Astrometry;
 using NINA.Core.Utility;
 using NINA.Core.Utility.Notification;
 using NINA.Core.SignalR;
@@ -186,6 +187,31 @@ var signalRProgressBroadcaster = app.Services.GetRequiredService<SignalRProgress
 Progress.Broadcaster = async (message) => {
     await signalRProgressBroadcaster.BroadcastProgressAsync(message);
 };
+
+// Earth rotation parameters (UT1-UTC, polar motion) from the IERS, which upstream NINA updates at startup in App.xaml.cs.
+// Only when they are outdated (the updater's own limit of 10 days) is anything logged: the update needs
+// datacenter.iers.org, which a Pi on its own hotspot can't reach.
+_ = Task.Run(async () => {
+    try {
+        var updater = new EarthRotationParameterUpdater();
+        var lastAvailable = await updater.GetLastAvailableEarthRotationParameterDate();
+        if (DateTime.Now - lastAvailable <= TimeSpan.FromDays(10)) {
+            return;
+        }
+
+        try {
+            using var dnsTimeout = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await System.Net.Dns.GetHostAddressesAsync("datacenter.iers.org", dnsTimeout.Token);
+        } catch (Exception) {
+            Logger.Warning($"Earth rotation parameters are outdated (data up to {lastAvailable:yyyy-MM-dd}); no internet to update them from datacenter.iers.org");
+            return;
+        }
+
+        await updater.Update();
+    } catch (Exception ex) {
+        Logger.Error("Checking the earth rotation parameters failed", ex);
+    }
+});
 
 Logger.Info("Server fully initialized and running.");
 
