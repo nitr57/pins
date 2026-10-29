@@ -547,11 +547,21 @@ namespace NINA.Image.ImageData {
                             f = new CFitsioFITS(uniquePath, Data.FlatArray, Properties.Width, Properties.Height, compression);
                         }
                         f.PopulateHeaderCards(MetaData);
-                    } finally {
-                        f?.Close();
+                    } catch {
+                        // Closed here, so that a close that fails as well can't hide why the write failed
+                        try {
+                            f?.Close();
+                        } catch (Exception ex) {
+                            Logger.Warning($"Could not close the FITS file {uniquePath} after the failed write: {ex.Message}");
+                        }
+
+                        throw;
                     }
-                } catch {
-                    // An incomplete file (e.g. a full disk) must not stay behind looking like a saved frame
+
+                    f.Close();
+                } catch (Exception failure) when (failure is not CfitsioNative.cfitsioException { Op: "fits_create_diskfile" }) {
+                    // An incomplete file (e.g. a full disk) must not stay behind looking like a saved frame. When creating
+                    // it failed, the file was never this save's: another save may have taken the name first.
                     try {
                         File.Delete(uniquePath);
                     } catch (Exception ex) {
