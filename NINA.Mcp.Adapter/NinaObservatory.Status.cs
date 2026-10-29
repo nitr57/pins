@@ -160,7 +160,7 @@ public sealed partial class NinaObservatory {
         p["targetTemperature"] = info.CanSetTemperature ? Number(info.TemperatureSetPoint) : null;
         p["coolerOn"] = info.CoolerOn;
         p["coolerPower"] = Number(info.CoolerPower);
-        p["coolingRampRunning"] = info.TempChangeRunning;
+        p["coolingRampRunning"] = cameraMediator.TempChangeRunning;
         p["gain"] = info.Gain;
         p["defaultGain"] = info.DefaultGain;
         p["offset"] = info.Offset;

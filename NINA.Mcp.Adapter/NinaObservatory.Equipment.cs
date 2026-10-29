@@ -392,7 +392,8 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail("This camera has no regulated cooler.");
         }
 
-        if (info.TempChangeRunning) {
+        // the camera VM's flag (through the mediator): CameraInfo.TempChangeRunning is never set
+        if (cameraMediator.TempChangeRunning) {
             return OperationResult.Fail("A cooling or warming ramp is already running (started in pins or Touch-N-Stars).");
         }
 
@@ -425,7 +426,8 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail("This camera has no regulated cooler.");
         }
 
-        if (info.TempChangeRunning) {
+        // the camera VM's flag (through the mediator): CameraInfo.TempChangeRunning is never set
+        if (cameraMediator.TempChangeRunning) {
             return OperationResult.Fail("A cooling or warming ramp is already running (started in pins or Touch-N-Stars).");
         }
 
