@@ -282,6 +282,35 @@ public class IncidentStoreTests
     }
 
     [Test]
+    public void An_abandoned_partial_folder_is_deleted_but_not_a_recent_one()
+    {
+        Directory.CreateDirectory(dir);
+        string abandoned = Path.Combine(dir, "20250101-000000-StarLost.partial-1");
+        string recent = Path.Combine(dir, "20250101-000100-StarLost.partial-2");
+        Directory.CreateDirectory(abandoned);
+        File.WriteAllText(Path.Combine(abandoned, "context.fits"), "x");
+        Directory.SetLastWriteTimeUtc(abandoned, DateTime.UtcNow.AddHours(-2));
+        Directory.CreateDirectory(recent);
+
+        new IncidentStore(dir, new IncidentStoreOptions()).List().Should().BeEmpty();
+
+        Directory.Exists(abandoned).Should().BeFalse("a save cut short by a power loss only takes space");
+        Directory.Exists(recent).Should().BeTrue("another store on this folder may still be writing it");
+    }
+
+    [Test]
+    public void An_index_entry_outside_the_incident_folder_is_not_read()
+    {
+        var store = new IncidentStore(dir, new IncidentStoreOptions());
+        string id = store.ReserveId(T0, IncidentKind.StarLost);
+        store.Save(Sample(id, T0, 2), [Image(1, IncidentImageKind.Context, 16, 8, binning: 4)]);
+        string index = Path.Combine(dir, id, IncidentStore.IndexFile);
+        File.WriteAllText(index, File.ReadAllText(index).Replace("context.fits", "../../outside.fits"));
+
+        new IncidentStore(dir, new IncidentStoreOptions()).ReadImage(id, IncidentImageKind.Context, 1).Should().BeNull();
+    }
+
+    [Test]
     public void Delete_raises_the_event_and_forgets_the_incident()
     {
         var store = new IncidentStore(dir, new IncidentStoreOptions());

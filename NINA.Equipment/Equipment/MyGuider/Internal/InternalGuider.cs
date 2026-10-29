@@ -57,6 +57,9 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     /// <summary>How long a disconnect lets a running Guiding Coach session restore its temporary settings.</summary>
     private static readonly TimeSpan CoachCancelTimeout = TimeSpan.FromSeconds(10);
 
+    // how long a disconnect waits for the incidents still being written (within DisconnectTimeout)
+    private static readonly TimeSpan IncidentFlushTimeout = TimeSpan.FromSeconds(5);
+
     /// <summary>How long a disconnect waits for a cancelled dark library build: the guide camera aborts its exposure.</summary>
     private static readonly TimeSpan DarkBuildStopTimeout = TimeSpan.FromSeconds(10);
 
@@ -479,8 +482,18 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 Logger.Debug($"InternalGuider: stop capture: {ex.Message}");
             }
 
-            // an incident still open is saved as stopped (its save event comes from the store)
+            // an incident still open is saved as stopped (its save event comes from the store); a shutdown right after
+            // the disconnect would otherwise cut its save short
             g.SetIncidentStore(null);
+            try
+            {
+                await g.FlushIncidentsAsync().WaitAsync(IncidentFlushTimeout).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Logger.Debug($"InternalGuider: incidents not written yet: {ex.Message}");
+            }
+
             g.EventRaised -= OnEngineEvent;
         }
 

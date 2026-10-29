@@ -144,6 +144,20 @@ public class FitsReaderTests
         var bytes = Fits(16, 100, 100, (_, _) => 1);
         FluentActions.Invoking(() => FitsReader.Read(bytes.Take(4000).ToArray())).Should().Throw<InvalidDataException>();
     }
+
+    [Test]
+    public void Rejects_a_negative_axis_instead_of_reading_its_header_for_good()
+    {
+        var bytes = Fits(16, 4, 4, (_, _) => 1);
+        var header = Encoding.ASCII.GetString(bytes, 0, 2880).Replace("NAXIS1  =                    4", "NAXIS1  =                -2880");
+        Encoding.ASCII.GetBytes(header).CopyTo(bytes, 0);
+
+        var read = Task.Run(() => FitsReader.ReadAll(bytes));
+
+        Task.WaitAny(read, Task.Delay(TimeSpan.FromSeconds(5)));
+        read.IsCompleted.Should().BeTrue("the read ends");
+        read.Exception!.InnerException.Should().BeOfType<InvalidDataException>();
+    }
 }
 
 [TestFixture]

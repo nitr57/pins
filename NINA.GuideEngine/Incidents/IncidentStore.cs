@@ -525,6 +525,13 @@ public sealed class IncidentStore
             foreach (var dir in System.IO.Directory.EnumerateDirectories(Directory))
             {
                 string id = Path.GetFileName(dir);
+                if (IsAbandonedPartial(dir, id))
+                {
+                    // a save cut short by a power loss or a crash: never moved in place, it would only take space
+                    TryDeleteFolder(dir);
+                    continue;
+                }
+
                 if (!IsValidId(id))
                 {
                     continue;
@@ -539,6 +546,26 @@ public sealed class IncidentStore
 
         summaries = map;
         return map;
+    }
+
+    // Old enough that no save, also of another store on this folder, can still be writing it
+    private static readonly TimeSpan PartialAbandonedAfter = TimeSpan.FromHours(1);
+
+    private static bool IsAbandonedPartial(string dir, string name)
+    {
+        if (!name.Contains(".partial-", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            return DateTime.UtcNow - System.IO.Directory.GetLastWriteTimeUtc(dir) > PartialAbandonedAfter;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static Incident? ReadSummary(string dir)
@@ -747,6 +774,12 @@ public sealed class IncidentStore
 
     private IncidentImage? ReadPixels(string id, IndexEntry e)
     {
+        // images.json names a FITS file in the incident's folder and where its pixels are; anything else is a damaged index
+        if (string.IsNullOrEmpty(e.File) || Path.GetFileName(e.File) != e.File || e.Width <= 0 || e.Height <= 0 || e.DataOffset < 0)
+        {
+            return null;
+        }
+
         try
         {
             int n = checked(e.Width * e.Height);

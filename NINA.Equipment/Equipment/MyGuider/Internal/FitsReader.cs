@@ -95,8 +95,26 @@ internal static class FitsReader
             dataBytes = Math.Abs(bitpix) / 8;
             for (int a = 1; a <= naxis; a++)
             {
-                dataBytes *= Int(header, "NAXIS" + a.ToString(CultureInfo.InvariantCulture));
+                // a negative axis would move the offset back and read the same header again, for good
+                int length = Int(header, "NAXIS" + a.ToString(CultureInfo.InvariantCulture));
+                if (length < 0)
+                {
+                    throw new InvalidDataException($"FITS axis NAXIS{a} is negative");
+                }
+
+                dataBytes = checked(dataBytes * length);
             }
+        }
+
+        if (naxis < 0)
+        {
+            throw new InvalidDataException("FITS NAXIS is negative");
+        }
+
+        // also keeps the offset below from overflowing
+        if (dataBytes > data.Length - offset)
+        {
+            throw new InvalidDataException("FITS data truncated");
         }
 
         int dataStart = offset;
