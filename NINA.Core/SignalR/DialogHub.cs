@@ -13,7 +13,9 @@
 #endregion "copyright"
 
 using Microsoft.AspNetCore.SignalR;
+using NINA.Core.Utility;
 using System;
+using System.Linq;
 using System.Windows;
 using System.Threading.Tasks;
 
@@ -37,22 +39,30 @@ namespace NINA.Core.SignalR {
         }
 
         /// <summary>
-        /// Client calls this to click a button in a dialog
+        /// Client calls this to click a button in a dialog. Of several open dialogs of the content type, the newest is
+        /// the one the client shows (its broadcast came last). Returns whether a button was clicked.
         /// </summary>
-        public async Task ClickDialogButton(string contentType, string buttonName) {
+        public Task<bool> ClickDialogButton(string contentType, string buttonName) {
             try {
-                // Find the dialog by ContentType and click the button
-                var dialogs = DialogService.GetAllDialogs();
-                foreach (var dialog in dialogs) {
-                    if (dialog.ContentType == contentType) {
-                        bool success = DialogService.ClickButton(dialog.DialogId, buttonName);
-                        return;
-                    }
+                var dialog = DialogService.GetAllDialogs()
+                    .Where(d => d.ContentType == contentType)
+                    .OrderByDescending(d => d.DialogId)
+                    .FirstOrDefault();
+                if (dialog == null) {
+                    Logger.Warning($"Dialog button '{buttonName}' clicked, but no {contentType} dialog is open");
+                    return Task.FromResult(false);
                 }
-            } catch {
+
+                if (!DialogService.ClickButton(dialog.DialogId, buttonName)) {
+                    Logger.Warning($"Dialog button '{buttonName}' clicked, but the {contentType} dialog has no such button");
+                    return Task.FromResult(false);
+                }
+
+                return Task.FromResult(true);
+            } catch (Exception ex) {
+                Logger.Error($"Dialog button '{buttonName}' of {contentType} failed", ex);
+                return Task.FromResult(false);
             }
-            
-            await Task.CompletedTask;
         }
     }
 }

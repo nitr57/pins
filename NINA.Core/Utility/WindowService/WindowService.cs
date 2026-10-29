@@ -40,6 +40,9 @@ namespace NINA.Core.Utility.WindowService {
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<object, bool> _subscribedContent = new();
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<object, PropertyChangedEventHandler> _eventHandlers = new();
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<object, System.Threading.Timer> _debounceTimers = new();
+        // PlateSolvingStatusVM's PlateSolveHistory handler: one per open dialog, removed when it closes. Center keeps its
+        // status VM, so without this every run of the item added another handler and another broadcast per solve.
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<object, (System.Collections.Specialized.INotifyCollectionChanged Collection, System.Collections.Specialized.NotifyCollectionChangedEventHandler Handler)> _collectionHandlers = new();
 
         // Track WindowService instances for debugging
         private static int _instanceCounter = 0;
@@ -196,6 +199,10 @@ namespace NINA.Core.Utility.WindowService {
                     notifyObj.PropertyChanged -= handler;
                 }
             }
+
+            if (_collectionHandlers.TryRemove(content, out var collection)) {
+                collection.Collection.CollectionChanged -= collection.Handler;
+            }
         }
 
         private int ShowViaDialogService(object content, string title, ICommand closeCommand = null, Action<bool> resultCallback = null) {
@@ -239,6 +246,9 @@ namespace NINA.Core.Utility.WindowService {
                 // Track this dialog so Close() only closes this specific one
                 _currentDialogId = dialogId;
 
+                // The dialog's buttons, filled in below; updates send them again rather than a bare Cancel
+                var availableCommandNames = new List<string>();
+
                 // Subscribe to property changes for real-time updates
                 // Only subscribe once per content object to prevent duplicate broadcasts
                 if (content is INotifyPropertyChanged notifyObj && _subscribedContent.TryAdd(content, true)) {
@@ -258,7 +268,8 @@ namespace NINA.Core.Utility.WindowService {
 
                                         var broadcaster = SignalR.DialogBroadcaster.Instance;
                                         if (broadcaster != null) {
-                                            var parameters = dialog.Content.ToDictionary(
+                                            // read again: the snapshot taken when the dialog opened holds the old values
+                                            var parameters = ExtractProperties(content).ToDictionary(
                                                 kvp => kvp.Key,
                                                 kvp => kvp.Value?.ToString() ?? ""
                                             );
@@ -269,7 +280,7 @@ namespace NINA.Core.Utility.WindowService {
                                                 Active = true,
                                                 Status = ExtractMessage(content),
                                                 Parameters = parameters,
-                                                AvailableCommands = new List<string> { "Cancel" }
+                                                AvailableCommands = availableCommandNames.ToList()
                                             };
 
                                             // Special handling for PlateSolvingStatusVM
@@ -312,7 +323,7 @@ namespace NINA.Core.Utility.WindowService {
                     if (historyProp != null) {
                         var historyCollection = historyProp.GetValue(content);
                         if (historyCollection is System.Collections.Specialized.INotifyCollectionChanged collectionChanged) {
-                            collectionChanged.CollectionChanged += (sender, e) => {
+                            System.Collections.Specialized.NotifyCollectionChangedEventHandler collectionHandler = (sender, e) => {
                                 _ = Task.Run(async () => {
                                     try {
                                         // Check if this content is still subscribed (dialog not closed)
@@ -322,7 +333,7 @@ namespace NINA.Core.Utility.WindowService {
 
                                         var broadcaster = NINA.Core.SignalR.DialogBroadcaster.Instance;
                                         if (broadcaster != null) {
-                                            var parameters = dialog.Content.ToDictionary(
+                                            var parameters = ExtractProperties(content).ToDictionary(
                                                 kvp => kvp.Key,
                                                 kvp => kvp.Value?.ToString() ?? ""
                                             );
@@ -333,7 +344,7 @@ namespace NINA.Core.Utility.WindowService {
                                                 Active = true,
                                                 Status = ExtractMessage(content),
                                                 Parameters = parameters,
-                                                AvailableCommands = new List<string> { "Cancel" },
+                                                AvailableCommands = availableCommandNames.ToList(),
                                                 SlewAndCenter = ExtractSlewAndCenterData(content),
                                                 MeridianFlip = ExtractMeridianFlipData(content)
                                             };
@@ -345,6 +356,10 @@ namespace NINA.Core.Utility.WindowService {
                                     }
                                 });
                             };
+
+                            if (_collectionHandlers.TryAdd(content, (collectionChanged, collectionHandler))) {
+                                collectionChanged.CollectionChanged += collectionHandler;
+                            }
                         }
                     }
                 }
@@ -352,7 +367,6 @@ namespace NINA.Core.Utility.WindowService {
                 // Add buttons: use ICommand properties from the content when available,
                 // otherwise fall back to a generic Cancel button.
                 var commandButtons = ExtractCommandButtons(content);
-                var availableCommandNames = new List<string>();
                 if (commandButtons.Count > 0) {
                     foreach (var (name, cmd, isDefault, isCancel) in commandButtons) {
                         var capturedCmd = cmd;
