@@ -1103,7 +1103,11 @@ public sealed partial class Guider : IAsyncDisposable
         if (!forceCalibration && calibration is not null)
         {
             var adj = AdjustCalibration(calibration, snapshot);
-            if (adj.IsValid)
+
+            // PHD2 Scope::IsCalibrated: with Dec guided, a calibration made with Dec guiding off (no Dec rate) does not
+            // count, or every Dec pulse would be 0 ms long
+            bool lacksDec = settings.DecGuideMode != DecGuideMode.Off && !adj.Calibration.HasDecCalibration;
+            if (adj.IsValid && !lacksDec)
             {
                 if (!StartPlayProbe(starPosition, adj, snapshot, now, out pulses))
                 {
@@ -1113,7 +1117,9 @@ public sealed partial class Guider : IAsyncDisposable
                 return;
             }
 
-            Alert(GuideErrorCode.CalibrationInvalidated);
+            Alert(GuideErrorCode.CalibrationInvalidated, lacksDec && adj.IsValid
+                ? "The calibration was made with Dec guiding off and has no Dec calibration; calibrating again"
+                : null);
         }
 
         forceCalibration = false;

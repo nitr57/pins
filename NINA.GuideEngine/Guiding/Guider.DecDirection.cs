@@ -57,6 +57,14 @@ public sealed partial class Guider
             return;
         }
 
+        if (now != DecGuideMode.Off && state == GuiderState.Guiding && calibration is { HasDecCalibration: false })
+        {
+            // the corrector gives every Dec pulse 0 ms without a Dec rate; the next start calibrates again (BeginGuiding)
+            Alert(GuideErrorCode.NotCalibrated,
+                "Dec guiding was switched on, but the calibration was made with Dec guiding off: Dec is not guided until " +
+                "guiding is started again, which calibrates");
+        }
+
         decPolicy.Reset(keepHold: true);
         decPolicy.TakeNotes();
         if (now == DecGuideMode.Drift)
