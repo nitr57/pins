@@ -415,6 +415,13 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
                 token.ThrowIfCancellationRequested();
 
+                // Only FITS is decoded (INDICamera asks the driver for it); anything else failed as "Failed to create image
+                // data" without saying why
+                if (!(blobFormat ?? ".fits").StartsWith(".fits", StringComparison.OrdinalIgnoreCase)) {
+                    Logger.Error($"INDI camera: the driver sent a '{blobFormat}' image, which pins can't decode; set its transfer format (CCD_TRANSFER_FORMAT) to FITS");
+                    return null;
+                }
+
                 // NINA.INDI already inflated a .fits.z payload; the FITS image is decoded in memory, no temporary file
                 LogFrame($"INDI camera: processing blob format='{blobFormat}' size={blobData.Length}");
 

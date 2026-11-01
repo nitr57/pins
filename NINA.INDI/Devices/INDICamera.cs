@@ -209,6 +209,8 @@ namespace NINA.INDI.Devices {
                 }
             }
 
+            EnsureImageReachesClient();
+
             // Send exposure duration — this triggers the capture
             try {
                 SetNumberValue("CCD_EXPOSURE", "CCD_EXPOSURE_VALUE", exposureTime);
@@ -254,6 +256,42 @@ namespace NINA.INDI.Devices {
             } catch (ArgumentException ex) {
                 Logger.Debug($"[{DeviceName}] Cannot set CCD_FRAME: {ex.Message}");
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// The frame only completes with a FITS BLOB. A driver set to upload locally sends none, and one set to its native
+        /// format (e.g. a DSLR's raw through indi_gphoto) or XISF sends a BLOB NINA can't decode: each frame then ran into
+        /// the camera timeout or a decode failure with no reason in the log. Sent only when wrong, so a driver set up
+        /// right gets no extra command before its exposure (toupbase restarts its engine on some updates).
+        /// </summary>
+        private void EnsureImageReachesClient() {
+            if (GetSwitchPropertyValue("UPLOAD_MODE", "UPLOAD_LOCAL") == true) {
+                Logger.Warning($"[{DeviceName}] The driver uploads images only locally (UPLOAD_MODE Local), so pins would get none: switching to Client");
+                TrySetSwitch("UPLOAD_MODE", "UPLOAD_CLIENT", true);
+            }
+
+            if (GetSwitchProperty("CCD_TRANSFER_FORMAT") is { } format
+                && format.Switches.Any(s => s.Name == "FORMAT_FITS")
+                && GetSwitchPropertyValue("CCD_TRANSFER_FORMAT", "FORMAT_FITS") != true) {
+                Logger.Warning($"[{DeviceName}] The driver's transfer format is not FITS, which pins can't decode: switching to FITS");
+                TrySetSwitch("CCD_TRANSFER_FORMAT", "FORMAT_FITS", true);
+            }
+        }
+
+        public override void OnNumberPropertyUpdated(INDINumberProperty p) {
+            base.OnNumberPropertyUpdated(p);
+
+            // A failed or refused exposure: no BLOB will come, so end the wait now with no data (the download reports the
+            // failed frame) instead of at the camera timeout. Only an exposure in flight; the reply to the command that
+            // started it can't be an Alert left from an earlier one, since INDI only sends a property when it changes.
+            if (p.Name == "CCD_EXPOSURE" && p.State == PropertyState.Alert) {
+                var pending = _exposureReady;
+                if (pending is { Task.IsCompleted: false }) {
+                    Logger.Error($"[{DeviceName}] The driver reported the exposure as failed (CCD_EXPOSURE Alert); no image will arrive");
+                    _exposureReady = null;
+                    pending.TrySetResult(true);
+                }
             }
         }
 

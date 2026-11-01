@@ -17,6 +17,7 @@ using NINA.INDI.Devices;
 using NINA.INDI.Enums;
 using NUnit.Framework;
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace NINA.Test.INDI {
@@ -122,6 +123,91 @@ namespace NINA.Test.INDI {
                 Timeout);
             Assert.That(main.Received, Does.Not.Contain("name=\"CCD_FRAME\""), "a redundant full-frame reset crashes indi_toupcam_ccd");
         }
+
+        [Test]
+        public async Task AnExposureAlert_EndsTheWaitWithoutAnImage() {
+            var camera = await RegisterCameraAsync("");
+
+            camera.StartExposure(5, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+            await WaitForExposureCommandAsync();
+            main.Send($"<setNumberVector device=\"{Camera}\" name=\"CCD_EXPOSURE\" state=\"Alert\" timeout=\"60\">"
+                + "<oneNumber name=\"CCD_EXPOSURE_VALUE\">0</oneNumber></setNumberVector>\n");
+
+            Assert.That(async () => await camera.WaitUntilExposureIsReady(System.Threading.CancellationToken.None).WaitAsync(Timeout), Throws.Nothing,
+                "the frame fails at once instead of at the camera timeout");
+            Assert.That(camera.GetLastBlobData(), Is.Null);
+        }
+
+        [Test]
+        public async Task ALocalUpload_IsSwitchedToClientBeforeTheExposure() {
+            var camera = await RegisterCameraAsync(UploadMode("UPLOAD_LOCAL"));
+            await WaitForSwitchAsync(camera, "UPLOAD_MODE");
+
+            camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+
+            await WaitForExposureCommandAsync();
+            var received = main.Received;
+            var upload = received.IndexOf("name=\"UPLOAD_MODE\"", StringComparison.Ordinal);
+            Assert.That(upload, Is.GreaterThanOrEqualTo(0), "UPLOAD_MODE is sent");
+            Assert.That(upload, Is.LessThan(received.IndexOf("name=\"CCD_EXPOSURE\"", StringComparison.Ordinal)));
+            Assert.That(received[upload..], Does.Contain("<oneSwitch name=\"UPLOAD_CLIENT\">On</oneSwitch>"));
+        }
+
+        [Test]
+        public async Task ANativeTransferFormat_IsSwitchedToFitsBeforeTheExposure() {
+            var camera = await RegisterCameraAsync(TransferFormat("FORMAT_NATIVE"));
+            await WaitForSwitchAsync(camera, "CCD_TRANSFER_FORMAT");
+
+            camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+
+            await WaitForExposureCommandAsync();
+            var received = main.Received;
+            var format = received.IndexOf("name=\"CCD_TRANSFER_FORMAT\"", StringComparison.Ordinal);
+            Assert.That(format, Is.GreaterThanOrEqualTo(0), "CCD_TRANSFER_FORMAT is sent");
+            Assert.That(format, Is.LessThan(received.IndexOf("name=\"CCD_EXPOSURE\"", StringComparison.Ordinal)));
+            Assert.That(received[format..], Does.Contain("<oneSwitch name=\"FORMAT_FITS\">On</oneSwitch>"));
+        }
+
+        [Test]
+        public async Task AClientUploadInFits_SendsNothingExtra() {
+            var camera = await RegisterCameraAsync(UploadMode("UPLOAD_CLIENT") + TransferFormat("FORMAT_FITS"));
+            await WaitForSwitchAsync(camera, "UPLOAD_MODE");
+            await WaitForSwitchAsync(camera, "CCD_TRANSFER_FORMAT");
+
+            camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+
+            await WaitForExposureCommandAsync();
+            Assert.That(main.Received, Does.Not.Contain("name=\"UPLOAD_MODE\""));
+            Assert.That(main.Received, Does.Not.Contain("name=\"CCD_TRANSFER_FORMAT\""));
+        }
+
+        private Task WaitForExposureCommandAsync() {
+            return main.WaitUntilAsync(
+                r => r.Contains("name=\"CCD_EXPOSURE\"", StringComparison.Ordinal),
+                "the exposure is started",
+                Timeout);
+        }
+
+        private static async Task WaitForSwitchAsync(INDICamera camera, string property) {
+            var deadline = DateTime.UtcNow + Timeout;
+            while (camera.GetSwitchProperty(property) == null) {
+                if (DateTime.UtcNow > deadline) {
+                    Assert.Fail($"Timed out waiting until {property} is defined");
+                }
+
+                await Task.Delay(10);
+            }
+        }
+
+        private static string UploadMode(string on) =>
+            $"<defSwitchVector device=\"{Camera}\" name=\"UPLOAD_MODE\" label=\"Upload\" group=\"Options\" state=\"Idle\" perm=\"rw\" rule=\"OneOfMany\" timeout=\"60\">"
+            + string.Concat(new[] { "UPLOAD_CLIENT", "UPLOAD_LOCAL", "UPLOAD_BOTH" }.Select(e => $"<defSwitch name=\"{e}\" label=\"{e}\">{(e == on ? "On" : "Off")}</defSwitch>"))
+            + "</defSwitchVector>\n";
+
+        private static string TransferFormat(string on) =>
+            $"<defSwitchVector device=\"{Camera}\" name=\"CCD_TRANSFER_FORMAT\" label=\"Encode\" group=\"Image Settings\" state=\"Idle\" perm=\"rw\" rule=\"OneOfMany\" timeout=\"60\">"
+            + string.Concat(new[] { "FORMAT_FITS", "FORMAT_NATIVE", "FORMAT_XISF" }.Select(e => $"<defSwitch name=\"{e}\" label=\"{e}\">{(e == on ? "On" : "Off")}</defSwitch>"))
+            + "</defSwitchVector>\n";
 
         private const string CcdInfo =
             $"<defNumberVector device=\"{Camera}\" name=\"CCD_INFO\" label=\"CCD Information\" group=\"Image Info\" state=\"Idle\" perm=\"ro\" timeout=\"60\">"
