@@ -79,6 +79,10 @@ TaskScheduler.UnobservedTaskException += (sender, e) => {
     Logger.Error($"An unobserved task exception has occurred of type {e.Exception.InnerException?.GetType() ?? e.Exception.GetType()}", e.Exception);
 };
 
+// As upstream App.xaml.cs: back up the plugins' user.config, or restore it when a power cut left it unreadable,
+// before any plugin reads its settings
+UserConfigRecovery.Run();
+
 // Now build the full application with all services
 var builder = WebApplication.CreateBuilder(args);
 builder.Configuration["Kestrel:Endpoints:Http:Url"] = "http://0.0.0.0:4782";
