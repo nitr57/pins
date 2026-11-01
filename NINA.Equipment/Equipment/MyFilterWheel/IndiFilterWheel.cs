@@ -107,8 +107,28 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
             return Task.CompletedTask;
         }
 
-        protected override Task PostConnect() {
+        /// <summary>
+        /// How long PostConnect waits for FILTER_NAME. Connect waits only for FILTER_SLOT, and some drivers define the
+        /// names later (after an indiserver recovery, or once they know the slot count).
+        /// </summary>
+        internal TimeSpan FilterNamesWait { get; set; } = TimeSpan.FromSeconds(5);
+
+        private static readonly TimeSpan FilterNamesPollInterval = TimeSpan.FromMilliseconds(100);
+
+        protected override async Task PostConnect() {
             changeEndedByLostServer = false;
+
+            // Without names the import below would take the wheel for one without filters: it removed every filter of the
+            // profile (names, focus offsets, autofocus and flat settings) and saved the empty list
+            var waitUntil = DateTime.UtcNow + FilterNamesWait;
+            while (device.Names.Length == 0 && ShouldBeConnected && DateTime.UtcNow < waitUntil) {
+                await Task.Delay(FilterNamesPollInterval);
+            }
+
+            if (device.Names.Length == 0) {
+                Logger.Warning($"{Name}: the driver reported no filter names (FILTER_NAME) within {FilterNamesWait.TotalSeconds:0} s of connecting; the filter list of the profile is left as it is");
+                return;
+            }
 
             var filtersList = profileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters;
 
@@ -156,7 +176,6 @@ namespace NINA.Equipment.Equipment.MyFilterWheel {
                 }
             }
             profileService.ActiveProfile.FilterWheelSettings.FilterWheelFilters = filtersList;
-            return Task.CompletedTask;
         }
 
         protected override IINDIFilterWheel GetInstance() {
