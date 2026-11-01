@@ -149,19 +149,14 @@ namespace NINA.INDI.Devices {
         // cancellation token as a way out.
         private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(5);
 
+        // internal so tests can shorten it
+        internal TimeSpan MoveCompletionTimeout { get; set; } = MoveTimeout;
+
         public async Task SlewToAzimuth(double azimuth, CancellationToken ct) {
             if (!Connected || !CanSetAzimuth) return;
             await SetNumberValuesAsync("ABS_DOME_POSITION", TimeSpan.FromSeconds(10),
                 ("DOME_ABSOLUTE_POSITION", azimuth));
-            // Wait until motion stops
-            var started = DateTime.UtcNow;
-            while (Slewing && !ct.IsCancellationRequested) {
-                if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Dome did not report slew completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
-                }
-                await Task.Delay(500, ct);
-            }
+            await WaitForMotionEndAsync("slew", "ABS_DOME_POSITION", _ => Slewing, ct);
 
             ThrowIfServerConnectionLost("Dome slew");
         }
@@ -174,16 +169,8 @@ namespace NINA.INDI.Devices {
             // if the ack timed out (a driver that flips to Busy late), _shutterState may
             // never have been set to Opening and the derived state alone would return while
             // the shutter is still moving (mirrors Park's state-based gating).
-            var started = DateTime.UtcNow;
-            var shutterProp = GetProperty("DOME_SHUTTER");
-            while ((_shutterState == ShutterState.ShutterOpening || shutterProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
-                if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Dome did not report shutter-open completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
-                }
-                await Task.Delay(500, ct);
-                shutterProp = GetProperty("DOME_SHUTTER");
-            }
+            await WaitForMotionEndAsync("opening of the shutter", "DOME_SHUTTER",
+                p => _shutterState == ShutterState.ShutterOpening || p?.State == PropertyState.Busy, ct);
 
             ThrowIfServerConnectionLost("Opening the dome shutter");
         }
@@ -193,16 +180,8 @@ namespace NINA.INDI.Devices {
             await SetSwitchValueAsync("DOME_SHUTTER", "SHUTTER_CLOSE", true, TimeSpan.FromSeconds(10));
 
             // See OpenShutter for why this also watches the property's own Busy state.
-            var started = DateTime.UtcNow;
-            var shutterProp = GetProperty("DOME_SHUTTER");
-            while ((_shutterState == ShutterState.ShutterClosing || shutterProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
-                if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Dome did not report shutter-close completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
-                }
-                await Task.Delay(500, ct);
-                shutterProp = GetProperty("DOME_SHUTTER");
-            }
+            await WaitForMotionEndAsync("closing of the shutter", "DOME_SHUTTER",
+                p => _shutterState == ShutterState.ShutterClosing || p?.State == PropertyState.Busy, ct);
 
             ThrowIfServerConnectionLost("Closing the dome shutter");
         }
@@ -215,18 +194,40 @@ namespace NINA.INDI.Devices {
             // to read true — libindi sets DOME_PARK's PARK switch ON with state=Busy as soon
             // as parking starts, so gating on the switch VALUE alone (AtPark) can return while
             // the dome is still moving. Mirrors INDITelescope.ParkAsync's state-based gating.
-            var started = DateTime.UtcNow;
-            var parkProp = GetProperty("DOME_PARK");
-            while ((Slewing || parkProp?.State == PropertyState.Busy) && !ct.IsCancellationRequested) {
-                if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Dome did not report park completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
-                }
-                await Task.Delay(500, ct);
-                parkProp = GetProperty("DOME_PARK");
-            }
+            await WaitForMotionEndAsync("park", "DOME_PARK", p => Slewing || p?.State == PropertyState.Busy, ct);
 
             ThrowIfServerConnectionLost("Dome park");
+        }
+
+        /// <summary>
+        /// Waits until <paramref name="moving"/> no longer holds for the command's property. None of the endings that are
+        /// not an arrival counts as one: the property in Alert (the driver rejected the command or the motion failed) and
+        /// no end within <see cref="MoveCompletionTimeout"/> throw, and a cancellation stops the dome first, so a cancelled
+        /// sequence doesn't leave the shutter or the dome moving.
+        /// </summary>
+        private async Task WaitForMotionEndAsync(string what, string propertyName, Func<INDIProperty, bool> moving, CancellationToken ct) {
+            var started = DateTime.UtcNow;
+            try {
+                while (true) {
+                    var prop = GetProperty(propertyName);
+                    if (prop?.State == PropertyState.Alert) {
+                        throw new InvalidOperationException($"The dome reported a failure of the {what} ({propertyName} in Alert state)");
+                    }
+                    if (!moving(prop)) {
+                        break;
+                    }
+                    if (DateTime.UtcNow - started > MoveCompletionTimeout) {
+                        throw new TimeoutException($"The dome did not report the end of the {what} within {MoveCompletionTimeout.TotalSeconds:F0} s");
+                    }
+                    await Task.Delay(500, ct);
+                }
+
+                ct.ThrowIfCancellationRequested();
+            } catch (OperationCanceledException) {
+                Logger.Info($"INDIDome: {what} cancelled, aborting the dome's motion");
+                Abort();
+                throw;
+            }
         }
 
         public void FindHome() {

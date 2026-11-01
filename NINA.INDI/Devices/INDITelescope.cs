@@ -957,6 +957,9 @@ namespace NINA.INDI.Devices {
 
         internal TimeSpan ParkConfirmTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
+        // How long a goto may run before it counts as failed; internal so tests can shorten it.
+        internal TimeSpan SlewCompletionTimeout { get; set; } = MotionTimeout;
+
         public async Task ParkAsync(CancellationToken ct = default) {
             // Preserve the NotImplementedException contract for mounts without park support —
             // the equipment layer uses it to clear its CanPark flag.
@@ -1268,21 +1271,37 @@ namespace NINA.INDI.Devices {
                         LogSlewWaitOutcome(ra, dec, started, polls, coordState);
                         break;
                     }
-                    if (DateTime.UtcNow - started > MotionTimeout) {
-                        Logger.Warning($"[{DeviceName}] Mount did not report slew completion within {MotionTimeout.TotalSeconds:F0}s — giving up waiting");
-                        break;
+                    if (DateTime.UtcNow - started > SlewCompletionTimeout) {
+                        // Not a success: the sequence would expose wherever the mount is
+                        throw new TimeoutException($"The mount did not report the end of the slew within {SlewCompletionTimeout.TotalSeconds:F0} s");
                     }
 
                     ++polls;
                     await Task.Delay(500, ct);
                 }
 
+                // the loop also ends on cancellation, which must not count as an arrival
+                ct.ThrowIfCancellationRequested();
                 ThrowIfServerConnectionLost("Slew");
+            } catch (OperationCanceledException) {
+                // A cancelled sequence must not leave the mount driving to the old target
+                AbortSlewQuietly("Slew");
+                throw;
             } catch (ArgumentException ex) {
                 throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {
                 Logger.Error($"Error in SlewToCoordinatesTaskAsync: {ex.Message}");
                 throw;
+            }
+        }
+
+        // Stops the mount after a cancelled slew; a failure is only logged, the cancellation goes on.
+        private void AbortSlewQuietly(string what) {
+            try {
+                Logger.Info($"[{DeviceName}] {what} cancelled, aborting the mount's motion");
+                AbortSlew();
+            } catch (Exception ex) {
+                Logger.Warning($"[{DeviceName}] Could not abort the mount's motion after the cancelled {what}: {ex.Message}");
             }
         }
 
@@ -1425,16 +1444,19 @@ namespace NINA.INDI.Devices {
                     if (state != PropertyState.Busy) {
                         break;
                     }
-                    if (DateTime.UtcNow - started > MotionTimeout) {
-                        Logger.Warning($"[{DeviceName}] Mount did not report AltAz slew completion within {MotionTimeout.TotalSeconds:F0}s — giving up waiting");
-                        break;
+                    if (DateTime.UtcNow - started > SlewCompletionTimeout) {
+                        throw new TimeoutException($"The mount did not report the end of the AltAz slew within {SlewCompletionTimeout.TotalSeconds:F0} s");
                     }
 
                     await Task.Delay(500, ct);
                     coordProp = GetProperty("HORIZONTAL_COORD");
                 }
 
+                ct.ThrowIfCancellationRequested();
                 ThrowIfServerConnectionLost("Slew");
+            } catch (OperationCanceledException) {
+                AbortSlewQuietly("AltAz slew");
+                throw;
             } catch (ArgumentException ex) {
                 throw new NotImplementedException(ex.Message, ex);
             } catch (Exception ex) {

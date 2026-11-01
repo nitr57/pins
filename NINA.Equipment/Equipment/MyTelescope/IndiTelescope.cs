@@ -659,6 +659,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 } catch (Exception e) {
                     Logger.Error(e);
                     Notification.ShowExternalError(e.Message, Loc.Instance["LblASCOMDriverError"]);
+                    // TelescopeVM ignores false: without the exception a refused or timed out slew counts as done, and
+                    // the sequence exposes wherever the mount is (as OnStepXTelescope does)
+                    throw;
                 } finally {
                     TargetCoordinates = null;
                 }
@@ -692,6 +695,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 } catch (Exception e) {
                     Logger.Error(e);
                     Notification.ShowExternalError(e.Message, Loc.Instance["LblASCOMDriverError"]);
+                    // TelescopeVM ignores false: without the exception a refused or timed out slew counts as done, and
+                    // the sequence exposes wherever the mount is (as OnStepXTelescope does)
+                    throw;
                 } finally {
                     TargetCoordinates = null;
                 }
@@ -746,6 +752,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 } catch (Exception e) {
                     Logger.Error(e);
                     Notification.ShowExternalError(e.Message, Loc.Instance["LblASCOMDriverError"]);
+                    throw;
                 }
             }
         }
@@ -758,9 +765,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                         InvalidatePropertyCache();
                     } catch (OperationCanceledException) {
                         throw;
+                    } catch (NotImplementedException) {
+                        throw;
                     } catch (Exception e) {
                         Logger.Error(e);
                         Notification.ShowExternalError(e.Message, Loc.Instance["LblASCOMDriverError"]);
+                        throw;
                     }
                 }
             } catch (NotImplementedException) {
