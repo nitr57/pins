@@ -404,12 +404,21 @@ namespace NINA.INDI.Devices {
                 SetNumberValue("GEOGRAPHIC_COORD", "LAT", value);
             }
         }
+        // INDI states the longitude as 0..360° east (libindi GEOGRAPHIC_COORD.LONG), NINA as -180..180°. Passed through
+        // unchanged, a site west of Greenwich read 355 against the profile's -5: the sync prompt came at every connect,
+        // "to application" wrote 355 into the profile, and "to telescope" sent a value outside INDI's range.
         public double SiteLongitude {
-            get => GetNumberPropertyValue("GEOGRAPHIC_COORD", "LONG") ?? double.NaN;
+            get => ToNinaLongitude(GetNumberPropertyValue("GEOGRAPHIC_COORD", "LONG") ?? double.NaN);
             set {
-                SetNumberValue("GEOGRAPHIC_COORD", "LONG", value);
+                SetNumberValue("GEOGRAPHIC_COORD", "LONG", ToIndiLongitude(value));
             }
         }
+
+        internal static double ToNinaLongitude(double indiLongitude) =>
+            indiLongitude > 180 ? indiLongitude - 360 : indiLongitude;
+
+        internal static double ToIndiLongitude(double ninaLongitude) =>
+            ninaLongitude < 0 ? ninaLongitude + 360 : ninaLongitude;
         public int SlewSettleTime { get; }
         public bool Slewing {
             get {
