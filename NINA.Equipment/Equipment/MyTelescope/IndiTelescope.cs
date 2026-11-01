@@ -82,7 +82,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private bool canPulseGuide = true;
         public bool CanPulseGuide => canPulseGuide;
 
-        private bool canSetDeclinationRate = true;
+        // No custom tracking rates over INDI: INDITelescope never wrote TELESCOPE_TRACK_RATE, so a comet or asteroid
+        // tracked at the sidereal rate without an error. Writing it is not safe either: the telescope simulator takes
+        // TRACK_RATE_DE as a Dec axis rate whose sign flips with the pier side, other drivers are untested, and
+        // lx200_OnStep/lx200_proxisky send the rates as OnStepX guide rates. Without these, TrackingModes offers no
+        // Custom and SetCustomTrackingRate fails visibly; the native OnStepX driver has custom rates.
+        private bool canSetDeclinationRate = false;
         public bool CanSetDeclinationRate => canSetDeclinationRate;
 
         private bool canSetGuideRates = true;
@@ -98,7 +103,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private bool canSetPierSide = false;
         public bool CanSetPierSide => canSetPierSide;
 
-        private bool canSetRightAscensionRate = true;
+        // see canSetDeclinationRate
+        private bool canSetRightAscensionRate = false;
         public bool CanSetRightAscensionRate => canSetRightAscensionRate;
 
 
