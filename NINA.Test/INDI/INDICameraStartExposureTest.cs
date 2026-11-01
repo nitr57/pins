@@ -89,7 +89,53 @@ namespace NINA.Test.INDI {
                 Timeout);
         }
 
-        private async Task<INDICamera> RegisterCameraAsync(string offsetVector, string offsetProperty) {
+        [Test]
+        public async Task StartExposure_ResetsCcdFrameToTheFullSensor_AfterASubframe() {
+            var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(100, 200, 512, 512), "CCD_INFO", "CCD_FRAME");
+
+            camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+
+            await main.WaitUntilAsync(
+                r => r.Contains("name=\"CCD_EXPOSURE\"", StringComparison.Ordinal),
+                "the exposure is started",
+                Timeout);
+            var received = main.Received;
+            var frame = received.IndexOf("name=\"CCD_FRAME\"", StringComparison.Ordinal);
+            Assert.That(frame, Is.GreaterThanOrEqualTo(0), "CCD_FRAME is sent");
+            Assert.That(frame, Is.LessThan(received.IndexOf("name=\"CCD_EXPOSURE\"", StringComparison.Ordinal)), "CCD_FRAME is sent before CCD_EXPOSURE");
+            var frameVector = received[frame..];
+            Assert.That(frameVector, Does.Contain("<oneNumber name=\"X\">0</oneNumber>"));
+            Assert.That(frameVector, Does.Contain("<oneNumber name=\"Y\">0</oneNumber>"));
+            Assert.That(frameVector, Does.Contain("<oneNumber name=\"WIDTH\">4144</oneNumber>"));
+            Assert.That(frameVector, Does.Contain("<oneNumber name=\"HEIGHT\">2822</oneNumber>"));
+        }
+
+        [Test]
+        public async Task StartExposure_DoesNotSendCcdFrame_WhenTheDriverIsAlreadyAtTheFullSensor() {
+            var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(0, 0, 4144, 2822), "CCD_INFO", "CCD_FRAME");
+
+            camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+
+            await main.WaitUntilAsync(
+                r => r.Contains("name=\"CCD_EXPOSURE\"", StringComparison.Ordinal),
+                "the exposure is started",
+                Timeout);
+            Assert.That(main.Received, Does.Not.Contain("name=\"CCD_FRAME\""), "a redundant full-frame reset crashes indi_toupcam_ccd");
+        }
+
+        private const string CcdInfo =
+            $"<defNumberVector device=\"{Camera}\" name=\"CCD_INFO\" label=\"CCD Information\" group=\"Image Info\" state=\"Idle\" perm=\"ro\" timeout=\"60\">"
+            + "<defNumber name=\"CCD_MAX_X\" label=\"Max. Width\" format=\"%.f\" min=\"1\" max=\"16000\" step=\"0\">4144</defNumber>"
+            + "<defNumber name=\"CCD_MAX_Y\" label=\"Max. Height\" format=\"%.f\" min=\"1\" max=\"16000\" step=\"0\">2822</defNumber></defNumberVector>\n";
+
+        private static string CcdFrame(int x, int y, int width, int height) =>
+            $"<defNumberVector device=\"{Camera}\" name=\"CCD_FRAME\" label=\"Frame\" group=\"Image Settings\" state=\"Idle\" perm=\"rw\" timeout=\"60\">"
+            + $"<defNumber name=\"X\" label=\"Left\" format=\"%4.0f\" min=\"0\" max=\"4143\" step=\"0\">{x}</defNumber>"
+            + $"<defNumber name=\"Y\" label=\"Top\" format=\"%4.0f\" min=\"0\" max=\"2821\" step=\"0\">{y}</defNumber>"
+            + $"<defNumber name=\"WIDTH\" label=\"Width\" format=\"%4.0f\" min=\"1\" max=\"4144\" step=\"0\">{width}</defNumber>"
+            + $"<defNumber name=\"HEIGHT\" label=\"Height\" format=\"%4.0f\" min=\"1\" max=\"2822\" step=\"0\">{height}</defNumber></defNumberVector>\n";
+
+        private async Task<INDICamera> RegisterCameraAsync(string extraVectors, params string[] extraProperties) {
             var create = Task.Run(() => new INDICamera(new INDIDeviceInfo { Id = Camera, Name = Camera, Interface = DeviceInterface.CCD_INTERFACE }));
             // The new device asks for its properties and waits for CONNECTION.
             await main.WaitForAsync($"<getProperties version=\"1.7\" device=\"{Camera}\" />", Timeout);
@@ -98,14 +144,14 @@ namespace NINA.Test.INDI {
                 + "<defSwitch name=\"CONNECT\" label=\"Connect\">On</defSwitch><defSwitch name=\"DISCONNECT\" label=\"Disconnect\">Off</defSwitch></defSwitchVector>\n"
                 + $"<defNumberVector device=\"{Camera}\" name=\"CCD_EXPOSURE\" label=\"Expose\" group=\"Main Control\" state=\"Idle\" perm=\"rw\" timeout=\"60\">"
                 + "<defNumber name=\"CCD_EXPOSURE_VALUE\" label=\"Duration (s)\" format=\"%5.2f\" min=\"0\" max=\"3600\" step=\"1\">1</defNumber></defNumberVector>\n"
-                + offsetVector);
+                + extraVectors);
             Assert.That(await Task.WhenAny(create, Task.Delay(Timeout)), Is.SameAs(create), "the camera registers");
             var camera = await create;
 
             var deadline = DateTime.UtcNow + Timeout;
-            while (camera.GetNumberProperty(offsetProperty) == null || camera.GetNumberProperty("CCD_EXPOSURE") == null) {
+            while (camera.GetNumberProperty("CCD_EXPOSURE") == null || Array.Exists(extraProperties, p => camera.GetNumberProperty(p) == null)) {
                 if (DateTime.UtcNow > deadline) {
-                    Assert.Fail($"Timed out waiting until {offsetProperty} is defined");
+                    Assert.Fail($"Timed out waiting until {string.Join(", ", extraProperties)} are defined");
                 }
 
                 await Task.Delay(10);

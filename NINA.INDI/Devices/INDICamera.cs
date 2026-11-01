@@ -198,26 +198,14 @@ namespace NINA.INDI.Devices {
                 TrySetNumber(offsetElement.Property, offsetElement.Element, offset);
             }
 
-            // Set frame region — only send CCD_FRAME when actually sub-sampling AND the
-            // region changed. Drivers like toupbase restart the camera engine on any
-            // CCD_FRAME update, which can make the following exposure command fail, and
-            // a redundant full-frame reset even crashes indi_toupcam_ccd.
+            // Set the frame region: the subframe when sub-sampling, otherwise the full sensor.
+            // The driver keeps the last CCD_FRAME, so a full-frame exposure after a subframe
+            // (autofocus crop, Take Subframe Exposure) has to put it back explicitly.
             if (enableSubSample && subSampleWidth > 0 && subSampleHeight > 0) {
-                var frameChanged =
-                    (int)(GetNumberPropertyValue("CCD_FRAME", "X") ?? -1) != subSampleX ||
-                    (int)(GetNumberPropertyValue("CCD_FRAME", "Y") ?? -1) != subSampleY ||
-                    (int)(GetNumberPropertyValue("CCD_FRAME", "WIDTH") ?? -1) != subSampleWidth ||
-                    (int)(GetNumberPropertyValue("CCD_FRAME", "HEIGHT") ?? -1) != subSampleHeight;
-                if (frameChanged) {
-                    try {
-                        SetNumberValues("CCD_FRAME",
-                            ("X", (double)subSampleX),
-                            ("Y", (double)subSampleY),
-                            ("WIDTH", (double)subSampleWidth),
-                            ("HEIGHT", (double)subSampleHeight));
-                    } catch (ArgumentException ex) {
-                        Logger.Debug($"[{DeviceName}] Cannot set CCD_FRAME: {ex.Message}");
-                    }
+                ApplyFrame(subSampleX, subSampleY, subSampleWidth, subSampleHeight);
+            } else if (!enableSubSample && CameraXSize > 0 && CameraYSize > 0) {
+                if (ApplyFrame(0, 0, CameraXSize, CameraYSize)) {
+                    Logger.Info($"[{DeviceName}] CCD_FRAME reset to full frame {CameraXSize}x{CameraYSize}");
                 }
             }
 
@@ -233,6 +221,39 @@ namespace NINA.INDI.Devices {
                 var pending = _exposureReady;
                 _exposureReady = null;
                 pending?.TrySetResult(true);
+            }
+        }
+
+        /// <summary>
+        /// Sends CCD_FRAME only when the driver's frame differs from the requested one. Drivers like
+        /// toupbase restart the camera engine on any CCD_FRAME update, which can make the following
+        /// exposure command fail, and a redundant full-frame reset even crashes indi_toupcam_ccd.
+        /// </summary>
+        /// <returns><c>true</c> when CCD_FRAME was sent.</returns>
+        private bool ApplyFrame(int x, int y, int width, int height) {
+            if (GetNumberProperty("CCD_FRAME") == null) {
+                return false;
+            }
+
+            var frameChanged =
+                (int)(GetNumberPropertyValue("CCD_FRAME", "X") ?? -1) != x ||
+                (int)(GetNumberPropertyValue("CCD_FRAME", "Y") ?? -1) != y ||
+                (int)(GetNumberPropertyValue("CCD_FRAME", "WIDTH") ?? -1) != width ||
+                (int)(GetNumberPropertyValue("CCD_FRAME", "HEIGHT") ?? -1) != height;
+            if (!frameChanged) {
+                return false;
+            }
+
+            try {
+                SetNumberValues("CCD_FRAME",
+                    ("X", (double)x),
+                    ("Y", (double)y),
+                    ("WIDTH", (double)width),
+                    ("HEIGHT", (double)height));
+                return true;
+            } catch (ArgumentException ex) {
+                Logger.Debug($"[{DeviceName}] Cannot set CCD_FRAME: {ex.Message}");
+                return false;
             }
         }
 
