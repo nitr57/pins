@@ -101,6 +101,16 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void Goto_WithoutAReply_ReturnsNull() {
+            var (device, _) = Connect(FakeOnStepXPort.Umi17S()
+                .On(":Sr04:00:15.0000#", "1")
+                .On(":Sd+45*30:00.000#", "1")
+                .On(":MS#", (string?)null));
+
+            Assert.That(device.Goto(4 + 15 / 3600.0, 45.5), Is.Null, "the goto may have started; the caller checks the status");
+        }
+
+        [Test]
         public void Goto_TargetRefused_Throws() {
             var (device, port) = Connect(FakeOnStepXPort.Umi17S()
                 .On(":Sr04:00:15.0000#", "0"));

@@ -413,6 +413,57 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task SlewToCoordinates_UnansweredGotoThatRuns_GoesOn() {
+            // a lost :MS# reply (USB hang) while the controller started the goto: the status decides, as for :hP#
+            var port = FakeOnStepXPort.Umi17S()
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
+                .On(":MS#", (string?)null);
+            var (telescope, _) = await Connected(port);
+            // away from the target until the goto has run, so only the running goto can confirm it
+            port.On(":GU#", Tracking, TrackingAndSlewing, TrackingAndSlewing, Tracking);
+            port.On(":GR#", "22:00:00#", "03:00:00#", "04:30:00#", "05:00:00#");
+            port.On(":GD#", "+60*00:00#", "+40*00:00#", "+25*00:00#", "+20*00:00#");
+
+            bool done = await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None);
+
+            Assert.That(done, Is.True);
+            Assert.That(port.Written, Has.None.EqualTo(":Q#"));
+        }
+
+        [Test]
+        public async Task SlewToCoordinates_UnansweredGotoAtTheTarget_Arrives() {
+            var port = FakeOnStepXPort.Umi17S()
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
+                .On(":MS#", (string?)null)
+                .On(":GR#", "05:00:00#")
+                .On(":GD#", "+20*00:00#");
+            var (telescope, _) = await Connected(port);
+            port.On(":GU#", Tracking);
+
+            Assert.That(await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None), Is.True);
+        }
+
+        [Test]
+        public async Task SlewToCoordinates_UnansweredGotoThatDoesNotStart_StopsAndThrows() {
+            var port = FakeOnStepXPort.Umi17S()
+                .On(":Sr05:00:00.0000#", "1")
+                .On(":Sd+20*00:00.000#", "1")
+                .On(":MS#", (string?)null)
+                .On(":GR#", "22:00:00#")
+                .On(":GD#", "+60*00:00#");
+            var (telescope, _) = await Connected(port);
+            port.On(":GU#", Tracking);
+            telescope.UnansweredGotoStartTimeout = TimeSpan.FromSeconds(1);
+
+            Assert.That(async () => await telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None),
+                Throws.InvalidOperationException.With.Message.Contains("no reply to :MS#"));
+            Assert.That(port.Written.Skip(port.Written.IndexOf(":MS#")), Does.Contain(":Q#"), "a goto that starts late is stopped");
+            Assert.That(telescope.TargetCoordinates, Is.Null);
+        }
+
+        [Test]
         public async Task PulseGuide_RightAfterAGotoStarted_IsRefused() {
             // a pulse aborts a goto (Guide::validate), and the last status may predate :MS#
             var port = FakeOnStepXPort.Umi17S()

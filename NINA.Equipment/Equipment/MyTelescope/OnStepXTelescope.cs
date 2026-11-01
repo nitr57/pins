@@ -103,6 +103,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         private static readonly TimeSpan MotionStartTimeout = TimeSpan.FromSeconds(10);
 
+        /// <summary>How long a goto whose :MS# got no answer may take to show as started; internal so tests can shorten it.</summary>
+        internal TimeSpan UnansweredGotoStartTimeout { get; set; } = MotionStartTimeout;
+
         /// <summary>
         /// How far from the target a finished goto may end before it counts as stopped on the way: well above the 1 s
         /// resolution of :GR# and the refraction near the horizon.
@@ -1428,10 +1431,13 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     await Task.Delay(TrackingSettleTime, token);
                     error = StartGoto(target);
                 }
-                if (error != OnStepXGotoError.None) {
-                    throw Failure($"the mount refused the goto to {target}: {error.Describe()}");
+                if (error is { } refusal && refusal != OnStepXGotoError.None) {
+                    throw Failure($"the mount refused the goto to {target}: {refusal.Describe()}");
                 }
                 MotionCommandSent();
+                if (error is null) {
+                    await ConfirmUnansweredGoto(target, token);
+                }
 
                 await Task.Delay(TimeSpan.FromMilliseconds(200), token);
                 var stopped = await WaitFor(s => !s.Status.Slewing || s.Status.WaitingAtHome, MotionTimeout, token);
@@ -1465,11 +1471,36 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
-        /// <summary>The goto's answer from :MS#; a failed command (target refused, no reply) throws.</summary>
-        private OnStepXGotoError StartGoto(Coordinates target) {
-            var result = OnStepXGotoError.Unspecified;
+        /// <summary>The goto's answer from :MS#, null when there was none; a failed command (target refused) throws.</summary>
+        private OnStepXGotoError? StartGoto(Coordinates target) {
+            OnStepXGotoError? result = OnStepXGotoError.Unspecified;
             RunOrThrow("start the goto", d => result = d.Goto(target.RA, target.Dec));
             return result;
+        }
+
+        /// <summary>
+        /// A :MS# without an answer (a USB hang, a lost character) may have started the goto all the same, as Park
+        /// decides an unanswered :hP# by the status. A goto that shows as running, or a mount already at the target, goes
+        /// on; otherwise :Q# stops a goto that might still start late, and the slew fails. Before, it failed at once
+        /// while the mount could be slewing, and a meridian flip sent a second goto into the running one.
+        /// </summary>
+        private async Task ConfirmUnansweredGoto(Coordinates target, CancellationToken token) {
+            Logger.Warning("OnStepX: :MS# not answered, checking whether the goto started");
+            var seen = await WaitFor(s => s.Status.Slewing || IsAtTarget(s, target), UnansweredGotoStartTimeout, token);
+            if (seen is not null) {
+                Logger.Info(seen.Status.Slewing
+                    ? "OnStepX: the unanswered goto is running"
+                    : "OnStepX: the mount is at the target of the unanswered goto");
+                return;
+            }
+
+            AbortQuietly();
+            throw Failure($"no reply to :MS#, and the goto to {target} did not start within {UnansweredGotoStartTimeout.TotalSeconds:F0} s");
+        }
+
+        private static bool IsAtTarget(State s, Coordinates target) {
+            var position = new Coordinates(Angle.ByHours(s.RightAscension), Angle.ByDegree(s.Declination), Epoch.JNOW);
+            return (position - target).Distance.Degree <= GotoArrivalToleranceDegrees;
         }
 
         public Task<bool> SlewToAltAz(TopocentricCoordinates coordinates, CancellationToken token) => Task.FromResult(false);

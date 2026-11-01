@@ -43,10 +43,16 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
             SendExpectingAcceptance($":Sd{FormatDeclination(decDegrees)}#");
         }
 
-        /// <summary>Sets the target and starts the goto (:MS#), which is answered with '0' or the reason it cannot start.</summary>
-        public OnStepXGotoError Goto(double raHours, double decDegrees) {
+        /// <summary>
+        /// Sets the target and starts the goto (:MS#), which is answered with '0' or the reason it cannot start. Null
+        /// without an answer: as with :hP#, the goto may have started all the same, the status decides.
+        /// </summary>
+        public OnStepXGotoError? Goto(double raHours, double decDegrees) {
             SetTarget(raHours, decDegrees);
             char? reply = Transport.SendForChar(":MS#");
+            if (reply is null) {
+                return null;
+            }
             if (reply is not { } c || c < '0' || c > '9') {
                 throw new OnStepXException($"Invalid reply to :MS#: '{reply}'");
             }
