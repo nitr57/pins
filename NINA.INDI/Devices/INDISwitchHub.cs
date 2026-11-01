@@ -122,27 +122,25 @@ namespace NINA.INDI.Devices
 
             bool isWritable = p.Permission != PropertyPermission.ReadOnly;
 
-            lock (_descriptorsLock)
+            var descriptors = new List<INDISwitchDescriptor>();
+            foreach (var sw in p.Switches)
             {
-                // Refresh descriptors for this property (initial def or relabel).
-                _descriptors.RemoveAll(d => d.PropertyName == p.Name && d.IsBoolSwitch);
-
-                foreach (var sw in p.Switches)
+                descriptors.Add(new INDISwitchDescriptor
                 {
-                    _descriptors.Add(new INDISwitchDescriptor
-                    {
-                        PropertyName = p.Name,
-                        PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
-                        ElementName = sw.Name,
-                        ElementLabel = string.IsNullOrWhiteSpace(sw.Label) ? sw.Name : sw.Label,
-                        IsWritable = isWritable,
-                        IsBoolSwitch = true,
-                        Min = 0.0,
-                        Max = 1.0,
-                        Step = 1.0
-                    });
-                }
+                    PropertyName = p.Name,
+                    PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
+                    ElementName = sw.Name,
+                    ElementLabel = string.IsNullOrWhiteSpace(sw.Label) ? sw.Name : sw.Label,
+                    IsWritable = isWritable,
+                    IsBoolSwitch = true,
+                    Min = 0.0,
+                    Max = 1.0,
+                    Step = 1.0
+                });
             }
+
+            // Refresh descriptors for this property (initial def or relabel).
+            ReplaceDescriptors(p.Name, isBoolSwitch: true, descriptors);
 
             NotifyValuesUpdated(p.Name);
         }
@@ -156,28 +154,49 @@ namespace NINA.INDI.Devices
 
             bool isWritable = p.Permission != PropertyPermission.ReadOnly;
 
-            lock (_descriptorsLock)
+            var descriptors = new List<INDISwitchDescriptor>();
+            foreach (var num in p.Numbers)
             {
-                _descriptors.RemoveAll(d => d.PropertyName == p.Name && !d.IsBoolSwitch);
-
-                foreach (var num in p.Numbers)
+                descriptors.Add(new INDISwitchDescriptor
                 {
-                    _descriptors.Add(new INDISwitchDescriptor
-                    {
-                        PropertyName = p.Name,
-                        PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
-                        ElementName = num.Name,
-                        ElementLabel = string.IsNullOrWhiteSpace(num.Label) ? num.Name : num.Label,
-                        IsWritable = isWritable,
-                        IsBoolSwitch = false,
-                        Min = num.Min,
-                        Max = num.Max,
-                        Step = num.Step > 0 ? num.Step : 1.0
-                    });
-                }
+                    PropertyName = p.Name,
+                    PropertyLabel = string.IsNullOrWhiteSpace(p.Label) ? p.Name : p.Label,
+                    ElementName = num.Name,
+                    ElementLabel = string.IsNullOrWhiteSpace(num.Label) ? num.Name : num.Label,
+                    IsWritable = isWritable,
+                    IsBoolSwitch = false,
+                    Min = num.Min,
+                    Max = num.Max,
+                    Step = num.Step > 0 ? num.Step : 1.0
+                });
             }
 
+            ReplaceDescriptors(p.Name, isBoolSwitch: false, descriptors);
+
             NotifyValuesUpdated(p.Name);
+        }
+
+        /// <summary>
+        /// Puts a property's descriptors where that property's descriptors were before, and appends
+        /// them only when the property is new. The list then follows the order in which the driver
+        /// defined its properties, not the order of their later updates (setSwitchVector or
+        /// setNumberVector), which differs from session to session.
+        /// </summary>
+        private void ReplaceDescriptors(string propertyName, bool isBoolSwitch, List<INDISwitchDescriptor> descriptors)
+        {
+            lock (_descriptorsLock)
+            {
+                var index = _descriptors.FindIndex(d => d.PropertyName == propertyName && d.IsBoolSwitch == isBoolSwitch);
+                _descriptors.RemoveAll(d => d.PropertyName == propertyName && d.IsBoolSwitch == isBoolSwitch);
+                if (index < 0)
+                {
+                    _descriptors.AddRange(descriptors);
+                }
+                else
+                {
+                    _descriptors.InsertRange(index, descriptors);
+                }
+            }
         }
 
         /// <summary>

@@ -22,6 +22,8 @@ using NINA.INDI.Interfaces;
 using NINA.Profile.Interfaces;
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace NINA.Equipment.Equipment.MySwitch {
@@ -32,7 +34,8 @@ namespace NINA.Equipment.Equipment.MySwitch {
     /// writable channels as a standard NINA <see cref="ISwitchHub"/>.
     ///
     /// Switch collection is built once after connection by inspecting all writable
-    /// INDI property elements that the driver has advertised.
+    /// INDI property elements that the driver has advertised. Channel ids come from
+    /// the property and element names (<see cref="IndiSwitchChannelIds"/>).
     /// </summary>
     public class IndiSwitchHub : IndiDevice<IINDISwitchHub>, ISwitchHub, IDisposable {
 
@@ -101,11 +104,13 @@ namespace NINA.Equipment.Equipment.MySwitch {
 
         private void BuildSwitchCollection() {
             var list = new AsyncObservableCollection<ISwitch>();
-            short id = 0;
-            foreach (var desc in device.GetDescriptors()) {
+            var descriptors = device.GetDescriptors();
+            var ids = IndiSwitchChannelIds.Assign(descriptors);
+            for (var i = 0; i < descriptors.Count; i++) {
+                var desc = descriptors[i];
                 list.Add(desc.IsWritable
-                    ? (ISwitch)new IndiWritableSwitchItem(id++, desc, device)
-                    : new IndiReadSwitchItem(id++, desc, device));
+                    ? (ISwitch)new IndiWritableSwitchItem(ids[i], desc, device)
+                    : new IndiReadSwitchItem(ids[i], desc, device));
             }
             Switches = list;
             Logger.Info($"IndiSwitchHub '{Name}': discovered {list.Count} switch channel(s)");
@@ -120,6 +125,64 @@ namespace NINA.Equipment.Equipment.MySwitch {
         public string CommandString(string command, bool raw = false) => throw new NotImplementedException();
 
         #endregion
+    }
+
+    // -----------------------------------------------------------------------
+    // Channel ids
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Derives each channel's <see cref="ISwitch.Id"/> from its INDI property and element name, so a
+    /// channel keeps its id across sessions however the driver's properties arrive. A Set Switch Value
+    /// instruction saves the hub's device id and this id as the channel's identity.
+    /// </summary>
+    internal static class IndiSwitchChannelIds {
+
+        /// <summary>
+        /// Lowest id. Ids used to be the position in the channel list (0, 1, 2, …); keeping new ids
+        /// above them makes an instruction saved with an old id find no channel instead of another one.
+        /// </summary>
+        public const short MinId = 1000;
+
+        private const int IdCount = short.MaxValue - MinId + 1;
+
+        /// <summary>Returns the ids in the order of <paramref name="descriptors"/>.</summary>
+        public static short[] Assign(IReadOnlyList<INDISwitchDescriptor> descriptors) {
+            var ids = new short[descriptors.Count];
+            var taken = new HashSet<short>();
+
+            // Two names whose hashes collide are resolved in name order, so the result does not
+            // depend on the order of the descriptors.
+            var order = Enumerable.Range(0, descriptors.Count)
+                .OrderBy(i => descriptors[i].PropertyName, StringComparer.Ordinal)
+                .ThenBy(i => descriptors[i].ElementName, StringComparer.Ordinal)
+                .ToArray();
+            foreach (var i in order) {
+                var id = PreferredId(descriptors[i].PropertyName, descriptors[i].ElementName);
+                while (!taken.Add(id)) {
+                    id = id == short.MaxValue ? MinId : (short)(id + 1);
+                }
+
+                ids[i] = id;
+            }
+
+            return ids;
+        }
+
+        /// <summary>
+        /// FNV-1a (32 bit) over the UTF-8 bytes of "property\0element", mapped onto
+        /// <see cref="MinId"/>..<see cref="short.MaxValue"/>. Fixed rather than
+        /// <see cref="string.GetHashCode()"/>, which differs from process to process.
+        /// </summary>
+        public static short PreferredId(string propertyName, string elementName) {
+            var hash = 2166136261u;
+            foreach (var b in Encoding.UTF8.GetBytes(propertyName + "\0" + elementName)) {
+                hash ^= b;
+                hash *= 16777619u;
+            }
+
+            return (short)(MinId + hash % IdCount);
+        }
     }
 
     // -----------------------------------------------------------------------
