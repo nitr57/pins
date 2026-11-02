@@ -47,6 +47,14 @@ namespace NINA.INDI.Devices {
         private static readonly TimeSpan StaleBlobDebounce = TimeSpan.FromMilliseconds(500);
         private DateTime? _lastAbortAt;
 
+        // A CCD_EXPOSURE Alert ends the exposure only as the driver's answer to this exposure's command: not before the
+        // command is sent (binning, gain and frame go out first), and not with the timestamp from before it (a repeated
+        // Alert of the previous failed exposure, or the answer to a refused abort). INDI timestamps have a resolution of
+        // one second, so an Alert after a Busy seen since the command counts as well.
+        private volatile bool _exposureCommandSent;
+        private volatile bool _exposureBusySeen;
+        private volatile string _exposurePreSendTimestamp;
+
         // Profile values to apply the first time each switch property arrives.
         // Populated by IndiCamera.PostConnect() before properties are guaranteed
         // to have arrived; applied (and removed) in OnSwitchPropertyUpdated on
@@ -180,6 +188,7 @@ namespace NINA.INDI.Devices {
             // Order matters: clear the data before swapping the TCS so a late BLOB
             // arriving in between resolves the abandoned TCS, not the new one.
             _lastBlobData = null;
+            _exposureCommandSent = false;
             _exposureReady = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
 
             // Apply the requested binning if it differs from the current driver state.
@@ -212,6 +221,9 @@ namespace NINA.INDI.Devices {
             EnsureImageReachesClient();
 
             // Send exposure duration — this triggers the capture
+            _exposurePreSendTimestamp = GetProperty("CCD_EXPOSURE")?.Timestamp;
+            _exposureBusySeen = false;
+            _exposureCommandSent = true;
             try {
                 SetNumberValue("CCD_EXPOSURE", "CCD_EXPOSURE_VALUE", exposureTime);
                 LogFrame($"[{DeviceName}] Started INDI exposure: {exposureTime}s bin={binX}x{binY}");
@@ -283,9 +295,15 @@ namespace NINA.INDI.Devices {
             base.OnNumberPropertyUpdated(p);
 
             // A failed or refused exposure: no BLOB will come, so end the wait now with no data (the download reports the
-            // failed frame) instead of at the camera timeout. Only an exposure in flight; the reply to the command that
-            // started it can't be an Alert left from an earlier one, since INDI only sends a property when it changes.
-            if (p.Name == "CCD_EXPOSURE" && p.State == PropertyState.Alert) {
+            // failed frame) instead of at the camera timeout. Only an exposure in flight, and only its own Alert (see
+            // _exposureCommandSent): a driver sends a property again without a change too, e.g. with every message.
+            if (p.Name != "CCD_EXPOSURE" || !_exposureCommandSent) {
+                return;
+            }
+
+            if (p.State == PropertyState.Busy) {
+                _exposureBusySeen = true;
+            } else if (p.State == PropertyState.Alert && (_exposureBusySeen || p.Timestamp != _exposurePreSendTimestamp)) {
                 var pending = _exposureReady;
                 if (pending is { Task.IsCompleted: false }) {
                     Logger.Error($"[{DeviceName}] The driver reported the exposure as failed (CCD_EXPOSURE Alert); no image will arrive");

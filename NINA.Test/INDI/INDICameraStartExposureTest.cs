@@ -130,13 +130,46 @@ namespace NINA.Test.INDI {
 
             camera.StartExposure(5, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
             await WaitForExposureCommandAsync();
-            main.Send($"<setNumberVector device=\"{Camera}\" name=\"CCD_EXPOSURE\" state=\"Alert\" timeout=\"60\">"
-                + "<oneNumber name=\"CCD_EXPOSURE_VALUE\">0</oneNumber></setNumberVector>\n");
+            main.Send(Exposure("Alert", "2026-11-01T20:00:01"));
 
             Assert.That(async () => await camera.WaitUntilExposureIsReady(System.Threading.CancellationToken.None).WaitAsync(Timeout), Throws.Nothing,
                 "the frame fails at once instead of at the camera timeout");
             Assert.That(camera.GetLastBlobData(), Is.Null);
         }
+
+        [Test]
+        public async Task TheAlertOfThePreviousExposure_DoesNotEndTheNext() {
+            var camera = await RegisterCameraInStateAsync("Alert", "");
+
+            camera.StartExposure(5, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+            await WaitForExposureCommandAsync();
+            // The driver sends the failed exposure's Alert again, unchanged
+            main.Send(Exposure("Alert", "2026-11-01T20:00:00"));
+            var wait = camera.WaitUntilExposureIsReady(System.Threading.CancellationToken.None);
+
+            Assert.That(async () => await wait.WaitAsync(TimeSpan.FromMilliseconds(500)), Throws.TypeOf<TimeoutException>(),
+                "the new exposure keeps waiting for its image");
+
+            main.Send(Exposure("Alert", "2026-11-01T20:00:01"));
+
+            Assert.That(async () => await wait.WaitAsync(Timeout), Throws.Nothing, "its own Alert still ends it");
+        }
+
+        [Test]
+        public async Task AnAlertAfterBusy_EndsTheExposure_InTheSameSecond() {
+            var camera = await RegisterCameraInStateAsync("Alert", "");
+
+            camera.StartExposure(5, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+            await WaitForExposureCommandAsync();
+            main.Send(Exposure("Busy", "2026-11-01T20:00:00"));
+            main.Send(Exposure("Alert", "2026-11-01T20:00:00"));
+
+            Assert.That(async () => await camera.WaitUntilExposureIsReady(System.Threading.CancellationToken.None).WaitAsync(Timeout), Throws.Nothing);
+        }
+
+        private static string Exposure(string state, string timestamp) =>
+            $"<setNumberVector device=\"{Camera}\" name=\"CCD_EXPOSURE\" state=\"{state}\" timeout=\"60\" timestamp=\"{timestamp}\">"
+            + "<oneNumber name=\"CCD_EXPOSURE_VALUE\">0</oneNumber></setNumberVector>\n";
 
         [Test]
         public async Task ALocalUpload_IsSwitchedToClientBeforeTheExposure() {
@@ -221,14 +254,17 @@ namespace NINA.Test.INDI {
             + $"<defNumber name=\"WIDTH\" label=\"Width\" format=\"%4.0f\" min=\"1\" max=\"4144\" step=\"0\">{width}</defNumber>"
             + $"<defNumber name=\"HEIGHT\" label=\"Height\" format=\"%4.0f\" min=\"1\" max=\"2822\" step=\"0\">{height}</defNumber></defNumberVector>\n";
 
-        private async Task<INDICamera> RegisterCameraAsync(string extraVectors, params string[] extraProperties) {
+        private Task<INDICamera> RegisterCameraAsync(string extraVectors, params string[] extraProperties) =>
+            RegisterCameraInStateAsync("Idle", extraVectors, extraProperties);
+
+        private async Task<INDICamera> RegisterCameraInStateAsync(string exposureState, string extraVectors, params string[] extraProperties) {
             var create = Task.Run(() => new INDICamera(new INDIDeviceInfo { Id = Camera, Name = Camera, Interface = DeviceInterface.CCD_INTERFACE }));
             // The new device asks for its properties and waits for CONNECTION.
             await main.WaitForAsync($"<getProperties version=\"1.7\" device=\"{Camera}\" />", Timeout);
             main.Send(
                 $"<defSwitchVector device=\"{Camera}\" name=\"CONNECTION\" label=\"Connection\" group=\"Main\" state=\"Idle\" perm=\"rw\" rule=\"OneOfMany\" timeout=\"60\">"
                 + "<defSwitch name=\"CONNECT\" label=\"Connect\">On</defSwitch><defSwitch name=\"DISCONNECT\" label=\"Disconnect\">Off</defSwitch></defSwitchVector>\n"
-                + $"<defNumberVector device=\"{Camera}\" name=\"CCD_EXPOSURE\" label=\"Expose\" group=\"Main Control\" state=\"Idle\" perm=\"rw\" timeout=\"60\">"
+                + $"<defNumberVector device=\"{Camera}\" name=\"CCD_EXPOSURE\" label=\"Expose\" group=\"Main Control\" state=\"{exposureState}\" perm=\"rw\" timeout=\"60\" timestamp=\"2026-11-01T20:00:00\">"
                 + "<defNumber name=\"CCD_EXPOSURE_VALUE\" label=\"Duration (s)\" format=\"%5.2f\" min=\"0\" max=\"3600\" step=\"1\">1</defNumber></defNumberVector>\n"
                 + extraVectors);
             Assert.That(await Task.WhenAny(create, Task.Delay(Timeout)), Is.SameAs(create), "the camera registers");
