@@ -33,7 +33,6 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
     internal class IndiTelescope : IndiDevice<IINDITelescope>, ITelescope, IDisposable {
         private const int MERIDIAN_FLIP_SLEW_RETRY_ATTEMPTS = 20;
-        private const double TRACKING_RATE_EPSILON = 0.000001;
 
         public IndiTelescope(INDIDeviceInfo info, IProfileService profileService) : base(info) {
             this.profileService = profileService;
@@ -978,6 +977,13 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 // Get the supported modes from the INDI device
                 var supportedModes = device.GetSupportedTrackingModes();
                 foreach (var mode in supportedModes) {
+                    // King would select TRACK_CUSTOM at whatever rate the driver holds: pins writes no
+                    // TELESCOPE_TRACK_RATE (see canSetDeclinationRate), so it would track sidereal or at another
+                    // client's rate while showing "King"
+                    if (mode == INDI.Enums.TrackingMode.King) {
+                        continue;
+                    }
+
                     trackingModes.Add(GetNINATrackingMode(mode));
                 }
 
@@ -1024,16 +1030,14 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     // Get the current tracking mode from the INDI device
                     var mode = device.GetTrackingMode();
 
-                    // If custom mode, check for custom rates
+                    // TRACK_CUSTOM runs at a rate pins didn't set (another client's, or the driver's default), so it is
+                    // shown as what it is, not as King
                     if (mode == INDI.Enums.TrackingMode.King || mode == INDI.Enums.TrackingMode.Custom) {
-                        if (Math.Abs(DeclinationRate) >= TRACKING_RATE_EPSILON || Math.Abs(RightAscensionRate) >= TRACKING_RATE_EPSILON) {
-                            return new TrackingRate() {
-                                TrackingMode = TrackingMode.Custom,
-                                CustomRightAscensionRate = RightAscensionRate,
-                                CustomDeclinationRate = DeclinationRate
-                            };
-                        }
-                        return new TrackingRate() { TrackingMode = TrackingMode.King };
+                        return new TrackingRate() {
+                            TrackingMode = TrackingMode.Custom,
+                            CustomRightAscensionRate = RightAscensionRate,
+                            CustomDeclinationRate = DeclinationRate
+                        };
                     }
 
                     return new TrackingRate() { TrackingMode = GetNINATrackingMode(mode) };
@@ -1049,6 +1053,13 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             set {
                 if (value == TrackingMode.Custom) {
                     throw new ArgumentException("TrackingMode cannot be set to Custom. Use SetCustomTrackingRate");
+                }
+
+                // Not offered (see GetTrackingModes), but reachable through the API's tracking mode number
+                if (value == TrackingMode.King) {
+                    Logger.Warning("King tracking is not available for INDI mounts: pins can't set the King rate");
+                    Notification.ShowWarning("King tracking is not available for INDI mounts");
+                    return;
                 }
 
                 if (ShouldBeConnected && CanSetTrackingEnabled) {

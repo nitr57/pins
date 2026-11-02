@@ -31,7 +31,8 @@ namespace NINA.Test.Equipment {
     /// <summary>
     /// INDI mounts offer no custom tracking rates: the rates never reached the mount, so a comet tracked at the sidereal
     /// rate without an error, and writing TELESCOPE_TRACK_RATE is not safe across drivers. Custom tracking now fails
-    /// visibly instead.
+    /// visibly instead. King, which selects TRACK_CUSTOM, isn't offered for the same reason, and a mount in TRACK_CUSTOM
+    /// shows as Custom instead of King.
     /// </summary>
     [TestFixture]
     public class IndiTelescopeCustomRateTest {
@@ -66,6 +67,35 @@ namespace NINA.Test.Equipment {
             Assert.That(modes, Does.Not.Contain(TrackingMode.Custom));
             Assert.That(telescope.CanSetRightAscensionRate, Is.False);
             Assert.That(telescope.CanSetDeclinationRate, Is.False);
+        }
+
+        [Test]
+        public void KingTrackingIsNotOffered() {
+            var telescope = new ConnectedIndiTelescope();
+
+            var modes = telescope.LoadTrackingModes();
+
+            Assert.That(modes, Does.Not.Contain(TrackingMode.King));
+            Assert.That(modes, Does.Contain(TrackingMode.Lunar));
+        }
+
+        [Test]
+        public void SettingKingTracking_SendsNothing() {
+            var telescope = new ConnectedIndiTelescope();
+            telescope.LoadTrackingModes();
+
+            telescope.TrackingMode = TrackingMode.King;
+
+            telescope.Fake.Verify(d => d.SetTrackingMode(It.IsAny<IndiTrackingMode>()), Times.Never);
+        }
+
+        [Test]
+        public void AMountInTrackCustom_IsShownAsCustom() {
+            var telescope = new ConnectedIndiTelescope();
+            telescope.Fake.SetupGet(d => d.Tracking).Returns(true);
+            telescope.Fake.Setup(d => d.GetTrackingMode()).Returns(IndiTrackingMode.King);
+
+            Assert.That(telescope.TrackingRate.TrackingMode, Is.EqualTo(TrackingMode.Custom));
         }
 
         [Test]
