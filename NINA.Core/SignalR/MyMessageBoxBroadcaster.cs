@@ -50,9 +50,17 @@ namespace NINA.Core.SignalR {
             return new List<MyMessageBox.MyMessageBoxMessage>(_activeMessageBoxes.Values);
         }
 
-        public async Task<MessageBoxResult> ShowMessageBoxAsync(string messageBoxText, string caption, MessageBoxButton button, MessageBoxResult defaultResult, TimeSpan timeout = default) {
+        public Task<MessageBoxResult> ShowMessageBoxAsync(string messageBoxText, string caption, MessageBoxButton button, MessageBoxResult defaultResult, TimeSpan timeout = default) {
+            return ShowMessageBoxAsync(messageBoxText, caption, button, defaultResult, timeout, CancellationToken.None);
+        }
+
+        public async Task<MessageBoxResult> ShowMessageBoxAsync(string messageBoxText, string caption, MessageBoxButton button, MessageBoxResult defaultResult, TimeSpan timeout, CancellationToken token) {
             if (timeout == default) {
                 timeout = TimeSpan.FromMinutes(5); // Default timeout of 5 minutes
+            }
+
+            if (token.IsCancellationRequested) {
+                return defaultResult;
             }
 
             var message = new MyMessageBoxMessage {
@@ -62,30 +70,40 @@ namespace NINA.Core.SignalR {
                 DefaultResult = defaultResult.ToString()
             };
 
-            var tcs = new TaskCompletionSource<MessageBoxResult>();
+            // continuations run on their own: a token cancelled by the caller (e.g. a socket handler) must not run the rest
+            // of this method, the close broadcast included, inside its Cancel()
+            var tcs = new TaskCompletionSource<MessageBoxResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             _pendingRequests.TryAdd(message.Id, tcs);
+            var sent = false;
+            var finalResult = defaultResult;
 
             try {
                 if (_hubContext != null) {
                     Logger.Info($"Broadcasting message box {message.Id}: '{messageBoxText}' with button type {button}");
                     _activeMessageBoxes[message.Id] = message;
                     await _hubContext.Clients.All.SendAsync("ReceiveMessageBox", message);
+                    sent = true;
                     Logger.Info($"Message box {message.Id} sent to clients");
                 } else {
                     Logger.Warning($"HubContext is null, cannot broadcast message box {message.Id}");
                     return defaultResult;
                 }
 
-                using (var cts = new CancellationTokenSource(timeout)) {
-                    cts.Token.Register(() => {
-                        if (tcs.TrySetResult(defaultResult)) {
-                            Logger.Warning($"MessageBox request {message.Id} timed out. Using default result: {defaultResult}");
-                        }
-                    });
-
+                using (var cts = new CancellationTokenSource(timeout))
+                using (cts.Token.Register(() => {
+                    if (tcs.TrySetResult(defaultResult)) {
+                        Logger.Warning($"MessageBox request {message.Id} timed out. Using default result: {defaultResult}");
+                    }
+                }))
+                using (token.Register(() => {
+                    if (tcs.TrySetResult(defaultResult)) {
+                        Logger.Info($"MessageBox request {message.Id} was ended without an answer. Using default result: {defaultResult}");
+                    }
+                })) {
                     Logger.Info($"Waiting for response to message box {message.Id}...");
                     var result = await tcs.Task;
                     Logger.Info($"Message box {message.Id} returned result: {result}");
+                    finalResult = result;
                     return result;
                 }
             } catch (Exception ex) {
@@ -94,6 +112,16 @@ namespace NINA.Core.SignalR {
             } finally {
                 _pendingRequests.TryRemove(message.Id, out _);
                 _activeMessageBoxes.TryRemove(message.Id, out _);
+
+                // the box stayed open on every client but the one that answered, also after a timeout or an end from
+                // outside; the app closes it on CloseMessageBox
+                if (sent) {
+                    try {
+                        await _hubContext.Clients.All.SendAsync("CloseMessageBox", message.Id, finalResult.ToString());
+                    } catch (Exception ex) {
+                        Logger.Error($"Failed to broadcast the close of message box {message.Id}: {ex.Message}");
+                    }
+                }
             }
         }
 

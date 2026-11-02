@@ -12,12 +12,19 @@
 
 #endregion "copyright"
 
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 
 namespace NINA.Core.SignalR {
     public interface IMyMessageBoxBroadcaster {
         Task<MessageBoxResult> ShowMessageBoxAsync(string messageBoxText, string caption, MessageBoxButton button, MessageBoxResult defaultResult, System.TimeSpan timeout = default);
+
+        /// <summary>
+        /// As the overload without a token, and ended by <paramref name="token"/> with <paramref name="defaultResult"/>.
+        /// <see cref="Timeout.InfiniteTimeSpan"/> waits for an answer without a time limit.
+        /// </summary>
+        Task<MessageBoxResult> ShowMessageBoxAsync(string messageBoxText, string caption, MessageBoxButton button, MessageBoxResult defaultResult, System.TimeSpan timeout, CancellationToken token);
         Task HandleMessageBoxResponseAsync(string messageBoxId, string result);
     }
 }
