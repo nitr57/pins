@@ -94,7 +94,10 @@ namespace NINA.Test.INDI {
         public async Task StartExposure_ResetsCcdFrameToTheFullSensor_AfterASubframe() {
             var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(100, 200, 512, 512), "CCD_INFO", "CCD_FRAME");
 
-            camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+            var start = Task.Run(() => camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1));
+            await WaitForFrameCommandAsync();
+            main.Send(SetFrame(0, 0, 4144, 2822));
+            await start.WaitAsync(Timeout);
 
             await main.WaitUntilAsync(
                 r => r.Contains("name=\"CCD_EXPOSURE\"", StringComparison.Ordinal),
@@ -109,6 +112,56 @@ namespace NINA.Test.INDI {
             Assert.That(frameVector, Does.Contain("<oneNumber name=\"Y\">0</oneNumber>"));
             Assert.That(frameVector, Does.Contain("<oneNumber name=\"WIDTH\">4144</oneNumber>"));
             Assert.That(frameVector, Does.Contain("<oneNumber name=\"HEIGHT\">2822</oneNumber>"));
+        }
+
+        [Test]
+        public async Task StartExposure_WaitsForTheDriversAnswerToCcdFrame_BeforeTheExposure() {
+            var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(100, 200, 512, 512), "CCD_INFO", "CCD_FRAME");
+
+            var start = Task.Run(() => camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1));
+            await WaitForFrameCommandAsync();
+            await Task.Delay(300);
+
+            Assert.That(main.Received, Does.Not.Contain("name=\"CCD_EXPOSURE\""),
+                "toupbase restarts its engine on CCD_FRAME and may refuse an exposure sent right behind it");
+
+            main.Send(SetFrame(0, 0, 4144, 2822));
+            await start.WaitAsync(Timeout);
+            await WaitForExposureCommandAsync();
+        }
+
+        [Test]
+        public async Task StartExposure_DoesNotResetAgain_WhenTheDriversFullFrameDiffersFromCcdInfo() {
+            var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(100, 200, 512, 512), "CCD_INFO", "CCD_FRAME");
+
+            var start = Task.Run(() => camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1));
+            await WaitForFrameCommandAsync();
+            // the driver trims a border off CCD_INFO's size
+            main.Send(SetFrame(4, 3, 4136, 2816));
+            await start.WaitAsync(Timeout);
+            await WaitForExposureCommandAsync();
+
+            camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1);
+            await main.WaitUntilAsync(
+                r => r.Split("name=\"CCD_EXPOSURE\"").Length > 2,
+                "the second exposure is started",
+                Timeout);
+
+            Assert.That(main.Received.Split("name=\"CCD_FRAME\"").Length - 1, Is.EqualTo(1),
+                "the driver's own full frame is not reset before every frame");
+        }
+
+        [Test]
+        public async Task StartExposure_WithAnEmptySubframe_ResetsToTheFullSensor() {
+            var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(100, 200, 512, 512), "CCD_INFO", "CCD_FRAME");
+
+            var start = Task.Run(() => camera.StartExposure(1, 1, 1, true, 0, 0, 0, 0, gain: -1, offset: -1));
+            await WaitForFrameCommandAsync();
+            main.Send(SetFrame(0, 0, 4144, 2822));
+            await start.WaitAsync(Timeout);
+
+            Assert.That(main.Received, Does.Contain("<oneNumber name=\"WIDTH\">4144</oneNumber>"),
+                "an autofocus crop of 0 must not keep the previous subframe");
         }
 
         [Test]
@@ -246,6 +299,18 @@ namespace NINA.Test.INDI {
             $"<defNumberVector device=\"{Camera}\" name=\"CCD_INFO\" label=\"CCD Information\" group=\"Image Info\" state=\"Idle\" perm=\"ro\" timeout=\"60\">"
             + "<defNumber name=\"CCD_MAX_X\" label=\"Max. Width\" format=\"%.f\" min=\"1\" max=\"16000\" step=\"0\">4144</defNumber>"
             + "<defNumber name=\"CCD_MAX_Y\" label=\"Max. Height\" format=\"%.f\" min=\"1\" max=\"16000\" step=\"0\">2822</defNumber></defNumberVector>\n";
+
+        private Task WaitForFrameCommandAsync() {
+            return main.WaitUntilAsync(
+                r => r.Contains("name=\"CCD_FRAME\"", StringComparison.Ordinal),
+                "CCD_FRAME is sent",
+                Timeout);
+        }
+
+        private static string SetFrame(int x, int y, int width, int height) =>
+            $"<setNumberVector device=\"{Camera}\" name=\"CCD_FRAME\" state=\"Ok\" timeout=\"60\" timestamp=\"2026-11-01T20:00:01\">"
+            + $"<oneNumber name=\"X\">{x}</oneNumber><oneNumber name=\"Y\">{y}</oneNumber>"
+            + $"<oneNumber name=\"WIDTH\">{width}</oneNumber><oneNumber name=\"HEIGHT\">{height}</oneNumber></setNumberVector>\n";
 
         private static string CcdFrame(int x, int y, int width, int height) =>
             $"<defNumberVector device=\"{Camera}\" name=\"CCD_FRAME\" label=\"Frame\" group=\"Image Settings\" state=\"Idle\" perm=\"rw\" timeout=\"60\">"

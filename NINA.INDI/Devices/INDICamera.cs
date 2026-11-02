@@ -55,6 +55,14 @@ namespace NINA.INDI.Devices {
         private volatile bool _exposureBusySeen;
         private volatile string _exposurePreSendTimestamp;
 
+        // What CCD_FRAME read after the last full-frame reset. A driver whose full frame differs from CCD_INFO's size
+        // never reads back that size, so without this every frame sent the reset again (toupbase restarts its camera
+        // engine on each CCD_FRAME).
+        private (int X, int Y, int Width, int Height)? _fullFrameAsSet;
+
+        // How long StartExposure waits for the driver's answer to a CCD_FRAME change; internal so tests can shorten it
+        internal TimeSpan FrameAckTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
         // Profile values to apply the first time each switch property arrives.
         // Populated by IndiCamera.PostConnect() before properties are guaranteed
         // to have arrived; applied (and removed) in OnSwitchPropertyUpdated on
@@ -210,11 +218,18 @@ namespace NINA.INDI.Devices {
             // Set the frame region: the subframe when sub-sampling, otherwise the full sensor.
             // The driver keeps the last CCD_FRAME, so a full-frame exposure after a subframe
             // (autofocus crop, Take Subframe Exposure) has to put it back explicitly.
+            // A subframe request with an empty rectangle (e.g. an autofocus crop of 0) gets the full frame too.
             if (enableSubSample && subSampleWidth > 0 && subSampleHeight > 0) {
                 ApplyFrame(subSampleX, subSampleY, subSampleWidth, subSampleHeight);
-            } else if (!enableSubSample && CameraXSize > 0 && CameraYSize > 0) {
+            } else if (CameraXSize > 0 && CameraYSize > 0 && (_fullFrameAsSet is not { } asSet || CurrentFrame() != asSet)) {
                 if (ApplyFrame(0, 0, CameraXSize, CameraYSize)) {
                     Logger.Info($"[{DeviceName}] CCD_FRAME reset to full frame {CameraXSize}x{CameraYSize}");
+                    var after = CurrentFrame();
+                    if (after is { } frame && frame != (0, 0, CameraXSize, CameraYSize)) {
+                        Logger.Warning($"[{DeviceName}] The driver set CCD_FRAME to {frame.Width}x{frame.Height} at {frame.X},{frame.Y} for the full sensor of {CameraXSize}x{CameraYSize} (CCD_INFO); taking that as its full frame");
+                    }
+
+                    _fullFrameAsSet = after;
                 }
             }
 
@@ -244,31 +259,38 @@ namespace NINA.INDI.Devices {
         /// exposure command fail, and a redundant full-frame reset even crashes indi_toupcam_ccd.
         /// </summary>
         /// <returns><c>true</c> when CCD_FRAME was sent.</returns>
+        /// <remarks>
+        /// Waits (at most <see cref="FrameAckTimeout"/>) for the driver's answer: CCD_EXPOSURE went out right behind a
+        /// fire-and-forget CCD_FRAME, so a driver that restarts its engine on the change could refuse the exposure.
+        /// </remarks>
         private bool ApplyFrame(int x, int y, int width, int height) {
+            if (CurrentFrame() is not { } current || current == (x, y, width, height)) {
+                return false;
+            }
+
+            // On the thread pool: StartExposure is synchronous, and its caller's synchronization context (if any)
+            // must not be needed to finish the wait it is blocked on
+            var answered = Task.Run(() => SetNumberValuesAsync("CCD_FRAME", FrameAckTimeout,
+                ("X", (double)x),
+                ("Y", (double)y),
+                ("WIDTH", (double)width),
+                ("HEIGHT", (double)height))).GetAwaiter().GetResult();
+            if (!answered) {
+                Logger.Warning($"[{DeviceName}] The driver did not confirm CCD_FRAME {width}x{height} at {x},{y} within {FrameAckTimeout.TotalSeconds:F0} s; exposing anyway");
+            }
+
+            return true;
+        }
+
+        private (int X, int Y, int Width, int Height)? CurrentFrame() {
             if (GetNumberProperty("CCD_FRAME") == null) {
-                return false;
+                return null;
             }
 
-            var frameChanged =
-                (int)(GetNumberPropertyValue("CCD_FRAME", "X") ?? -1) != x ||
-                (int)(GetNumberPropertyValue("CCD_FRAME", "Y") ?? -1) != y ||
-                (int)(GetNumberPropertyValue("CCD_FRAME", "WIDTH") ?? -1) != width ||
-                (int)(GetNumberPropertyValue("CCD_FRAME", "HEIGHT") ?? -1) != height;
-            if (!frameChanged) {
-                return false;
-            }
-
-            try {
-                SetNumberValues("CCD_FRAME",
-                    ("X", (double)x),
-                    ("Y", (double)y),
-                    ("WIDTH", (double)width),
-                    ("HEIGHT", (double)height));
-                return true;
-            } catch (ArgumentException ex) {
-                Logger.Debug($"[{DeviceName}] Cannot set CCD_FRAME: {ex.Message}");
-                return false;
-            }
+            return ((int)(GetNumberPropertyValue("CCD_FRAME", "X") ?? -1),
+                (int)(GetNumberPropertyValue("CCD_FRAME", "Y") ?? -1),
+                (int)(GetNumberPropertyValue("CCD_FRAME", "WIDTH") ?? -1),
+                (int)(GetNumberPropertyValue("CCD_FRAME", "HEIGHT") ?? -1));
         }
 
         /// <summary>
