@@ -1157,10 +1157,10 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             return device ??= new INDITelescope(_device);
         }
 
-        public PierSide DestinationSideOfPier(Coordinates coordinates) {
-            coordinates = coordinates.Transform(EquatorialSystem);
-            var pierSide = device.DestinationSideOfPier(coordinates.RA, coordinates.Dec);
-            return (PierSide)pierSide;
-        }
+        // INDI has no property for the pier side a goto ends on: the side a German mount normally takes for the hour angle,
+        // as TelescopeVM computes it for a mount that cannot tell. The current side would be wrong for every goto across
+        // the meridian, e.g. for the dome's position
+        public PierSide DestinationSideOfPier(Coordinates coordinates) =>
+            Astrometry.MeridianFlip.ExpectedPierSide(coordinates.Transform(Epoch.JNOW), Angle.ByHours(SiderealTime));
     }
 }

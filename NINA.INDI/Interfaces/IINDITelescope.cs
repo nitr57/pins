@@ -118,6 +118,5 @@ namespace NINA.INDI.Interfaces {
         Task FindHomeAsync(CancellationToken ct = default);
         Task UnparkAsync(CancellationToken ct = default);
         bool CanMoveAxis(TelescopeAxes axis);
-        PierSide DestinationSideOfPier(double ra, double dec);
     }
 }

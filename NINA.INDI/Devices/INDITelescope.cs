@@ -1641,11 +1641,5 @@ namespace NINA.INDI.Devices {
                     return false;
             }
         }
-
-        public PierSide DestinationSideOfPier(double ra, double dec) {
-            // INDI doesn't provide a standard way to predict pier side
-            // Return unknown/current pier side as best guess
-            return SideOfPier;
-        }
     }
 }
