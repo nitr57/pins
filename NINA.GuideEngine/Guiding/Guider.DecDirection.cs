@@ -57,7 +57,9 @@ public sealed partial class Guider
             return;
         }
 
-        if (now != DecGuideMode.Off && state == GuiderState.Guiding && calibration is { HasDecCalibration: false })
+        // also while paused (e.g. for a flip or dither) or after a lost star: resuming and reacquiring go on with the same
+        // calibration without BeginGuiding's check
+        if (now != DecGuideMode.Off && state.IsGuidingActive() && calibration is { HasDecCalibration: false })
         {
             // the corrector gives every Dec pulse 0 ms without a Dec rate; the next start calibrates again (BeginGuiding)
             Alert(GuideErrorCode.NotCalibrated,

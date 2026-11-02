@@ -159,4 +159,58 @@ public class RaOnlyCalibrationTests
         run.Alerts().Should().Contain(a => a.Code == GuideErrorCode.NotCalibrated);
         stepsAfterSwitch.Should().BeGreaterThan(10, "the warning does not stop guiding");
     }
+
+    [Test]
+    public async Task Switching_Dec_on_while_paused_on_a_calibration_without_Dec_warns()
+    {
+        var run = new Run(DecGuideMode.Off);
+        bool settled = false;
+        bool switched = false;
+        run.OnEvent = e =>
+        {
+            if (e is SettleDoneEvent)
+            {
+                settled = true;
+            }
+            else if (settled && !switched && e is GuideStepEvent { IsSettling: false })
+            {
+                // as for a meridian flip or a dither: paused, then resumed on the same calibration
+                switched = true;
+                run.Guider.Pause();
+                run.Guider.UpdateSettings(run.Settings with { DecGuideMode = DecGuideMode.Auto });
+                run.Guider.Resume();
+            }
+        };
+
+        var guide = run.Guider.StartGuidingAsync(Settle);
+        await run.RunFor(TimeSpan.FromMinutes(5));
+
+        (await guide).Success.Should().BeTrue();
+        switched.Should().BeTrue();
+        run.Guider.Calibration!.HasDecCalibration.Should().BeFalse();
+        run.Alerts().Should().Contain(a => a.Code == GuideErrorCode.NotCalibrated);
+    }
+
+    [Test]
+    public async Task Switching_Dec_on_during_a_calibration_without_Dec_warns_when_it_ends()
+    {
+        var run = new Run(DecGuideMode.Off);
+        bool switched = false;
+        run.OnEvent = e =>
+        {
+            if (!switched && e is CalibratingEvent)
+            {
+                switched = true;
+                run.Guider.UpdateSettings(run.Settings with { DecGuideMode = DecGuideMode.Auto });
+            }
+        };
+
+        var guide = run.Guider.StartGuidingAsync(Settle);
+        await run.RunFor(TimeSpan.FromMinutes(5));
+
+        (await guide).Success.Should().BeTrue();
+        switched.Should().BeTrue();
+        run.Guider.Calibration!.HasDecCalibration.Should().BeFalse("the calibration kept the mode it started with");
+        run.Alerts().Should().Contain(a => a.Code == GuideErrorCode.NotCalibrated);
+    }
 }

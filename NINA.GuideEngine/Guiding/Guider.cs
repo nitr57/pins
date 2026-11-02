@@ -1243,6 +1243,16 @@ public sealed partial class Guider : IAsyncDisposable
             corrector.DecAlgorithm.Reset();
             PlayModelCalibrated(result, snapshot, now);
             var adj = AdjustCalibration(result, snapshot);
+
+            // Dec guiding switched on during a calibration that started with it off: the calibration keeps the mode it
+            // started with, so it measured no Dec rate (DecGuideModeChanged only warns for a calibration in use)
+            if (settings.DecGuideMode != DecGuideMode.Off && !result.HasDecCalibration)
+            {
+                Alert(GuideErrorCode.NotCalibrated,
+                    "Dec guiding was switched on during the calibration, which was made with Dec guiding off: Dec is not " +
+                    "guided until guiding is started again, which calibrates");
+            }
+
             EnterGuiding(starPosition.IsValid ? starPosition : lastStarPosition, adj, now);
             PlayModelAfterCalibration(result);
             return [];
