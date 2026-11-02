@@ -78,11 +78,23 @@ namespace NINA.Equipment.Equipment.MyRotator {
             }
         }
 
+        // The position a sync or relative move starts from. An unreadable position (NaN, GetProperty retries already)
+        // gave a NaN offset, so the rotator's sky angle stayed NaN until the next sync, or sent NaN as the move's target
+        private float ReadMechanicalPositionForMove() {
+            var position = MechanicalPosition;
+            if (float.IsNaN(position)) {
+                throw new InvalidOperationException("Could not read the position of the INDI rotator");
+            }
+
+            return position;
+        }
+
         public void Sync(float skyAngle) {
-            offset = skyAngle - MechanicalPosition;
+            var mechanicalPosition = ReadMechanicalPositionForMove();
+            offset = skyAngle - mechanicalPosition;
             RaisePropertyChanged(nameof(Position));
             Synced = true;
-            Logger.Debug($"INDI - Mechanical Position is {MechanicalPosition}� - Sync Position to Sky Angle {skyAngle}� using offset {offset}");
+            Logger.Debug($"INDI - Mechanical Position is {mechanicalPosition}� - Sync Position to Sky Angle {skyAngle}� using offset {offset}");
         }
 
         public async Task<bool> Move(float angle, CancellationToken ct) {
@@ -94,8 +106,9 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     angle = AstroUtil.EuclidianModulus(angle, -360);
                 }
 
-                var targetMechanicalPosition = AstroUtil.EuclidianModulus(MechanicalPosition + angle, 360);
-                Logger.Debug($"INDI - Move relative by {angle}� to mechanical position {targetMechanicalPosition}� - Mechanical Position reported by rotator {MechanicalPosition}� and offset {offset}");
+                var mechanicalPosition = ReadMechanicalPositionForMove();
+                var targetMechanicalPosition = AstroUtil.EuclidianModulus(mechanicalPosition + angle, 360);
+                Logger.Debug($"INDI - Move relative by {angle}� to mechanical position {targetMechanicalPosition}� - Mechanical Position reported by rotator {mechanicalPosition}� and offset {offset}");
                 return await MoveAbsoluteMechanical(targetMechanicalPosition, ct);
             }
             return false;

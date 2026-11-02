@@ -114,5 +114,29 @@ namespace NINA.Test.Rotator {
             ClassicAssert.IsTrue(result);
             mockDevice.Verify(d => d.MoveAsync(120f, It.IsAny<CancellationToken>()), Times.Once);
         }
+
+        // An unreadable position gave a NaN sync offset, so the sky angle stayed NaN until the next sync
+        [Test]
+        public async Task Sync_RefusesAnUnreadablePosition() {
+            mechanicalPosition = float.NaN;
+            var sut = CreateConnectedSUT();
+
+            Assert.That(() => sut.Sync(120f), Throws.InvalidOperationException);
+            Assert.That(sut.Synced, Is.False);
+
+            // the offset is still 0: sky angle 150° is mechanical 150°
+            await sut.MoveAbsolute(150f, CancellationToken.None);
+            mockDevice.Verify(d => d.MoveAsync(150f, It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        // ... and NaN as the target of a relative move
+        [Test]
+        public void Move_RefusesAnUnreadablePosition() {
+            mechanicalPosition = float.NaN;
+            var sut = CreateConnectedSUT();
+
+            Assert.That(async () => await sut.Move(20f, CancellationToken.None), Throws.InvalidOperationException);
+            mockDevice.Verify(d => d.MoveAsync(It.IsAny<float>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
     }
 }

@@ -104,11 +104,30 @@ namespace NINA.Equipment.Equipment.MyRotator {
             }
         }
 
+        /// <summary>
+        /// The position a move or sync starts from. Since a single failed read keeps the connection, the -1 of a failed
+        /// read turned into a move by the wrong angle or a wrong sync offset, so a failed read is tried once more and then
+        /// the move or sync is refused (as for the Wanderer).
+        /// </summary>
+        private float ReadMechanicalPositionForMove() {
+            if (Connected && TryGetStatus("get Position", out var status)) {
+                return status.position;
+            }
+
+            Thread.Sleep(200);
+            if (Connected && TryGetStatus("get Position", out status)) {
+                return status.position;
+            }
+
+            throw new InvalidOperationException("Could not read the position of the Nitecrawler rotator");
+        }
+
         public void Sync(float skyAngle) {
-            offset = skyAngle - MechanicalPosition;
+            var mechanicalPosition = ReadMechanicalPositionForMove();
+            offset = skyAngle - mechanicalPosition;
             RaisePropertyChanged(nameof(Position));
             Synced = true;
-            Logger.Debug($"Mechanical Position is {MechanicalPosition}° - Sync Position to Sky Angle {skyAngle}° using offset {offset}");
+            Logger.Debug($"Mechanical Position is {mechanicalPosition}° - Sync Position to Sky Angle {skyAngle}° using offset {offset}");
         }
 
         private void DisconnectOnRemovedError() {
@@ -328,7 +347,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 return false;
             }
 
-            var movement = targetPosition - MechanicalPosition;
+            var movement = targetPosition - ReadMechanicalPositionForMove();
             return await Move(movement, ct);
         }
 
@@ -337,7 +356,8 @@ namespace NINA.Equipment.Equipment.MyRotator {
                 return false;
             }
 
-            return await Move(targetPosition - Position, ct);
+            var position = AstroUtil.EuclidianModulus(ReadMechanicalPositionForMove() + offset, 360);
+            return await Move(targetPosition - position, ct);
         }
 
         #region Unsupported
