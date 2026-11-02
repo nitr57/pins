@@ -32,7 +32,6 @@ using NINA.INDI.Devices;
 namespace NINA.Equipment.Equipment.MyTelescope {
 
     internal class IndiTelescope : IndiDevice<IINDITelescope>, ITelescope, IDisposable {
-        private static readonly TimeSpan MERIDIAN_FLIP_SLEW_RETRY_WAIT = TimeSpan.FromMinutes(1);
         private const int MERIDIAN_FLIP_SLEW_RETRY_ATTEMPTS = 20;
         private const double TRACKING_RATE_EPSILON = 0.000001;
 
@@ -102,6 +101,8 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         // instead; before, every flip logged an error trying to set it and waited 2 s
         private bool canSetPierSide = false;
         public bool CanSetPierSide => canSetPierSide;
+
+        internal TimeSpan MeridianFlipSlewRetryWait { get; set; } = TimeSpan.FromMinutes(1);
 
         // see canSetDeclinationRate
         private bool canSetRightAscensionRate = false;
@@ -423,7 +424,14 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     }
                     // Keep attempting slews as well, in case that's what it takes to flip to the other side of pier
                     Logger.Info($"Slewing to coordinates {targetCoordinates}. Attempt {retries + 1} / {MERIDIAN_FLIP_SLEW_RETRY_ATTEMPTS}");
-                    slewSuccess = await SlewToCoordinates(targetCoordinates, token);
+                    try {
+                        slewSuccess = await SlewToCoordinates(targetCoordinates, token);
+                    } catch (Exception ex) when (ex is InvalidOperationException or TimeoutException && Connected) {
+                        // A refused or timed out goto (e.g. the meridian limit not passed yet) is what the retries are
+                        // for; a lost INDI server ends the flip through the outer catch
+                        Logger.Warning($"Meridian flip goto failed: {ex.Message}");
+                        slewSuccess = false;
+                    }
 
                     if (checkAndSetPierSideAfterFirstSlew) {
                         if (SideOfPier != targetSideOfPier) {
@@ -446,11 +454,11 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                         } else {
                             var jsnowCoordinates = targetCoordinates.Transform(Epoch.JNOW);
                             var topocentricCoordinates = jsnowCoordinates.Transform(latitude: Angle.ByDegree(SiteLatitude), longitude: Angle.ByDegree(SiteLongitude), SiteElevation);
-                            Logger.Warning($"Failed to slew for Meridian Flip. Retry {retries} of {MERIDIAN_FLIP_SLEW_RETRY_ATTEMPTS} times with a {MERIDIAN_FLIP_SLEW_RETRY_WAIT} wait between each.  " +
+                            Logger.Warning($"Failed to slew for Meridian Flip. Retry {retries} of {MERIDIAN_FLIP_SLEW_RETRY_ATTEMPTS} times with a {MeridianFlipSlewRetryWait} wait between each.  " +
                                 $"SideOfPier: {SideOfPier}, RA: {jsnowCoordinates.RAString}, Dec: {jsnowCoordinates.DecString}, Azimuth: {topocentricCoordinates.Azimuth}");
 
-                            Notification.ShowWarning(string.Format(Loc.Instance["LblMeridianFlipRetry"], MERIDIAN_FLIP_SLEW_RETRY_WAIT.TotalSeconds, retries, MERIDIAN_FLIP_SLEW_RETRY_ATTEMPTS));
-                            await Task.Delay(MERIDIAN_FLIP_SLEW_RETRY_WAIT, token);
+                            Notification.ShowWarning(string.Format(Loc.Instance["LblMeridianFlipRetry"], MeridianFlipSlewRetryWait.TotalSeconds, retries, MERIDIAN_FLIP_SLEW_RETRY_ATTEMPTS));
+                            await Task.Delay(MeridianFlipSlewRetryWait, token);
                         }
                     }
                 } while (!success);
