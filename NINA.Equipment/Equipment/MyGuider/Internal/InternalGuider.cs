@@ -118,6 +118,8 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     private GuidingLog? guideLog;
     private StreamWriter? guideLogWriter;
     private GuideLogBridge? guideLogBridge;
+    private DateTime guideLogNight;
+    private IMountState? guideLogMount;
     private volatile bool connected;
     private double pixelScale = 1.0;
     private GuideFrame? latestFrame;
@@ -650,6 +652,8 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 return false;
             }
         }
+
+        RollGuideLogOver(g);
 
         int generation = Interlocked.Increment(ref startGeneration);
         AddProgressSink(progress);
@@ -2334,7 +2338,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             var dir = Path.Combine(StorageDirectory, "Logs");
             Directory.CreateDirectory(dir);
             // one log per night (noon to noon) like PHD2's per-session log; reconnects append to it
-            var night = DateTime.Now.AddHours(-12).Date;
+            var night = GuideLogNight(DateTime.Now);
             var path = Path.Combine(dir, IncidentArchive.GuideLogFileName(night));
             guideLogWriter = new StreamWriter(path, append: true) { AutoFlush = true };
             guideLog = new GuidingLog(guideLogWriter, SystemClock.Instance, new GuidingLogOptions { AppVersion = "pins Native Guider " + DriverVersion });
@@ -2348,6 +2352,8 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                 SensorHeight = camera.SensorHeight,
                 PixelSizeUm = camera.PixelSizeUm,
             });
+            guideLogNight = night;
+            guideLogMount = mount;
             Logger.Info($"InternalGuider: guide log {path}");
         }
         catch (Exception ex)
@@ -2355,6 +2361,25 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             Logger.Warning($"InternalGuider: could not open guide log: {ex.Message}");
             CloseGuideLog();
         }
+    }
+
+    /// <summary>The night (noon to noon, local time) a guide log belongs to, as the incident archive looks it up.</summary>
+    internal static DateTime GuideLogNight(DateTime localNow) => localNow.AddHours(-12).Date;
+
+    // The night's file was only chosen at connect: a guider connected over noon wrote the following nights into the first
+    // night's file, and an incident of a later night found no guide log of its night. Guiding starts here, so a new night
+    // gets its own file before its first calibration or guiding section
+    private void RollGuideLogOver(Guider g)
+    {
+        var camera = cameraSource;
+        var mount = guideLogMount;
+        if (guideLog is null || camera is null || mount is null || GuideLogNight(DateTime.Now) == guideLogNight)
+        {
+            return;
+        }
+
+        CloseGuideLog();
+        OpenGuideLog(camera, g, mount);
     }
 
     private void CloseGuideLog()
@@ -2373,6 +2398,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         guideLogBridge = null;
         guideLog = null;
         guideLogWriter = null;
+        guideLogMount = null;
     }
 
     private static AdvancedGuideStar ToDto(StarInfo s) => new()

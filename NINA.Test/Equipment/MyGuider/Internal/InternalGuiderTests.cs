@@ -826,3 +826,21 @@ public class MountAdapterTests
         (lst - expectedHours).Should().BeApproximately(0, 0.1 / 3600, "within 0.1 s");
     }
 }
+
+/// <summary>
+/// The guide log's night runs noon to noon, as the incident archive looks it up; a guider connected over several nights
+/// switches to the new night's file when guiding starts.
+/// </summary>
+[TestFixture]
+public class GuideLogNightTests
+{
+    [TestCase(2026, 11, 2, 21, 0, 2026, 11, 2)]
+    [TestCase(2026, 11, 3, 4, 30, 2026, 11, 2)]
+    [TestCase(2026, 11, 3, 11, 59, 2026, 11, 2)]
+    [TestCase(2026, 11, 3, 12, 0, 2026, 11, 3)]
+    [TestCase(2027, 1, 1, 2, 0, 2026, 12, 31)]
+    public void A_night_runs_from_noon_to_noon(int y, int mo, int d, int h, int mi, int ny, int nmo, int nd)
+    {
+        InternalGuider.GuideLogNight(new DateTime(y, mo, d, h, mi, 0)).Should().Be(new DateTime(ny, nmo, nd));
+    }
+}
