@@ -220,11 +220,15 @@ namespace NINA.INDI.Devices {
             // (autofocus crop, Take Subframe Exposure) has to put it back explicitly.
             // A subframe request with an empty rectangle (e.g. an autofocus crop of 0) gets the full frame too.
             if (enableSubSample && subSampleWidth > 0 && subSampleHeight > 0) {
-                ApplyFrame(subSampleX, subSampleY, subSampleWidth, subSampleHeight);
+                ApplyFrame(subSampleX, subSampleY, subSampleWidth, subSampleHeight, out _);
             } else if (CameraXSize > 0 && CameraYSize > 0 && (_fullFrameAsSet is not { } asSet || CurrentFrame() != asSet)) {
-                if (ApplyFrame(0, 0, CameraXSize, CameraYSize)) {
+                if (ApplyFrame(0, 0, CameraXSize, CameraYSize, out bool answered)) {
                     Logger.Info($"[{DeviceName}] CCD_FRAME reset to full frame {CameraXSize}x{CameraYSize}");
-                    var after = CurrentFrame();
+
+                    // Only the driver's answer tells its full frame. A refusal (Alert) usually comes with the old
+                    // values, which taken as the full frame would keep the subframe for every later frame; without
+                    // an answer the next full-frame exposure tries again.
+                    var after = answered ? CurrentFrame() : null;
                     if (after is { } frame && frame != (0, 0, CameraXSize, CameraYSize)) {
                         Logger.Warning($"[{DeviceName}] The driver set CCD_FRAME to {frame.Width}x{frame.Height} at {frame.X},{frame.Y} for the full sensor of {CameraXSize}x{CameraYSize} (CCD_INFO); taking that as its full frame");
                     }
@@ -258,19 +262,20 @@ namespace NINA.INDI.Devices {
         /// toupbase restart the camera engine on any CCD_FRAME update, which can make the following
         /// exposure command fail, and a redundant full-frame reset even crashes indi_toupcam_ccd.
         /// </summary>
-        /// <returns><c>true</c> when CCD_FRAME was sent.</returns>
+        /// <returns><c>true</c> when CCD_FRAME was sent; <paramref name="answered"/> whether the driver accepted it.</returns>
         /// <remarks>
         /// Waits (at most <see cref="FrameAckTimeout"/>) for the driver's answer: CCD_EXPOSURE went out right behind a
         /// fire-and-forget CCD_FRAME, so a driver that restarts its engine on the change could refuse the exposure.
         /// </remarks>
-        private bool ApplyFrame(int x, int y, int width, int height) {
+        private bool ApplyFrame(int x, int y, int width, int height, out bool answered) {
+            answered = false;
             if (CurrentFrame() is not { } current || current == (x, y, width, height)) {
                 return false;
             }
 
             // On the thread pool: StartExposure is synchronous, and its caller's synchronization context (if any)
             // must not be needed to finish the wait it is blocked on
-            var answered = Task.Run(() => SetNumberValuesAsync("CCD_FRAME", FrameAckTimeout,
+            answered = Task.Run(() => SetNumberValuesAsync("CCD_FRAME", FrameAckTimeout,
                 ("X", (double)x),
                 ("Y", (double)y),
                 ("WIDTH", (double)width),

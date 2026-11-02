@@ -152,6 +152,26 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
+        public async Task StartExposure_ResetsAgain_AfterTheDriverRefusedTheReset() {
+            var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(100, 200, 512, 512), "CCD_INFO", "CCD_FRAME");
+
+            var start = Task.Run(() => camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1));
+            await WaitForFrameCommandAsync();
+            // a refusal comes back with the old subframe, which must not be taken as the driver's full frame
+            main.Send(SetFrame(100, 200, 512, 512, "Alert"));
+            await start.WaitAsync(Timeout);
+            await WaitForExposureCommandAsync();
+
+            start = Task.Run(() => camera.StartExposure(1, 1, 1, false, 0, 0, 0, 0, gain: -1, offset: -1));
+            await main.WaitUntilAsync(
+                r => r.Split("name=\"CCD_FRAME\"").Length > 2,
+                "the reset is sent again for the second exposure",
+                Timeout);
+            main.Send(SetFrame(0, 0, 4144, 2822));
+            await start.WaitAsync(Timeout);
+        }
+
+        [Test]
         public async Task StartExposure_WithAnEmptySubframe_ResetsToTheFullSensor() {
             var camera = await RegisterCameraAsync(CcdInfo + CcdFrame(100, 200, 512, 512), "CCD_INFO", "CCD_FRAME");
 
@@ -307,8 +327,8 @@ namespace NINA.Test.INDI {
                 Timeout);
         }
 
-        private static string SetFrame(int x, int y, int width, int height) =>
-            $"<setNumberVector device=\"{Camera}\" name=\"CCD_FRAME\" state=\"Ok\" timeout=\"60\" timestamp=\"2026-11-01T20:00:01\">"
+        private static string SetFrame(int x, int y, int width, int height, string state = "Ok") =>
+            $"<setNumberVector device=\"{Camera}\" name=\"CCD_FRAME\" state=\"{state}\" timeout=\"60\" timestamp=\"2026-11-01T20:00:01\">"
             + $"<oneNumber name=\"X\">{x}</oneNumber><oneNumber name=\"Y\">{y}</oneNumber>"
             + $"<oneNumber name=\"WIDTH\">{width}</oneNumber><oneNumber name=\"HEIGHT\">{height}</oneNumber></setNumberVector>\n";
 
