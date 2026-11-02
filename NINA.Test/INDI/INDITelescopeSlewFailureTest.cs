@@ -68,6 +68,8 @@ namespace NINA.Test.INDI {
             main.Send(SetCoordinates("Busy", "2026-11-01T20:00:01"));
 
             Assert.That(async () => await slew.WaitAsync(Timeout), Throws.TypeOf<TimeoutException>());
+            // The sequence goes on with its next step, so a mount that still moves is stopped
+            await WaitForAbortAsync();
         }
 
         [Test]
@@ -95,7 +97,11 @@ namespace NINA.Test.INDI {
             cts.Cancel();
 
             Assert.That(async () => await slew.WaitAsync(Timeout), Throws.InstanceOf<OperationCanceledException>());
-            await main.WaitUntilAsync(
+            await WaitForAbortAsync();
+        }
+
+        private Task WaitForAbortAsync() {
+            return main.WaitUntilAsync(
                 r => r.Contains("<newSwitchVector", StringComparison.Ordinal) && r.Contains("name=\"TELESCOPE_ABORT_MOTION\"", StringComparison.Ordinal),
                 "the abort is sent",
                 Timeout);

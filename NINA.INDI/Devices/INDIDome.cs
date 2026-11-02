@@ -97,6 +97,11 @@ namespace NINA.INDI.Devices {
                 _shutterState = (openSwitch?.Value == true) ? ShutterState.ShutterOpen : ShutterState.ShutterClosed;
             } else if (p.State == PropertyState.Alert) {
                 _shutterState = ShutterState.ShutterError;
+            } else if (p.State == PropertyState.Idle
+                       && (_shutterState == ShutterState.ShutterOpening || _shutterState == ShutterState.ShutterClosing)) {
+                // libindi reports Idle when the shutter's state is unknown; a move ending there didn't arrive, and
+                // the dome info would read "opening" or "closing" from then on
+                _shutterState = ShutterState.ShutterError;
             }
         }
 
@@ -152,10 +157,15 @@ namespace NINA.INDI.Devices {
         // internal so tests can shorten it
         internal TimeSpan MoveCompletionTimeout { get; set; } = MoveTimeout;
 
+        // How long a command may go without the driver's answer; internal so tests can shorten it
+        internal TimeSpan CommandAckTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
         public async Task SlewToAzimuth(double azimuth, CancellationToken ct) {
             if (!Connected || !CanSetAzimuth) return;
-            await SetNumberValuesAsync("ABS_DOME_POSITION", TimeSpan.FromSeconds(10),
+            var preSendTimestamp = GetProperty("ABS_DOME_POSITION")?.Timestamp;
+            var acknowledged = await SetNumberValuesAsync("ABS_DOME_POSITION", CommandAckTimeout,
                 ("DOME_ABSOLUTE_POSITION", azimuth));
+            ThrowIfUnanswered("slew", "ABS_DOME_POSITION", acknowledged, preSendTimestamp);
             await WaitForMotionEndAsync("slew", "ABS_DOME_POSITION", _ => Slewing, ct);
 
             ThrowIfServerConnectionLost("Dome slew");
@@ -163,7 +173,9 @@ namespace NINA.INDI.Devices {
 
         public async Task OpenShutter(CancellationToken ct) {
             if (!Connected || !CanSetShutter) return;
-            await SetSwitchValueAsync("DOME_SHUTTER", "SHUTTER_OPEN", true, TimeSpan.FromSeconds(10));
+            var preSendTimestamp = GetProperty("DOME_SHUTTER")?.Timestamp;
+            var acknowledged = await SetSwitchValueAsync("DOME_SHUTTER", "SHUTTER_OPEN", true, CommandAckTimeout);
+            ThrowIfUnanswered("opening of the shutter", "DOME_SHUTTER", acknowledged, preSendTimestamp);
 
             // Gate on the property's own Busy state as well as the derived _shutterState:
             // if the ack timed out (a driver that flips to Busy late), _shutterState may
@@ -177,7 +189,9 @@ namespace NINA.INDI.Devices {
 
         public async Task CloseShutter(CancellationToken ct) {
             if (!Connected || !CanSetShutter) return;
-            await SetSwitchValueAsync("DOME_SHUTTER", "SHUTTER_CLOSE", true, TimeSpan.FromSeconds(10));
+            var preSendTimestamp = GetProperty("DOME_SHUTTER")?.Timestamp;
+            var acknowledged = await SetSwitchValueAsync("DOME_SHUTTER", "SHUTTER_CLOSE", true, CommandAckTimeout);
+            ThrowIfUnanswered("closing of the shutter", "DOME_SHUTTER", acknowledged, preSendTimestamp);
 
             // See OpenShutter for why this also watches the property's own Busy state.
             await WaitForMotionEndAsync("closing of the shutter", "DOME_SHUTTER",
@@ -188,7 +202,9 @@ namespace NINA.INDI.Devices {
 
         public async Task Park(CancellationToken ct) {
             if (!Connected || !CanPark) return;
-            await SetSwitchValueAsync("DOME_PARK", "PARK", true, TimeSpan.FromSeconds(10));
+            var preSendTimestamp = GetProperty("DOME_PARK")?.Timestamp;
+            var acknowledged = await SetSwitchValueAsync("DOME_PARK", "PARK", true, CommandAckTimeout);
+            ThrowIfUnanswered("park", "DOME_PARK", acknowledged, preSendTimestamp);
 
             // Wait for the park motion itself to finish, not just for the PARK switch value
             // to read true — libindi sets DOME_PARK's PARK switch ON with state=Busy as soon
@@ -197,6 +213,26 @@ namespace NINA.INDI.Devices {
             await WaitForMotionEndAsync("park", "DOME_PARK", p => Slewing || p?.State == PropertyState.Busy, ct);
 
             ThrowIfServerConnectionLost("Dome park");
+        }
+
+        /// <summary>
+        /// The command's Set...Async is false when the driver rejected it (a fresh Alert, which WaitForMotionEndAsync
+        /// reports) or didn't answer within <see cref="CommandAckTimeout"/>. Without an answer the property still holds
+        /// its state from before the command: an Ok read as an arrival, an Alert left from an earlier failure as this
+        /// command's. Neither is, so a command without an answer fails as such.
+        /// </summary>
+        private void ThrowIfUnanswered(string what, string propertyName, bool acknowledged, string preSendTimestamp) {
+            if (acknowledged) {
+                return;
+            }
+
+            var prop = GetProperty(propertyName);
+            if (prop == null || prop.Timestamp != preSendTimestamp || prop.State == PropertyState.Busy) {
+                return;
+            }
+
+            Logger.Error($"INDIDome: the driver did not answer the {what} command within {CommandAckTimeout.TotalSeconds:F0} s ({propertyName} unchanged, {prop.State})");
+            throw new TimeoutException($"The dome did not answer the {what} command within {CommandAckTimeout.TotalSeconds:F0} s");
         }
 
         /// <summary>
@@ -213,10 +249,17 @@ namespace NINA.INDI.Devices {
                     if (prop?.State == PropertyState.Alert) {
                         throw new InvalidOperationException($"The dome reported a failure of the {what} ({propertyName} in Alert state)");
                     }
+                    // libindi's shutter goes Idle when its state is unknown: no arrival, and no end to wait for
+                    if (propertyName == "DOME_SHUTTER" && prop?.State == PropertyState.Idle) {
+                        throw new InvalidOperationException($"The dome reported the shutter's state as unknown during the {what} (DOME_SHUTTER Idle)");
+                    }
                     if (!moving(prop)) {
                         break;
                     }
                     if (DateTime.UtcNow - started > MoveCompletionTimeout) {
+                        // The step fails and the sequence goes on, so a dome or shutter that still moves is stopped
+                        Logger.Warning($"INDIDome: {what} timed out, aborting the dome's motion");
+                        AbortQuietly();
                         throw new TimeoutException($"The dome did not report the end of the {what} within {MoveCompletionTimeout.TotalSeconds:F0} s");
                     }
                     await Task.Delay(500, ct);
@@ -227,6 +270,14 @@ namespace NINA.INDI.Devices {
                 Logger.Info($"INDIDome: {what} cancelled, aborting the dome's motion");
                 Abort();
                 throw;
+            }
+        }
+
+        private void AbortQuietly() {
+            try {
+                Abort();
+            } catch (Exception ex) {
+                Logger.Warning($"INDIDome: could not abort the dome's motion: {ex.Message}");
             }
         }
 

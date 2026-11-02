@@ -1281,7 +1281,9 @@ namespace NINA.INDI.Devices {
                         break;
                     }
                     if (DateTime.UtcNow - started > SlewCompletionTimeout) {
-                        // Not a success: the sequence would expose wherever the mount is
+                        // Not a success: the sequence would expose wherever the mount is. A mount still moving
+                        // is stopped, since the sequence goes on with its next step
+                        AbortSlewQuietly("Slew", "timed out");
                         throw new TimeoutException($"The mount did not report the end of the slew within {SlewCompletionTimeout.TotalSeconds:F0} s");
                     }
 
@@ -1304,13 +1306,13 @@ namespace NINA.INDI.Devices {
             }
         }
 
-        // Stops the mount after a cancelled slew; a failure is only logged, the cancellation goes on.
-        private void AbortSlewQuietly(string what) {
+        // Stops the mount after a cancelled or timed out slew; a failure is only logged, the cancellation or timeout goes on.
+        private void AbortSlewQuietly(string what, string ending = "cancelled") {
             try {
-                Logger.Info($"[{DeviceName}] {what} cancelled, aborting the mount's motion");
+                Logger.Info($"[{DeviceName}] {what} {ending}, aborting the mount's motion");
                 AbortSlew();
             } catch (Exception ex) {
-                Logger.Warning($"[{DeviceName}] Could not abort the mount's motion after the cancelled {what}: {ex.Message}");
+                Logger.Warning($"[{DeviceName}] Could not abort the mount's motion after the {what} {ending}: {ex.Message}");
             }
         }
 
@@ -1454,6 +1456,7 @@ namespace NINA.INDI.Devices {
                         break;
                     }
                     if (DateTime.UtcNow - started > SlewCompletionTimeout) {
+                        AbortSlewQuietly("AltAz slew", "timed out");
                         throw new TimeoutException($"The mount did not report the end of the AltAz slew within {SlewCompletionTimeout.TotalSeconds:F0} s");
                     }
 

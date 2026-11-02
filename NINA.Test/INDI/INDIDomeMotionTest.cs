@@ -95,6 +95,46 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
+        public async Task A_shutter_move_that_times_out_aborts_the_dome() {
+            var dome = await RegisterDomeAsync();
+            dome.MoveCompletionTimeout = TimeSpan.FromSeconds(1);
+
+            var close = dome.CloseShutter(CancellationToken.None);
+            await WaitForShutterCommandAsync();
+            main.Send(SetShutter("Busy", open: false));
+
+            Assert.That(async () => await close.WaitAsync(Timeout), Throws.TypeOf<TimeoutException>());
+            await WaitForAbortAsync();
+        }
+
+        [Test]
+        public async Task Opening_the_shutter_fails_when_the_driver_doesnt_answer() {
+            var dome = await RegisterDomeAsync();
+            dome.CommandAckTimeout = TimeSpan.FromSeconds(1);
+
+            var open = dome.OpenShutter(CancellationToken.None);
+            await WaitForShutterCommandAsync();
+
+            Assert.That(async () => await open.WaitAsync(Timeout), Throws.TypeOf<TimeoutException>().With.Message.Contains("did not answer"),
+                "the shutter's state from before the command is no arrival");
+        }
+
+        [Test]
+        public async Task Closing_the_shutter_fails_when_its_state_becomes_unknown() {
+            var dome = await RegisterDomeAsync();
+
+            var close = dome.CloseShutter(CancellationToken.None);
+            await WaitForShutterCommandAsync();
+            main.Send(SetShutter("Busy", open: false));
+            await Task.Delay(300);
+            main.Send(SetShutter("Idle", open: false));
+
+            Assert.That(async () => await close.WaitAsync(Timeout), Throws.TypeOf<InvalidOperationException>().With.Message.Contains("unknown"),
+                "fails at once instead of at the timeout");
+            Assert.That(dome.ShutterStatus, Is.EqualTo(ShutterState.ShutterError), "the dome info no longer reads \"closing\"");
+        }
+
+        [Test]
         public async Task Cancelling_the_shutter_aborts_the_dome() {
             var dome = await RegisterDomeAsync();
             using var cts = new CancellationTokenSource();
@@ -106,7 +146,11 @@ namespace NINA.Test.INDI {
             cts.Cancel();
 
             Assert.That(async () => await close.WaitAsync(Timeout), Throws.InstanceOf<OperationCanceledException>());
-            await main.WaitUntilAsync(
+            await WaitForAbortAsync();
+        }
+
+        private Task WaitForAbortAsync() {
+            return main.WaitUntilAsync(
                 r => r.Contains("<newSwitchVector", StringComparison.Ordinal) && r.Contains("name=\"DOME_ABORT_MOTION\"", StringComparison.Ordinal),
                 "the abort is sent",
                 Timeout);
