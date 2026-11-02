@@ -378,8 +378,28 @@ namespace NINA.Equipment.Equipment.MyCamera {
             _controls = null;
             Connected = false;
             lock (openCameraIds) {
-                ASICameraDll.CloseCamera(_cameraId);
-                openCameraIds.Remove(_cameraId);
+                // a camera pulled off USB fails to close, and is no longer open either: a record left behind kept the next
+                // scan from opening it to read its alias, which changed its id
+                try {
+                    ASICameraDll.CloseCamera(_cameraId);
+                } finally {
+                    openCameraIds.Remove(_cameraId);
+                }
+            }
+        }
+
+        // a failed connect left the camera open and recorded: the next scan took it as connected, didn't read its alias,
+        // and listed it under another id
+        private void CloseAfterFailedConnect() {
+            Connected = false;
+            lock (openCameraIds) {
+                try {
+                    ASICameraDll.CloseCamera(_cameraId);
+                } catch (Exception ex) {
+                    Logger.Error(ex);
+                } finally {
+                    openCameraIds.Remove(_cameraId);
+                }
             }
         }
 
@@ -687,11 +707,13 @@ namespace NINA.Equipment.Equipment.MyCamera {
         public async Task<bool> Connect(CancellationToken token) {
             return await Task.Run(() => {
                 var success = false;
+                var opened = false;
                 try {
                     // opened and recorded as one step, see the constructor
                     lock (openCameraIds) {
                         ASICameraDll.OpenCamera(_cameraId);
                         openCameraIds.Add(_cameraId);
+                        opened = true;
                     }
                     ASICameraDll.InitCamera(_cameraId);
                     RefreshCameraInfoCache();
@@ -702,6 +724,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     if (!raw16.Any()) {
                         Logger.Error("Camera does not support 16 bit mode");
                         Notification.ShowError(Loc.Instance["LblCameraNoSupport16bit"]);
+                        success = false;
                         return false;
                     }
                     this.CaptureAreaInfo = new CaptureAreaInfo(new Point(0, 0), this.Resolution, 1, ASICameraDll.ASI_IMG_TYPE.ASI_IMG_RAW16);
@@ -711,6 +734,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 } catch (Exception ex) {
                     Logger.Error(ex);
                     Notification.ShowExternalError(ex.Message, Loc.Instance["LblZWODriverError"]);
+                } finally {
+                    if (!success && opened) {
+                        CloseAfterFailedConnect();
+                    }
                 }
                 return success;
             });
