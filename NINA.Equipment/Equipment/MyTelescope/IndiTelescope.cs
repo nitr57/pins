@@ -1132,8 +1132,25 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             EquatorialSystem = Epoch.JNOW;
             trackingModes = GetTrackingModes();
             CheckMountTime();
+            NormalizeProfileLongitude();
 
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Before INDITelescope converted INDI's 0..360° east longitude, a location sync "to application" wrote a site
+        /// west of Greenwich into the profile as e.g. 355 instead of -5. Left there, "to telescope" reported a failed
+        /// sync at every connect (it sends 355 and reads back -5). Runs before the mount's location sync.
+        /// </summary>
+        private void NormalizeProfileLongitude() {
+            var longitude = profileService.ActiveProfile.AstrometrySettings.Longitude;
+            if (longitude <= 180 || longitude > 360) {
+                return;
+            }
+
+            var normalized = longitude - 360;
+            Logger.Warning($"The profile's longitude {longitude}° is in INDI's 0..360° form, written by an earlier version; changing it to {normalized}°");
+            profileService.ChangeLongitude(normalized);
         }
 
         protected override IINDITelescope GetInstance() {
