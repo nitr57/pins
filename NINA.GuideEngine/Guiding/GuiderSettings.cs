@@ -102,6 +102,14 @@ public sealed record GuiderSettings
     /// <summary>Run the post-flip Dec self-check.</summary>
     public bool VerifyDecAfterFlip { get; init; } = true;
 
+    /// <summary>
+    /// Whether the rotator (<see cref="MountSnapshot.RotatorAngleDeg"/>) turns the guide camera, so that a kept calibration
+    /// is turned by the rotator's move when guiding starts or resumes. Deviation from PHD2, which turns the calibration
+    /// whenever a rotator is connected: a rotator usually serves the imaging camera, and turning the calibration for a guide
+    /// camera that did not turn breaks the guiding, so the default is that it does not.
+    /// </summary>
+    public RotatorGuideCamera RotatorTurnsGuideCamera { get; init; } = RotatorGuideCamera.No;
+
     /// <summary>Issue RA and Dec pulses concurrently when the output supports it.</summary>
     public bool SimultaneousPulses { get; init; }
 

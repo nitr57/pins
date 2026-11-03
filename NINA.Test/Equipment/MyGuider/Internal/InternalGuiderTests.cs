@@ -9,6 +9,7 @@ using Moq;
 using NINA.Core.Enum;
 using NINA.Core.Model;
 using NINA.Equipment.Equipment.MyGuider.Advanced;
+using NINA.Equipment.Equipment.MyRotator;
 using NINA.Equipment.Equipment.MyTelescope;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
@@ -268,6 +269,16 @@ public class InternalGuiderOptionsTests
         o.TrySet("ExposureSeconds", "2,5", out _).Should().BeTrue();
         o.GetDouble("ExposureSeconds").Should().Be(2.5);
         o.TrySet("Nope", "1", out _).Should().BeFalse();
+    }
+
+    [Test]
+    public void Rotator_setting_maps_to_the_engine()
+    {
+        var (o, _) = Create();
+        o.ToEngineSettings().RotatorTurnsGuideCamera.Should().Be(GuideEngine.Calibration.RotatorGuideCamera.No, "a rotator usually serves the imaging camera");
+        o.TrySet("RotatorTurnsGuideCamera", "Reversed", out _).Should().BeTrue();
+        o.ToEngineSettings().RotatorTurnsGuideCamera.Should().Be(GuideEngine.Calibration.RotatorGuideCamera.Reversed);
+        o.TrySet("RotatorTurnsGuideCamera", "sideways", out _).Should().BeFalse();
     }
 
     [Test]
@@ -801,6 +812,101 @@ public class MountAdapterTests
         s.IsSlewing.Should().BeTrue();
         s.GuideRateRa.Should().BeApproximately(0.5, 1e-3);
         s.GuideRateDec.Should().BeNull();
+    }
+
+    [Test]
+    public void Mount_state_carries_the_rotator_angle_also_without_a_mount()
+    {
+        var mediator = new Mock<ITelescopeMediator>();
+        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true, Declination = 10 });
+        new NinaMountState(mediator.Object, rotator: () => new RotatorReading(123.5, false)).GetSnapshot().RotatorAngleDeg.Should().Be(123.5);
+        new NinaMountState(mediator.Object).GetSnapshot().RotatorAngleDeg.Should().BeNull();
+
+        // ST4 guiding through the camera works without a mount, and a rotator still turns the guide camera
+        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = false });
+        new NinaMountState(mediator.Object, mountOptional: true, rotator: () => new RotatorReading(77, true)).GetSnapshot()
+            .Should().Match<MountSnapshot>(s => s.RotatorAngleDeg == 77 && s.RotatorMoving);
+    }
+
+    [Test]
+    public void Rotator_reports_the_drivers_moving_state_and_recent_angle_changes()
+    {
+        var now = new DateTimeOffset(2026, 11, 3, 20, 0, 0, TimeSpan.Zero);
+        var clock = new Mock<IClock>();
+        clock.SetupGet(c => c.UtcNow).Returns(() => now);
+        var mediator = new Mock<ITelescopeMediator>();
+        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true, Declination = 10 });
+        var reading = new RotatorReading(10, false);
+        NinaMountState New() => new(mediator.Object, clock: clock.Object, rotator: () => reading, rotatorSettle: TimeSpan.FromSeconds(4));
+        var state = New();
+
+        state.GetSnapshot().Should().Match<MountSnapshot>(s => !s.RotatorMoving && !s.RotatorTurning, "it has not moved since it was first read");
+
+        reading = new RotatorReading(10, true);
+        state.GetSnapshot().Should().Match<MountSnapshot>(s => s.RotatorMoving && !s.RotatorTurning, "the driver reports it moving");
+
+        // the driver no longer reports moving, but the angle changed: it counts as turning for the settle time
+        reading = new RotatorReading(25, false);
+        now = now.AddSeconds(1);
+        state.GetSnapshot().Should().Match<MountSnapshot>(s => !s.RotatorMoving && s.RotatorTurning);
+        now = now.AddSeconds(3);
+        state.GetSnapshot().RotatorTurning.Should().BeTrue();
+        now = now.AddSeconds(2);
+        state.GetSnapshot().RotatorTurning.Should().BeFalse("the angle held for the settle time");
+
+        // a slow turn adds up: 0.03° a read alone is no move, the second step makes 0.06°
+        reading = new RotatorReading(25.03, false);
+        now = now.AddSeconds(1);
+        state.GetSnapshot().RotatorTurning.Should().BeFalse();
+        reading = new RotatorReading(25.06, false);
+        now = now.AddSeconds(1);
+        state.GetSnapshot().RotatorTurning.Should().BeTrue();
+
+        // across 0°: 359.98° to 0.02° is 0.04°
+        reading = new RotatorReading(359.98, false);
+        state = New();
+        state.GetSnapshot();
+        reading = new RotatorReading(0.02, false);
+        now = now.AddSeconds(1);
+        state.GetSnapshot().RotatorTurning.Should().BeFalse();
+
+        // a change seen only after a long gap between two reads (no guide frames while NINA centered and rotated) is over
+        reading = new RotatorReading(50, false);
+        now = now.AddSeconds(60);
+        state.GetSnapshot().Should().Match<MountSnapshot>(s => s.RotatorAngleDeg == 50 && !s.RotatorTurning);
+    }
+
+    [Test]
+    public void Rotator_angle_is_the_mechanical_one_of_a_connected_rotator()
+    {
+        var rotator = new Mock<IRotatorMediator>();
+        rotator.Setup(r => r.GetInfo()).Returns(new RotatorInfo { Connected = true, MechanicalPosition = 200.25f, Position = 15f, IsMoving = true });
+        InternalGuider.ReadRotator(rotator.Object).Should().Be(new RotatorReading(200.25, true), "a plate-solve sync moves the sky angle, not the guide camera");
+
+        rotator.Setup(r => r.GetInfo()).Returns(new RotatorInfo { Connected = true, MechanicalPosition = float.NaN });
+        InternalGuider.ReadRotator(rotator.Object).Should().BeNull("an angle that could not be read");
+
+        rotator.Setup(r => r.GetInfo()).Returns(new RotatorInfo { Connected = true, MechanicalPosition = -1f });
+        InternalGuider.ReadRotator(rotator.Object).Should().BeNull("Wanderer and Nitecrawler report -1 when a read fails");
+
+        rotator.Setup(r => r.GetInfo()).Returns(new RotatorInfo { Connected = false, MechanicalPosition = 200.25f });
+        InternalGuider.ReadRotator(rotator.Object).Should().BeNull();
+
+        rotator.Setup(r => r.GetInfo()).Throws(new InvalidOperationException("driver gone"));
+        InternalGuider.ReadRotator(rotator.Object).Should().BeNull();
+
+        InternalGuider.ReadRotator(null).Should().BeNull();
+    }
+
+    [Test]
+    public void Manual_rotator_is_not_followed()
+    {
+        // its "mechanical" angle is the synced sky angle, and it starts at 0° with every start of the app
+        var rotator = new Mock<IRotatorMediator>();
+        rotator.Setup(r => r.GetDevice()).Returns(new ManualRotator(new Mock<IProfileService>().Object));
+        rotator.Setup(r => r.GetInfo()).Returns(new RotatorInfo { Connected = true, MechanicalPosition = 87f });
+
+        InternalGuider.ReadRotator(rotator.Object).Should().BeNull();
     }
 
     [Test]

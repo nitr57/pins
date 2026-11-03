@@ -58,6 +58,13 @@ curl "$H/set-setting?settingName=InternalGuiderSetting&newValue=MinSnr=8"  # any
   sessions, adjusted for declination, binning and pier side. After a meridian flip the calibration is
   flipped automatically; a **post-flip Dec self-check** watches the first corrections and fixes the
   *Reverse Dec after meridian flip* setting if Dec runs away.
+* **Rotator turns the guide camera** (setting, *No* by default): with the rotator between the telescope and the
+  off-axis guider, the rotator turns the guide camera too. Set *Yes* and guiding waits while the rotator turns, then
+  starts with a new guide star (the old one is out of the off-axis guider's field) and the kept calibration turned by
+  the rotator's move (alert *Rotator turned the guide camera*); no new calibration is needed. This also happens when the
+  rotator turns while guiding runs. If guiding pushes the star away after a rotator move with *Yes*, choose *Reversed*
+  and calibrate once more. Keep *No* for a guide scope or a rotator that turns only the imaging camera. NINA's manual
+  rotator is not followed, and a guide camera turned by hand still needs a new calibration.
 * **Dithering** uses the NINA profile dither settings (pixels, RA only) and PHD2's settle semantics.
 * **Choosing the guide star yourself**: while looping (Loop, not guiding), tap a star in the TNS guide frame and
   press *Guide on this star* (`IAdvancedGuider.SelectGuideStar`, `POST /api/internal-guider/select-star`). The star
