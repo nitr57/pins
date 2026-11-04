@@ -229,16 +229,47 @@ public class CalibrationAdjusterTests
     }
 
     [Test]
-    public void CalibrationWithoutRotatorAngleTakesTheCurrentOneWithoutShowingAnAlert()
+    public void RotatorJitterLeavesACalibrationThatDoesNotTurnAlone()
     {
-        // Deviation from PHD2, which asks for a new calibration
-        var a = CalibrationAdjuster.AdjustForScopePointing(Cal(), Pointing(rot: 40));
+        // within the tolerance the calibration is not changed, so it is not stored again at every start
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 10 }, Pointing(rot: 10.04, turns: RotatorGuideCamera.No));
+
+        a.Calibration.Should().Be(Cal() with { RotatorAngleDeg = 10 });
+        a.CalibrationChanged.Should().BeFalse();
+        a.Alerts.Should().BeEmpty();
+
+        // also across 0°
+        var wrap = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 359.98 }, Pointing(rot: 0.02, turns: RotatorGuideCamera.No));
+        wrap.CalibrationChanged.Should().BeFalse();
+    }
+
+    [TestCase(RotatorGuideCamera.No, false)]
+    [TestCase(RotatorGuideCamera.Yes, true)]
+    [TestCase(RotatorGuideCamera.Reversed, true)]
+    public void CalibrationWithoutRotatorAngleTakesTheCurrentOne(RotatorGuideCamera turns, bool shown)
+    {
+        // Deviation from PHD2, which asks for a new calibration. When the rotator turns the guide camera, a turn since the
+        // calibration is not known, so the user is told
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal(), Pointing(rot: 40, turns: turns));
 
         a.IsValid.Should().BeTrue();
         a.Calibration.XAngle.Should().Be(Cal().XAngle);
         a.Calibration.RotatorAngleDeg.Should().Be(40);
         a.CalibrationChanged.Should().BeTrue();
-        a.Alerts.Should().ContainSingle(x => x.Type == CalibrationAlertType.RotatorPositionUnknown).Which.ShowToUser.Should().BeFalse();
+        a.RotatorTurn.Should().BeNull();
+        var alert = a.Alerts.Should().ContainSingle(x => x.Type == CalibrationAlertType.RotatorPositionUnknown).Subject;
+        alert.ShowToUser.Should().Be(shown);
+        alert.Message.Contains("Calibrate again").Should().Be(shown);
+    }
+
+    [Test]
+    public void CalibrationWithoutRotatorAngleAndNoRotatorStaysWithout()
+    {
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal(), Pointing(rot: null));
+
+        a.Calibration.RotatorAngleDeg.Should().BeNull();
+        a.CalibrationChanged.Should().BeFalse();
+        a.Alerts.Should().BeEmpty();
     }
 
     [Test]

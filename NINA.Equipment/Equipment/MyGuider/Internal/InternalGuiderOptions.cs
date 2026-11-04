@@ -200,8 +200,9 @@ internal sealed class InternalGuiderOptions
             Description: "Whether the connected rotator turns the guide camera too: Yes when the rotator sits between the telescope " +
                 "and the off-axis guider, No for a guide scope or a rotator between the off-axis guider and the imaging camera. " +
                 "With Yes or Reversed guiding waits while the rotator turns, then starts with a new guide star and the kept calibration " +
-                "turned by the rotator's move, so no new calibration is needed. Reversed turns it the other way: if guiding pushes the " +
-                "star away after a rotator move with Yes, choose it and calibrate again. NINA's manual rotator is not followed."),
+                "turned by the rotator's move, so no new calibration is needed after a rotation. Calibrate once after switching to Yes or " +
+                "Reversed, since a rotation made while it was No is not known to the calibration. Reversed turns it the other way: if " +
+                "guiding pushes the star away after a rotator move with Yes, choose it and calibrate again. NINA's manual rotator is not followed."),
 
         // Dither
         new("DitherMode", "Dither mode", "Dither", "enum", "Random", Options: ["Random", "Spiral"], Phd2Fallback: s => s.PHD2DitherMode is "Random" or "Spiral" ? s.PHD2DitherMode : null),

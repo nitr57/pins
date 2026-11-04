@@ -13,9 +13,9 @@ using NINA.Core.Utility;
 using NINA.Equipment.Equipment.MyTelescope;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
-using NINA.INDI;
 using NINA.GuideEngine.Calibration;
 using NINA.GuideEngine.Core;
+using NINA.INDI;
 using NinaPierSide = NINA.Core.Enum.PierSide;
 using PierSide = NINA.GuideEngine.Core.PierSide;
 
@@ -38,6 +38,13 @@ internal sealed class NinaMountState(ITelescopeMediator telescope, Func<bool>? p
 
     /// <summary>The largest change of the rotator angle that does not count as a move (degrees).</summary>
     public const double RotatorChangeDeg = 0.05;
+
+    /// <summary>
+    /// An angle change seen across a longer gap between two reads does not count as turning: no guide frames were taken
+    /// (e.g. while NINA centered and rotated with guiding stopped), so the move is over unless the driver says otherwise.
+    /// Well above the frame spacing of long guide exposures, which see every change across a gap of several seconds.
+    /// </summary>
+    public static readonly TimeSpan RotatorReadGapLimit = TimeSpan.FromSeconds(60);
 
     /// <summary>Most slewing/tracking changes logged per <see cref="LogWindow"/>: enough to show a pattern, without flooding the log.</summary>
     private const int MaxLoggedChanges = 30;
@@ -137,9 +144,11 @@ internal sealed class NinaMountState(ITelescopeMediator telescope, Func<bool>? p
                 {
                     rotatorAnchorAngle = r.MechanicalDeg;
 
-                    // seen between two reads close together it may still be turning; after a long gap (no guide frames,
-                    // e.g. while NINA centers and rotates with guiding stopped) the move is over unless the driver says so
-                    if (rotatorReadAt is { } readAt && now - readAt <= rotatorSettle)
+                    // seen between two guide frames it may still be turning, also with long guide exposures; after a long
+                    // gap (no guide frames, e.g. while NINA centers and rotates with guiding stopped) the move is over
+                    // unless the driver says so
+                    var gapLimit = rotatorSettle > RotatorReadGapLimit ? rotatorSettle : RotatorReadGapLimit;
+                    if (rotatorReadAt is { } readAt && now - readAt <= gapLimit)
                     {
                         rotatorChangedAt = now;
                     }

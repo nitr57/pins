@@ -27,7 +27,7 @@ public enum CalibrationAlertType
 
     /// <summary>
     /// The calibration has no rotator angle, and the current one is taken as its own. PHD2 asks for a new calibration
-    /// instead.
+    /// instead. Shown when the rotator turns the guide camera, since a turn since the calibration is then missed.
     /// </summary>
     RotatorPositionUnknown,
 
@@ -130,6 +130,13 @@ public static class CalibrationAdjuster
 {
     /// <summary>Enable dec compensation when calibration declination is less than this (60°, PHD2 Scope::DEC_COMP_LIMIT).</summary>
     public const double DecCompLimit = Math.PI / 2.0 * 2.0 / 3.0;
+
+    /// <summary>
+    /// The largest rotator move that leaves the calibration as it is (degrees), so that readout jitter does not change
+    /// it. With an off-axis guider a few thousand pixels off the optical axis, 0.1° already moves the star by several
+    /// pixels.
+    /// </summary>
+    public const double RotatorToleranceDeg = 0.05;
 
     /// <summary>PHD2 FlipCalibration: xAngle += π; yAngle += π only when <paramref name="decFlipRequired"/>.</summary>
     public static CalibrationData FlipCalibration(CalibrationData cal, bool decFlipRequired)
@@ -262,20 +269,31 @@ public static class CalibrationAdjuster
         RotatorTurn? rotatorTurn = null;
         if (newRotatorAngle is { } rot)
         {
-            if (cal.RotatorAngleDeg is not { } calRot || pointing.RotatorTurnsGuideCamera == RotatorGuideCamera.No)
+            bool turnsGuideCamera = pointing.RotatorTurnsGuideCamera != RotatorGuideCamera.No;
+            if (cal.RotatorAngleDeg is not { } calRot)
             {
                 // Deviation from PHD2, which asks for a new calibration when the calibration has no rotator position. Here
-                // the current angle becomes the calibration's. While the guide camera does not turn with the rotator, the
-                // angle follows the rotator, so that switching to Yes later turns from the current angle
-                if (cal.RotatorAngleDeg != rot)
+                // the current angle becomes the calibration's. When the guide camera turns with the rotator the user is
+                // told, since a turn since the calibration is not known
+                string message = $"Calibration without rotator position; the current one ({rot:F1}°) is taken as its own.";
+                if (turnsGuideCamera)
                 {
-                    alerts.Add(cal.RotatorAngleDeg is null
-                        ? new CalibrationAlert(CalibrationAlertType.RotatorPositionUnknown, "CAL_ROTATOR_UNKNOWN",
-                            $"Calibration without rotator position; the current one ({rot:F1}°) is taken as its own.",
-                            ShowToUser: false)
-                        : new CalibrationAlert(CalibrationAlertType.RotatorFollowed, "CAL_ROTATOR_FOLLOWED",
-                            $"Rotator moved from {cal.RotatorAngleDeg.Value:F1}° to {rot:F1}°; the guide camera does not turn with it.",
-                            ShowToUser: false));
+                    message += " Calibrate again if the guide camera was turned since this calibration.";
+                }
+
+                alerts.Add(new CalibrationAlert(CalibrationAlertType.RotatorPositionUnknown, "CAL_ROTATOR_UNKNOWN", message,
+                    ShowToUser: turnsGuideCamera));
+                cal = cal with { RotatorAngleDeg = rot };
+            }
+            else if (!turnsGuideCamera)
+            {
+                // the angle follows the rotator, so that switching to Yes later turns from the current angle
+                double moved = MountTransform.Norm(rot - calRot, -180.0, 180.0);
+                if (Math.Abs(moved) > RotatorToleranceDeg)
+                {
+                    alerts.Add(new CalibrationAlert(CalibrationAlertType.RotatorFollowed, "CAL_ROTATOR_FOLLOWED",
+                        $"Rotator moved from {calRot:F1}° to {rot:F1}°; the guide camera does not turn with it.",
+                        ShowToUser: false));
                     cal = cal with { RotatorAngleDeg = rot };
                 }
             }
@@ -288,7 +306,7 @@ public static class CalibrationAdjuster
                     da = -da;
                 }
 
-                if (Math.Abs(da) > 0.05)
+                if (Math.Abs(da) > RotatorToleranceDeg)
                 {
                     double turn = MountTransform.Radians(da);
                     cal = cal with

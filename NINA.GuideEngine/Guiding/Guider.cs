@@ -1326,6 +1326,7 @@ public sealed partial class Guider : IAsyncDisposable
                 CalibrationAlertType.PixelSizeChanged => GuideErrorCode.CalibrationInvalidated,
                 CalibrationAlertType.Flipped => GuideErrorCode.CalibrationFlipped,
                 CalibrationAlertType.CalibrationTooFarFromEquator => GuideErrorCode.CalibrationHighDeclination,
+                CalibrationAlertType.RotatorPositionUnknown => GuideErrorCode.CalibrationRotatorUnknown,
                 _ => GuideErrorCode.CalibrationInvalidated,
             };
             Alert(code, a.Message);
@@ -1893,7 +1894,7 @@ public sealed partial class Guider : IAsyncDisposable
 
     private void ResumeCore()
     {
-        if (RestartIfRotatorTurned(SafeSnapshot()))
+        if (RestartIfRotatorTurned(SafeSnapshot(), resume: true))
         {
             return;
         }

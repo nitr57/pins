@@ -225,10 +225,14 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             }
 
             var info = rotatorMediator.GetInfo();
+
             float angle = info?.MechanicalPosition ?? float.NaN;
-            return info is { Connected: true } && angle is >= 0 and <= 360
-                ? new RotatorReading(angle, info.IsMoving)
-                : null;
+            if (info is not { Connected: true } || angle is not (>= 0 and <= 360))
+            {
+                return null;
+            }
+
+            return new RotatorReading(angle, info.IsMoving);
         }
         catch (Exception ex)
         {

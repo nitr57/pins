@@ -872,8 +872,34 @@ public class MountAdapterTests
 
         // a change seen only after a long gap between two reads (no guide frames while NINA centered and rotated) is over
         reading = new RotatorReading(50, false);
-        now = now.AddSeconds(60);
+        now = now + NinaMountState.RotatorReadGapLimit + TimeSpan.FromSeconds(1);
         state.GetSnapshot().Should().Match<MountSnapshot>(s => s.RotatorAngleDeg == 50 && !s.RotatorTurning);
+    }
+
+    [Test]
+    public void Rotator_turn_counts_between_long_guide_exposures()
+    {
+        // frames 5 s apart, longer than the settle time of two 2 s device polls: every step of the angle between two
+        // frames still counts as turning, and the first frame without a change as stopped
+        var now = new DateTimeOffset(2026, 11, 4, 20, 0, 0, TimeSpan.Zero);
+        var clock = new Mock<IClock>();
+        clock.SetupGet(c => c.UtcNow).Returns(() => now);
+        var mediator = new Mock<ITelescopeMediator>();
+        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true, Declination = 10 });
+        double angle = 10;
+        var state = new NinaMountState(mediator.Object, clock: clock.Object, rotator: () => new RotatorReading(angle, false),
+            rotatorSettle: TimeSpan.FromSeconds(4));
+
+        state.GetSnapshot().RotatorTurning.Should().BeFalse();
+        foreach (double step in new[] { 15.0, 20.0, 25.0 })
+        {
+            angle = step;
+            now = now.AddSeconds(5);
+            state.GetSnapshot().RotatorTurning.Should().BeTrue($"the angle changed to {step}° since the last frame");
+        }
+
+        now = now.AddSeconds(5);
+        state.GetSnapshot().RotatorTurning.Should().BeFalse("the angle held between two frames");
     }
 
     [Test]

@@ -16,17 +16,23 @@ public sealed partial class Guider
     /// <summary>A rotator that keeps reporting moving or turning for longer than this no longer holds guiding back.</summary>
     public static readonly TimeSpan RotatorWaitLimit = TimeSpan.FromMinutes(2);
 
+    /// <summary>The largest rotator turn since the star was selected that keeps the star (degrees), as for the calibration.</summary>
+    public const double RotatorTurnToleranceDeg = CalibrationAdjuster.RotatorToleranceDeg;
+
     /// <summary>
-    /// The largest rotator turn that does not count (degrees). With an off-axis guider a few thousand pixels off the
-    /// optical axis, 0.1° already moves the star by several pixels.
+    /// Guide frames in a row that must see the rotator's angle turn before a running guide stops for it, so that a jittering
+    /// readout does not stop it. The driver's moving state stops it at the first frame.
     /// </summary>
-    public const double RotatorTurnToleranceDeg = 0.05;
+    public const int RotatorTurnFramesToStop = 2;
 
     // the rotator angle the current star was selected at, null when unknown
     private double? starRotatorAngle;
 
+    // guide frames in a row in which a running guide saw the rotator's angle turn
+    private int rotatorTurnFrames;
+
     // since when a start waits for the rotator. A wait that ran out ignores the flag that kept it (the driver's moving
-    // state, or the angle's recent change) until that flag clears; the other one still counts
+    // state, or the angle's recent change) until that flag clears, also for later starts; the other one still counts
     private DateTimeOffset? rotatorWaitSince;
     private bool rotatorMovingIgnored;
     private bool rotatorTurningIgnored;
@@ -41,6 +47,7 @@ public sealed partial class Guider
     // the star (or lock position) was chosen in this snapshot's field; an unreadable angle keeps the last one
     private void NoteStarRotatorAngle(MountSnapshot snapshot)
     {
+        rotatorTurnFrames = 0;
         if (snapshot.RotatorAngleDeg is { } angle)
         {
             starRotatorAngle = angle;
@@ -73,6 +80,29 @@ public sealed partial class Guider
         }
 
         return (snapshot.RotatorMoving && !rotatorMovingIgnored) || (snapshot.RotatorTurning && !rotatorTurningIgnored);
+    }
+
+    // a running guide stops for the rotator: at once when the driver reports it moving, for a turn since the star was
+    // selected only when it shows on enough frames in a row. The host's RotatorTurning is not used here: every change sets
+    // it, also a readout that jumps and comes back. While a wait gave up on an angle that kept changing (a slow creep), the
+    // turn does not stop the run either; once the angle holds, it does
+    private bool RotatorStopsRun(MountSnapshot snapshot, bool resume)
+    {
+        // also clears the flags a wait gave up on, once they cleared
+        RotatorBusy(snapshot);
+
+        if (snapshot.RotatorMoving && !rotatorMovingIgnored)
+        {
+            return true;
+        }
+
+        if (rotatorTurningIgnored || RotatorTurnSinceSelection(snapshot) is null)
+        {
+            rotatorTurnFrames = 0;
+            return false;
+        }
+
+        return resume || ++rotatorTurnFrames >= RotatorTurnFramesToStop;
     }
 
     /// <summary>
@@ -131,19 +161,23 @@ public sealed partial class Guider
     /// While guiding or calibrating (not paused): the rotator that turns the guide camera started moving or turned. The run
     /// stops and starts again, which waits for the rotator and selects a new star. A pending start or dither settles on
     /// the new star, and a calibration that was asked for is made again. After a meridian flip the flip time stays, so a
-    /// wrong Dec-flip setting is still inverted on the first Dec runaway.
+    /// wrong Dec-flip setting is still inverted on the first Dec runaway. Per guide frame a turn of the angle counts only
+    /// on <see cref="RotatorTurnFramesToStop"/> frames in a row; <paramref name="resume"/> (a single check after a pause)
+    /// counts it at once.
     /// </summary>
-    private bool RestartIfRotatorTurned(MountSnapshot snapshot)
+    private bool RestartIfRotatorTurned(MountSnapshot snapshot, bool resume = false)
     {
         if (!RotatorTurnsGuideCamera)
         {
             return false;
         }
 
-        if (!RotatorBusy(snapshot) && RotatorTurnSinceSelection(snapshot) is null)
+        if (!RotatorStopsRun(snapshot, resume))
         {
             return false;
         }
+
+        rotatorTurnFrames = 0;
 
         if (calibrationProcess is not null)
         {
@@ -193,12 +227,12 @@ public sealed partial class Guider
             $"Rotator moved from {move.FromDeg:0.0}° to {move.ToDeg:0.0}°: new guide star selected"));
     }
 
-    // a start that was asked for: the wait for the rotator begins afresh
+    // a start that was asked for: the wait for the rotator begins afresh. A flag the last wait gave up on stays ignored
+    // until it clears (RotatorBusy), so a driver stuck at moving does not hold back every start for the full wait
     private void ResetRotatorWait()
     {
         rotatorWaitSince = null;
-        rotatorMovingIgnored = false;
-        rotatorTurningIgnored = false;
+        rotatorTurnFrames = 0;
         rotatorStoppedRun = false;
         newStarAfterRotation = null;
     }

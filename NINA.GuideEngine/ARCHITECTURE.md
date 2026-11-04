@@ -143,19 +143,26 @@ Capture → dark subtraction **or** defect-map correction → optional noise red
   reported: its angle is the synced sky angle and starts at 0° with every app start. `RotatorTurnsGuideCamera` says
   whether the guide camera turns with the rotator (`No` by default: a guide scope, or the rotator between the off-axis
   guider and the imaging camera; `Yes`: PHD2's turn, both angles by −Δ; `Reversed`: +Δ). With `Yes`/`Reversed` a start
-  or resume turns a kept calibration by the shorter-way delta (more than 0.05°) and reports it as
-  `CalibrationAdjustment.RotatorTurn`; with `No` the stored angle only follows the rotator. Deviations from PHD2: PHD2
-  turns whenever a rotator is connected, and asks for a new calibration when the calibration has no rotator angle,
-  where we take the current one.
+  or resume turns a kept calibration by the shorter-way delta (more than `CalibrationAdjuster.RotatorToleranceDeg`,
+  0.05°) and reports it as `CalibrationAdjustment.RotatorTurn`; with `No` the stored angle only follows the rotator
+  (also beyond 0.05°, so readout jitter doesn't rewrite the calibration), which is why a switch to `Yes`/`Reversed`
+  needs one new calibration. Deviations from PHD2: PHD2 turns whenever a rotator is connected, and asks for a new
+  calibration when the calibration has no rotator angle, where we take the current one; with `Yes`/`Reversed` the
+  warning `CalibrationRotatorUnknown` says to calibrate again if the guide camera was turned since.
 * Rotator and guide star (`Guider.Rotator.cs`, only with `Yes`/`Reversed`): after a rotation the guide camera of an
   off-axis guider looks at another piece of sky, so the star is gone. The host reports `MountSnapshot.RotatorMoving`
   (the driver's `IsMoving`) and `RotatorTurning` (the angle changed by more than 0.05° within two device polls; a change
-  seen only after a longer gap between two reads does not count). A start waits while either is set, at most
-  `RotatorWaitLimit` (2 min); after that the flag that kept it is ignored until it clears. Then it selects a new star
-  when the angle turned since the star was selected (more than `RotatorTurnToleranceDeg`, 0.05°). While guiding or
-  calibrating, a moving or turned rotator stops the run and requests a start: a pending start or dither settles on the
-  new star, a calibration that was asked for is made again, and a Guiding Coach measurement is interrupted (the flip time
-  stays, so a wrong Dec-flip setting is still inverted on the first Dec runaway after a flip). `Resume` does the same; a user pause waits for it. Alert `RotatorTurnedGuideCamera`
+  seen only across a gap of more than `NinaMountState.RotatorReadGapLimit`, 60 s, between two reads does not count,
+  while the spacing of long guide exposures does). A start waits while either is set, at most `RotatorWaitLimit`
+  (2 min); after that the flag that kept it is ignored until it clears, also for later starts. Then it selects a new
+  star when the angle turned since the star was selected (more than `RotatorTurnToleranceDeg`, 0.05°). While guiding
+  or calibrating, the rotator stops the run and requests a start: at once when the driver reports it moving, and for a
+  turn since the star was selected only on `RotatorTurnFramesToStop` (2) frames in a row, so a readout that jumps for
+  one frame doesn't stop it (`RotatorTurning` is not used here, since a jump and its return both set it). While a wait
+  gave up on an angle that kept changing, the turn doesn't stop the run until the angle holds. A pending start or
+  dither settles on the new star, a calibration that was asked for is made again, and a Guiding Coach measurement is
+  interrupted (the flip time stays, so a wrong Dec-flip setting is still inverted on the first Dec runaway after a
+  flip). `Resume` does the same with a single check; a user pause waits for it. Alert `RotatorTurnedGuideCamera`
   (Info): one while waiting (or when the wait gave up), and one per rotation for what was done (new star and/or turned
   calibration).
 * **Post-flip Dec self-check**: for the first 5 guide frames after a pier-side change, verify Dec
