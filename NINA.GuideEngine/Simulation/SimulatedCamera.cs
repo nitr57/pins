@@ -63,8 +63,7 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
     private readonly Queue<CaptureFault> injectedFaults = new();
     private readonly (int X, int Y, ushort Value)[] hotPixels;
     private readonly (int X, int Y)[] coldPixels;
-    private readonly double cosT;
-    private readonly double sinT;
+    private volatile CameraAxes axes;
     private float[] starBuffer = [];
     private double[] psfWeights = [];
     private long frameCounter;
@@ -78,8 +77,7 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
         Sky = sky;
         Mount = mount;
         this.clock = clock;
-        cosT = Math.Cos(config.CameraAngleDeg * Math.PI / 180.0);
-        sinT = Math.Sin(config.CameraAngleDeg * Math.PI / 180.0);
+        axes = new CameraAxes(config.CameraAngleDeg);
         MaxAdu = (ushort)Math.Min(config.MaxAdu, (1 << Math.Clamp(config.BitsPerPixel, 8, 16)) - 1);
         currentGain = ClampGain(config.DefaultGain);
 
@@ -100,6 +98,15 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
     }
 
     public CameraSimConfig Config { get; }
+
+    /// <summary>
+    /// Angle of the +RA (East) direction on the sensor for pier side East (degrees): <see cref="CameraSimConfig.CameraAngleDeg"/>
+    /// until <see cref="RotateCamera"/> turns the camera.
+    /// </summary>
+    public double CameraAngleDeg => axes.AngleDeg;
+
+    /// <summary>Turns the camera about the optical axis by <paramref name="degrees"/> (e.g. in an off-axis guider), from the next frame on.</summary>
+    public void RotateCamera(double degrees) => axes = new CameraAxes(axes.AngleDeg + degrees);
 
     public SimulatedSky Sky { get; }
 
@@ -228,7 +235,8 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
     /// <summary>Converts a sky displacement (arcsec, East/North) to a sensor displacement in binned pixels.</summary>
     public (double Dx, double Dy) SkyToSensorVector(SkyOffset v, PierSide pierSide, int binning = 1)
     {
-        double c = cosT, s = sinT;
+        var a = axes;
+        double c = a.Cos, s = a.Sin;
         if (pierSide == PierSide.West)
         {
             c = -c;
@@ -248,8 +256,9 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
     {
         double dx = (x - (SensorWidth - 1) / 2.0) * Config.PixelScale;
         double dy = (y - (SensorHeight - 1) / 2.0) * Config.PixelScale;
-        double nx = Config.Mirrored ? sinT : -sinT, ny = Config.Mirrored ? -cosT : cosT;
-        return new SkyOffset(dx * cosT + dy * sinT, dx * nx + dy * ny);
+        var a = axes;
+        double nx = Config.Mirrored ? a.Sin : -a.Sin, ny = Config.Mirrored ? -a.Cos : a.Cos;
+        return new SkyOffset(dx * a.Cos + dy * a.Sin, dx * nx + dy * ny);
     }
 
     /// <summary>Frame pixel position (at <paramref name="binning"/>) of a sky point at <paramref name="relativeToPointing"/> from the optical axis.</summary>
@@ -508,5 +517,15 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
             int bx = x / b, by = y / b;
             if (roi.Contains(bx, by) && bx < frame.Width && by < frame.Height) frame[bx, by] = 0;
         }
+    }
+
+    // the angle with its cosine and sine, replaced as a whole so a frame never mixes two angles
+    private sealed class CameraAxes(double angleDeg)
+    {
+        public double AngleDeg { get; } = angleDeg;
+
+        public double Cos { get; } = Math.Cos(angleDeg * Math.PI / 180.0);
+
+        public double Sin { get; } = Math.Sin(angleDeg * Math.PI / 180.0);
     }
 }

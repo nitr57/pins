@@ -74,6 +74,9 @@ public sealed class SimulatedMount : IPulseOutput, IMountState
     private double slewEnd = double.NegativeInfinity;
     private double notRespondingUntil = double.NegativeInfinity;
     private double invertDecUntil = double.NegativeInfinity;
+    private double? rotatorAngleDeg;
+    private bool rotatorMoving;
+    private bool rotatorTurning;
 
     // reported RA = true RA + this (a sync moves the reported coordinates, not the axis)
     private double syncOffsetHours;
@@ -134,6 +137,51 @@ public sealed class SimulatedMount : IPulseOutput, IMountState
 
     /// <summary>Fault: when set, the snapshot reports this pier side regardless of the physical one.</summary>
     public PierSide? ReportedPierSideOverride { get; set; }
+
+    /// <summary>
+    /// Mechanical angle of a simulated rotator reported in the snapshot (degrees), null for none. It turns nothing by itself:
+    /// a guide camera that turns with it is turned with <see cref="SimulatedCamera.RotateCamera"/>.
+    /// </summary>
+    public double? RotatorAngleDeg
+    {
+        get
+        {
+            lock (gate) return rotatorAngleDeg;
+        }
+
+        set
+        {
+            lock (gate) rotatorAngleDeg = value;
+        }
+    }
+
+    /// <summary>Whether the snapshot reports the simulated rotator's driver as moving.</summary>
+    public bool RotatorMoving
+    {
+        get
+        {
+            lock (gate) return rotatorMoving;
+        }
+
+        set
+        {
+            lock (gate) rotatorMoving = value;
+        }
+    }
+
+    /// <summary>Whether the snapshot reports the simulated rotator's angle as changing.</summary>
+    public bool RotatorTurning
+    {
+        get
+        {
+            lock (gate) return rotatorTurning;
+        }
+
+        set
+        {
+            lock (gate) rotatorTurning = value;
+        }
+    }
 
     /// <summary>Physical pier side.</summary>
     public PierSide PierSide
@@ -213,6 +261,9 @@ public sealed class SimulatedMount : IPulseOutput, IMountState
                 IsTracking = isTracking && !isParked,
                 GuideRateRa = guideRateRa,
                 GuideRateDec = guideRateDec,
+                RotatorAngleDeg = rotatorAngleDeg,
+                RotatorMoving = rotatorMoving,
+                RotatorTurning = rotatorTurning,
             };
         }
     }

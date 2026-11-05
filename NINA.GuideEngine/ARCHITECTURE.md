@@ -68,7 +68,8 @@ The engine is host-agnostic and deterministic under test. Everything outside it 
 
 - `ICameraSource` (optionally `IGainRange`): connects, captures `GuideFrame`s, aborts, reconnects.
 - `IPulseOutput`: sends a guide pulse and returns when it is done.
-- `IMountState`: a snapshot of the mount (connected, declination, pier side, slewing, parked, tracking, guide rates).
+- `IMountState`: a snapshot of the mount (connected, declination, pier side, slewing, parked, tracking, guide rates) and
+  of the rotator (mechanical angle, moving, turning).
 - `IClock`: time, so tests and the simulator run on a virtual clock.
 
 The engine reports through `GuiderEvents`, which use PHD2's event names and fields. Persistence (calibrations, periodic
@@ -81,7 +82,7 @@ The host, `InternalGuider` in `NINA.Equipment`, implements them with pins' equip
   frames. The slot chooses, connects and configures the camera; the guider connects it if needed but never
   disconnects or reconnects it, and disconnects itself when the camera goes away.
 - `MountPulseOutput` (pulse guiding through `ITelescopeMediator`, waiting for the pulse to end), `CameraSt4PulseOutput`
-  (an INDI guide camera's ST4 port) and `NinaMountState`.
+  (an INDI guide camera's ST4 port) and `NinaMountState`, which also reads the rotator through `IRotatorMediator`.
 - The engine's `Simulator` when the `GuideSource` setting is `Simulator`.
 
 It also implements `IGuider` for the sequencer and ninaAPI, and the `IAdvancedGuider` contract through which the
@@ -137,6 +138,33 @@ Capture → dark subtraction **or** defect-map correction → optional noise red
 * Reuse: stored per profile keyed by camera + mount + binning + focal length; adjustments for
   binning, declination (skip / alert if calibrated above |60°|), pier side (flip xAngle, Dec flip per
   mount setting), guide-rate change > 5 % alert, pixel-size change invalidates.
+* Rotator: the host reports the rotator's **mechanical** angle (`MountSnapshot.RotatorAngleDeg`; a plate-solve sync
+  changes the sky angle without turning the rotator), and every calibration stores it. NINA's manual rotator is not
+  reported: its angle is the synced sky angle and starts at 0° with every app start. `RotatorTurnsGuideCamera` says
+  whether the guide camera turns with the rotator (`No` by default: a guide scope, or the rotator between the off-axis
+  guider and the imaging camera; `Yes`: PHD2's turn, both angles by −Δ; `Reversed`: +Δ). With `Yes`/`Reversed` a start
+  or resume turns a kept calibration by the shorter-way delta (more than `CalibrationAdjuster.RotatorToleranceDeg`,
+  0.05°) and reports it as `CalibrationAdjustment.RotatorTurn`; with `No` the stored angle only follows the rotator
+  (also beyond 0.05°, so readout jitter doesn't rewrite the calibration), which is why a switch to `Yes`/`Reversed`
+  needs one new calibration. Deviations from PHD2: PHD2 turns whenever a rotator is connected, and asks for a new
+  calibration when the calibration has no rotator angle, where we take the current one; with `Yes`/`Reversed` the
+  warning `CalibrationRotatorUnknown` says to calibrate again if the guide camera was turned since.
+* Rotator and guide star (`Guider.Rotator.cs`, only with `Yes`/`Reversed`): after a rotation the guide camera of an
+  off-axis guider looks at another piece of sky, so the star is gone. The host reports `MountSnapshot.RotatorMoving`
+  (the driver's `IsMoving`) and `RotatorTurning` (the angle changed by more than 0.05° within two device polls; a change
+  seen only across a gap of more than `NinaMountState.RotatorReadGapLimit`, 60 s, between two reads does not count,
+  while the spacing of long guide exposures does). A start waits while either is set, at most `RotatorWaitLimit`
+  (2 min); after that the flag that kept it is ignored until it clears, also for later starts. Then it selects a new
+  star when the angle turned since the star was selected (more than `RotatorTurnToleranceDeg`, 0.05°). While guiding
+  or calibrating, the rotator stops the run and requests a start: at once when the driver reports it moving, and for a
+  turn since the star was selected only on `RotatorTurnFramesToStop` (2) frames in a row, so a readout that jumps for
+  one frame doesn't stop it (`RotatorTurning` is not used here, since a jump and its return both set it). While a wait
+  gave up on an angle that kept changing, the turn doesn't stop the run until the angle holds. A pending start or
+  dither settles on the new star, a calibration that was asked for is made again, and a Guiding Coach measurement is
+  interrupted (the flip time stays, so a wrong Dec-flip setting is still inverted on the first Dec runaway after a
+  flip). `Resume` does the same with a single check; a user pause waits for it. Alert `RotatorTurnedGuideCamera`
+  (Info): one while waiting (or when the wait gave up), and one per rotation for what was done (new star and/or turned
+  calibration).
 * **Post-flip Dec self-check**: for the first 5 guide frames after a pier-side change, verify Dec
   corrections reduce the error; if the error grows consistently in the corrected direction, invert
   Dec, alert, persist the mount setting. Besides the self-check, a Dec runaway within 15 minutes after

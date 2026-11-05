@@ -17,6 +17,7 @@ using NINA.Core.Utility.Notification;
 using NINA.Equipment.Equipment.MyGuider;
 using NINA.Equipment.Equipment.MyGuider.Advanced;
 using NINA.Equipment.Equipment.MyGuider.PHD2.PhdEvents;
+using NINA.Equipment.Equipment.MyRotator;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.Profile.Interfaces;
@@ -97,6 +98,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     private readonly IProfileService profileService;
     private readonly ITelescopeMediator telescopeMediator;
     private readonly IGuideCameraMediator guideCameraMediator;
+    private readonly IRotatorMediator? rotatorMediator;
     private readonly InternalGuiderOptions options;
     private readonly object sync = new();
     private readonly LinkedList<AdvancedGuideStep> steps = new();
@@ -165,11 +167,20 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     {
     }
 
+    /// <param name="rotatorMediator">The rotator, whose angle turns the calibration when it turns the guide camera.</param>
+    public InternalGuider(IProfileService profileService, ITelescopeMediator telescopeMediator, IGuideCameraMediator guideCameraMediator,
+        IRotatorMediator rotatorMediator)
+        : this(profileService, telescopeMediator, guideCameraMediator, MoveOldStorage(), rotatorMediator: rotatorMediator)
+    {
+    }
+
     /// <param name="incidentDirectory">Where incidents are stored (tests use a temp folder).</param>
     /// <param name="periodicErrorStorePath">Where the learned periodic errors are stored (tests use a temp file).</param>
     /// <param name="pulseModelStorePath">Where the learned pulse models are stored (tests use a temp file).</param>
+    /// <param name="rotatorMediator">The rotator, whose angle turns the calibration when it turns the guide camera.</param>
     internal InternalGuider(IProfileService profileService, ITelescopeMediator telescopeMediator, IGuideCameraMediator guideCameraMediator,
-        string incidentDirectory, string? periodicErrorStorePath = null, string? pulseModelStorePath = null)
+        string incidentDirectory, string? periodicErrorStorePath = null, string? pulseModelStorePath = null,
+        IRotatorMediator? rotatorMediator = null)
     {
         this.profileService = profileService;
         this.periodicErrorStorePath = periodicErrorStorePath ?? DefaultPeriodicErrorStorePath;
@@ -178,6 +189,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         playModelStorePath = Path.Combine(Path.GetDirectoryName(this.pulseModelStorePath)!, "backlash-play-model.json");
         this.telescopeMediator = telescopeMediator;
         this.guideCameraMediator = guideCameraMediator;
+        this.rotatorMediator = rotatorMediator;
         options = new InternalGuiderOptions(profileService, InternalGuiderOptions.SettingsId);
         guideCameraMediator.Disconnected += OnGuideCameraDisconnected;
         coachHost = new GuidingCoachHost(profileService, options, TrySetSetting, SettleFromProfile, () => buildingDarks);
@@ -195,6 +207,38 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             RestoreStoredPlayModel();
             incidents.Options = IncidentStoreOptionsNow();
         };
+    }
+
+    /// <summary>
+    /// The rotator's mechanical angle (degrees) and moving state. A plate-solve sync changes the sky angle without turning
+    /// the guide camera, so only the mechanical one is used. Null without a connected rotator, for an angle that could not
+    /// be read (Wanderer and Nitecrawler report -1), and for NINA's manual rotator: its "mechanical" angle is the synced sky
+    /// angle, and it starts at 0° with every start of the app.
+    /// </summary>
+    internal static RotatorReading? ReadRotator(IRotatorMediator? rotatorMediator)
+    {
+        try
+        {
+            if (rotatorMediator is null || rotatorMediator.GetDevice() is ManualRotator)
+            {
+                return null;
+            }
+
+            var info = rotatorMediator.GetInfo();
+
+            float angle = info?.MechanicalPosition ?? float.NaN;
+            if (info is not { Connected: true } || angle is not (>= 0 and <= 360))
+            {
+                return null;
+            }
+
+            return new RotatorReading(angle, info.IsMoving);
+        }
+        catch (Exception ex)
+        {
+            Logger.Debug($"InternalGuider: rotator angle not read: {ex.Message}");
+            return null;
+        }
     }
 
     /// <summary>
@@ -417,7 +461,12 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             }
 
             Logger.Info($"InternalGuider: guide camera '{source.Name}': {source.SensorWidth}x{source.SensorHeight}, {source.PixelSizeUm} µm, {source.BitsPerPixel} bit");
-            mount = new NinaMountState(telescopeMediator, () => pauseWhenSlewing, () => pauseWhenTrackingOff, mountOptional: options.UseCameraSt4);
+
+            // NINA polls the rotator, so it counts as stopped only after two polls without a change
+            double pollSec = profileService.ActiveProfile?.ApplicationSettings?.DevicePollingInterval ?? 2;
+            var rotatorSettle = TimeSpan.FromSeconds(2 * Math.Max(0.5, pollSec));
+            mount = new NinaMountState(telescopeMediator, () => pauseWhenSlewing, () => pauseWhenTrackingOff, mountOptional: options.UseCameraSt4,
+                rotator: () => ReadRotator(rotatorMediator), rotatorSettle: rotatorSettle);
             if (settings.FocalLengthMm <= 0)
             {
                 Notification.ShowWarning("Internal guider: guide focal length is not set — arcsec values and calibration step use defaults. Set FocalLengthMm.");

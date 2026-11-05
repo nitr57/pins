@@ -3,6 +3,7 @@
 using FluentAssertions;
 using NUnit.Framework;
 using NINA.GuideEngine.Algorithms;
+using NINA.GuideEngine.Calibration;
 using NINA.GuideEngine.Core;
 using NINA.GuideEngine.Guiding;
 using NINA.GuideEngine.MultiStar;
@@ -499,6 +500,733 @@ public class ClosedLoopTests
         var probe = h.Events.OfType<DecPlayProbeEvent>().Should().ContainSingle().Subject;
         probe.Measured.Should().BeFalse();
         probe.Message.Should().Contain("did not follow").And.Contain("forgotten");
+    }
+
+    /// <summary>
+    /// An off-axis guider behind the rotator: the rotator turns the guide camera between two starts, and the kept calibration
+    /// is turned by the rotator's move without a new calibration. With Yes the camera turns against the rotator's move (as
+    /// PHD2 assumes), with Reversed the other way.
+    /// </summary>
+    [TestCase(RotatorGuideCamera.Yes, -1)]
+    [TestCase(RotatorGuideCamera.Reversed, 1)]
+    public async Task Rotator_turns_the_calibration_with_the_guide_camera(RotatorGuideCamera turns, int cameraSense)
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = turns });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        Task<SettleResult>? second = null;
+        h.OnEvent = e =>
+        {
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(cameraSense * 40);
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        (await second!).Success.Should().BeTrue();
+        h.Events.OfType<CalibrationCompleteEvent>().Should().ContainSingle("the turned calibration is kept");
+        string turn = turns == RotatorGuideCamera.Yes ? "-40.0" : "+40.0";
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera, "one rotation, one message")
+            .Which.Detail.Should().Be($"Rotator moved from 10.0° to 50.0°: new guide star selected, calibration turned by {turn}°");
+        h.Events.OfType<StarSelectedEvent>().Should().HaveCount(2, "a new star after the rotation");
+        h.Guider.Calibration!.RotatorAngleDeg.Should().Be(50);
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2, "the turned calibration fits the camera");
+        h.Events.OfType<CalibrationUpdatedEvent>().Last().Calibration.Should().Be(h.Guider.Calibration, "the host stores the turned calibration");
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+        var error = h.Sim.TruePointingError(h.Clock.Elapsed.TotalSeconds);
+        error.Ra.Should().BeInRange(-5, 5, "RA is guided with the turned calibration");
+        error.Dec.Should().BeInRange(-5, 5, "Dec is guided with the turned calibration");
+    }
+
+    /// <summary>
+    /// A calibration made without a rotator angle (before the guider recorded one, or without a rotator) takes the current
+    /// angle. With Yes the user is warned once, since a turn of the guide camera since that calibration is not known.
+    /// </summary>
+    [Test]
+    public async Task Calibration_without_rotator_angle_warns_once_when_the_rotator_turns_the_guide_camera()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = null;
+        int starts = 0;
+        Task<SettleResult>? last = null;
+        h.OnEvent = e =>
+        {
+            if (starts < 3 && e is SettleDoneEvent)
+            {
+                starts++;
+                h.Guider.StopGuiding();
+                h.Sim.Mount.RotatorAngleDeg = 30;
+                last = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(10));
+
+        (await last!).Success.Should().BeTrue();
+        h.Events.OfType<CalibrationCompleteEvent>().Should().ContainSingle("the calibration is kept");
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.CalibrationRotatorUnknown)
+            .Which.Detail.Should().Contain("Calibrate again if the guide camera was turned");
+        h.Guider.Calibration!.RotatorAngleDeg.Should().Be(30);
+    }
+
+    /// <summary>
+    /// A rotator between the off-axis guider and the imaging camera turns only the imaging camera: with the default setting
+    /// the calibration keeps its angles and only follows the rotator's angle.
+    /// </summary>
+    [Test]
+    public async Task Rotator_that_does_not_turn_the_guide_camera_leaves_the_calibration_as_it_is()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        Task<SettleResult>? second = null;
+        h.OnEvent = e =>
+        {
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        h.Guider.Settings.RotatorTurnsGuideCamera.Should().Be(RotatorGuideCamera.No, "the default");
+        (await second!).Success.Should().BeTrue();
+        h.Events.OfType<CalibrationCompleteEvent>().Should().ContainSingle();
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera);
+        h.Guider.Calibration!.RotatorAngleDeg.Should().Be(50);
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+    }
+
+    /// <summary>The rotator turns the guide camera during a pause that is resumed at once: resuming starts again with a new star.</summary>
+    [Test]
+    public async Task Rotator_move_while_paused_turns_the_calibration_on_resume()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        bool moved = false;
+        h.OnEvent = e =>
+        {
+            if (!moved && e is SettleDoneEvent)
+            {
+                moved = true;
+                h.Guider.Pause();
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+                h.Guider.Resume();
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(6));
+
+        moved.Should().BeTrue();
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera)
+            .Which.Detail.Should().Be("Rotator moved from 10.0° to 50.0°: new guide star selected, calibration turned by -40.0°");
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(2, "resuming starts again with a new star");
+        h.Events.OfType<StarSelectedEvent>().Should().HaveCount(2);
+        GuideStepsAfter(h, starts[1].Timestamp).Should().BeGreaterThan(20, "guiding goes on with the new star");
+        h.Guider.Calibration!.RotatorAngleDeg.Should().Be(50);
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The rotator turns the guide camera while guiding runs: guiding stops while it turns (the frames are smeared, the star
+    /// leaves), then starts again with a new star and the turned calibration once the rotator has stopped.
+    /// </summary>
+    [Test]
+    public async Task Rotator_turning_while_guiding_restarts_guiding_with_a_new_star_once_it_stopped()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        double? turnedAt = null;
+        double? stoppedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (turnedAt is null && e is SettleDoneEvent)
+            {
+                turnedAt = t;
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+            else if (turnedAt is { } at && stoppedAt is null && t > at + 20)
+            {
+                stoppedAt = t;
+                h.Sim.Mount.RotatorMoving = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        stoppedAt.Should().NotBeNull();
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(2);
+        h.Seconds(starts[1].Timestamp).Should().BeGreaterThan(stoppedAt!.Value, "guiding waits until the rotator has stopped");
+        h.Events.OfType<GuideStepEvent>().Where(g => h.Seconds(g.Timestamp) > turnedAt!.Value + 3 && h.Seconds(g.Timestamp) < stoppedAt.Value)
+            .Should().BeEmpty("no corrections while the rotator turns");
+        h.Events.OfType<StarSelectedEvent>().Should().Contain(e => h.Seconds(e.Timestamp) > stoppedAt.Value, "a new star after the rotation");
+        h.Events.OfType<CalibrationCompleteEvent>().Should().ContainSingle();
+        h.Events.OfType<AlertEvent>().Where(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera).Select(a => a.Detail).Should().Equal(
+            "Guiding stopped while the rotator turns; it starts again once the rotator has stopped",
+            "Rotator moved from 10.0° to 50.0°: new guide star selected, calibration turned by -40.0°");
+        GuideStepsAfter(h, starts[1].Timestamp).Should().BeGreaterThan(20, "guiding goes on with the new star");
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+        var error = h.Sim.TruePointingError(h.Clock.Elapsed.TotalSeconds);
+        error.Ra.Should().BeInRange(-5, 5);
+        error.Dec.Should().BeInRange(-5, 5);
+    }
+
+    /// <summary>
+    /// A rotator readout that jumps by more than the tolerance for one frame and comes back does not stop guiding: a turn
+    /// of the angle stops a running guide only on <see cref="Guider.RotatorTurnFramesToStop"/> frames in a row.
+    /// </summary>
+    [Test]
+    public async Task Rotator_readout_jumping_for_one_frame_does_not_stop_guiding()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        DateTimeOffset? settledAt = null;
+        int steps = 0;
+        h.OnEvent = e =>
+        {
+            if (settledAt is null && e is SettleDoneEvent)
+            {
+                settledAt = e.Timestamp;
+            }
+            else if (settledAt is not null && e is GuideStepEvent)
+            {
+                // the next frame reads the jump, the one after it the old angle again; twice
+                steps++;
+                h.Sim.Mount.RotatorAngleDeg = steps is 1 or 10 ? 10.1 : 10;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(6));
+
+        steps.Should().BeGreaterThan(20);
+        h.Events.OfType<StartGuidingEvent>().Should().ContainSingle("the jumps did not restart guiding");
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera);
+        GuideStepsAfter(h, settledAt!.Value).Should().Be(steps);
+    }
+
+    /// <summary>
+    /// A rotator whose angle keeps changing (a slow settle, a derotator) without its driver reporting moving holds the start
+    /// back for two minutes. Then guiding runs while the angle creeps, without a restart at every frame, and once the angle
+    /// holds it starts once more with a new star and the turned calibration. (The creep starts after the calibration: a
+    /// camera that turns while it calibrates spoils the calibration.)
+    /// </summary>
+    [Test]
+    public async Task Rotator_that_keeps_creeping_restarts_guiding_once_after_it_holds()
+    {
+        const double creepDegPerSec = 0.005;
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        h.Sim.Mount.RotatorTurning = true;
+        double? last = null;
+        double? heldAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (last is null && e is CalibrationCompleteEvent)
+            {
+                last = t;
+            }
+
+            if (heldAt is not null || last is null || t <= last)
+            {
+                return;
+            }
+
+            double turn = creepDegPerSec * (t - last.Value);
+            last = t;
+            h.Sim.Mount.RotatorAngleDeg += turn;
+            h.Sim.Camera.RotateCamera(-turn);
+            if (t > 360)
+            {
+                heldAt = t;
+                h.Sim.Mount.RotatorTurning = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(10));
+
+        heldAt.Should().NotBeNull();
+        h.Seconds(h.Events.OfType<StartCalibrationEvent>().Single().Timestamp).Should()
+            .BeInRange(Guider.RotatorWaitLimit.TotalSeconds, Guider.RotatorWaitLimit.TotalSeconds + 15);
+        var selected = h.Events.OfType<StarSelectedEvent>().Select(e => h.Seconds(e.Timestamp)).ToList();
+        selected.Should().ContainSingle(t => t < heldAt!.Value, "no restart while it creeps");
+        selected.Should().ContainSingle(t => t > heldAt!.Value, "one restart once it holds");
+        h.Events.OfType<AlertEvent>().Where(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera).Select(a => a.Detail).Should()
+            .HaveCount(3).And.Contain(d => d!.Contains("starts anyway"))
+            .And.Contain(d => d!.Contains("new guide star selected, calibration turned by"));
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+    }
+
+    /// <summary>A start while the rotator still turns waits for it, then selects a new star.</summary>
+    [Test]
+    public async Task Start_while_the_rotator_turns_waits_until_it_stopped()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        Task<SettleResult>? second = null;
+        double? requestedAt = null;
+        double? stoppedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+                requestedAt = t;
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+            else if (requestedAt is { } at && stoppedAt is null && t > at + 15)
+            {
+                stoppedAt = t;
+                h.Sim.Mount.RotatorMoving = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        (await second!).Success.Should().BeTrue();
+        h.Seconds(h.Events.OfType<StartGuidingEvent>().Last().Timestamp).Should().BeGreaterThan(stoppedAt!.Value);
+        h.Events.OfType<AlertEvent>().Where(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera).Select(a => a.Detail)
+            .Should().Equal("Waiting for the rotator to stop before guiding starts",
+                "Rotator moved from 10.0° to 50.0°: new guide star selected, calibration turned by -40.0°");
+        h.Events.OfType<CalibrationCompleteEvent>().Should().ContainSingle();
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+    }
+
+    /// <summary>A rotator that never reports having stopped holds guiding back only for <see cref="Guider.RotatorWaitLimit"/>.</summary>
+    [Test]
+    public async Task Rotator_that_keeps_reporting_moving_holds_the_start_back_for_two_minutes_only()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        h.Sim.Mount.RotatorMoving = true;
+
+        var start = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        (await start).Success.Should().BeTrue();
+        h.Seconds(h.Events.OfType<StartCalibrationEvent>().Single().Timestamp).Should()
+            .BeInRange(Guider.RotatorWaitLimit.TotalSeconds, Guider.RotatorWaitLimit.TotalSeconds + 15);
+        h.Events.OfType<AlertEvent>().Should().Contain(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera && a.Detail!.Contains("starts anyway"));
+    }
+
+    /// <summary>
+    /// A driver stuck at moving holds back only the first start: later starts (after autofocus, centering, a flip) don't
+    /// wait the two minutes again while it still reports moving.
+    /// </summary>
+    [Test]
+    public async Task Rotator_stuck_at_moving_holds_back_only_the_first_start()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        h.Sim.Mount.RotatorMoving = true;
+        Task<SettleResult>? second = null;
+        double? secondAt = null;
+        h.OnEvent = e =>
+        {
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                secondAt = h.Seconds(e.Timestamp);
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        (await second!).Success.Should().BeTrue();
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(2);
+        h.Seconds(starts[1].Timestamp).Should().BeLessThan(secondAt!.Value + 15, "the first wait gave up on the driver's moving state");
+        h.Events.OfType<AlertEvent>().Where(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera).Should().HaveCount(2)
+            .And.Contain(a => a.Detail!.Contains("starts anyway"), "one wait, which gave up");
+    }
+
+    /// <summary>With the default setting a rotator turns only the imaging camera: guiding goes on while it moves.</summary>
+    [Test]
+    public async Task Rotator_that_does_not_turn_the_guide_camera_does_not_interrupt_guiding()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        double? turnedAt = null;
+        h.OnEvent = e =>
+        {
+            if (turnedAt is null && e is SettleDoneEvent)
+            {
+                turnedAt = h.Seconds(e.Timestamp);
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(5));
+
+        turnedAt.Should().NotBeNull();
+        h.Events.OfType<StartGuidingEvent>().Should().ContainSingle();
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera);
+        GuideStepsAfter(h, h.Clock.Epoch.AddSeconds(turnedAt!.Value)).Should().BeGreaterThan(20, "guiding goes on while the rotator moves");
+    }
+
+    /// <summary>
+    /// A user pause with frames coming in: a rotation during it changes nothing until Resume, which then starts again with a
+    /// new star.
+    /// </summary>
+    [Test]
+    public async Task Rotator_move_during_a_user_pause_waits_for_resume()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        double? pausedAt = null;
+        double? resumedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (pausedAt is null && e is SettleDoneEvent)
+            {
+                pausedAt = t;
+                h.Guider.Pause();
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+            else if (pausedAt is { } at && resumedAt is null && t > at + 30)
+            {
+                resumedAt = t;
+                h.Guider.Resume();
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(6));
+
+        resumedAt.Should().NotBeNull();
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(2);
+        h.Seconds(starts[1].Timestamp).Should().BeGreaterThan(resumedAt!.Value, "nothing happens while paused");
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera);
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+    }
+
+    /// <summary>
+    /// NINA's slew and rotate: the rotator turns while guiding is paused for a short slew; when the slew ends, guiding starts
+    /// again with a new star instead of resuming on the old one.
+    /// </summary>
+    [Test]
+    public async Task Rotator_move_during_a_slew_pause_starts_again_when_the_slew_ends()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        bool slewed = false;
+        h.OnEvent = e =>
+        {
+            if (!slewed && e is SettleDoneEvent)
+            {
+                slewed = true;
+                h.Sim.Mount.StartSlew(new SkyOffset(30, 20), TimeSpan.FromSeconds(10));
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(6));
+
+        h.Events.OfType<PausedEvent>().Should().NotBeEmpty();
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(2);
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera)
+            .Which.Detail.Should().Contain("new guide star selected, calibration turned by -40.0°");
+        GuideStepsAfter(h, starts[1].Timestamp).Should().BeGreaterThan(20);
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+    }
+
+    /// <summary>A dither whose settle the rotator interrupts completes once guiding has settled on the new star.</summary>
+    [Test]
+    public async Task Dither_interrupted_by_the_rotator_settles_on_the_new_star()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        Task<SettleResult>? dither = null;
+        double? turnedAt = null;
+        double? stoppedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (dither is null && e is SettleDoneEvent)
+            {
+                dither = h.Guider.DitherAsync(3, false, Settle);
+                turnedAt = t;
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+            else if (turnedAt is { } at && stoppedAt is null && t > at + 15)
+            {
+                stoppedAt = t;
+                h.Sim.Mount.RotatorMoving = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        dither.Should().NotBeNull();
+        dither!.IsCompleted.Should().BeTrue("the dither waits for the settle on the new star, not forever");
+        (await dither).Success.Should().BeTrue();
+        h.Seconds(h.Events.OfType<SettleDoneEvent>().Last().Timestamp).Should().BeGreaterThan(stoppedAt!.Value);
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+    }
+
+    /// <summary>
+    /// The rotator turns during a calibration that was asked for: guiding starts again with a new star and makes that
+    /// calibration, instead of guiding with the old one turned.
+    /// </summary>
+    [Test]
+    public async Task Rotator_move_during_a_forced_calibration_calibrates_again()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        Task<SettleResult>? forced = null;
+        double? turnedAt = null;
+        double? stoppedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (forced is null && e is SettleDoneEvent)
+            {
+                forced = h.Guider.StartGuidingAsync(Settle, forceCalibration: true);
+            }
+            else if (forced is not null && turnedAt is null && e is CalibratingEvent { Step: >= 3 })
+            {
+                turnedAt = t;
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+            else if (turnedAt is { } at && stoppedAt is null && t > at + 15)
+            {
+                stoppedAt = t;
+                h.Sim.Mount.RotatorMoving = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(12));
+
+        (await forced!).Success.Should().BeTrue();
+        var completed = h.Events.OfType<CalibrationCompleteEvent>().ToList();
+        completed.Should().HaveCount(2, "the first calibration and the one that was asked for");
+        h.Seconds(completed[1].Timestamp).Should().BeGreaterThan(stoppedAt!.Value);
+        h.Events.OfType<AlertEvent>().Where(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera).Select(a => a.Detail).Should().Equal(
+            "Guiding stopped while the rotator turns; it starts again once the rotator has stopped",
+            "Rotator moved from 10.0° to 50.0°: new guide star selected");
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+    }
+
+    /// <summary>Without a kept calibration a rotation selects a new star, and the message says only that.</summary>
+    [Test]
+    public async Task Rotation_without_a_kept_calibration_reports_the_new_star_only()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        Task<SettleResult>? second = null;
+        h.OnEvent = e =>
+        {
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                h.Guider.ClearCalibration();
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(10));
+
+        (await second!).Success.Should().BeTrue();
+        h.Events.OfType<CalibrationCompleteEvent>().Should().HaveCount(2);
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera)
+            .Which.Detail.Should().Be("Rotator moved from 10.0° to 50.0°: new guide star selected");
+    }
+
+    /// <summary>
+    /// The star was lost before the rotator reported moving, and the rotator's angle was not known at the selection (it was
+    /// connected later): guiding still starts again after the rotator stopped, with a new star, instead of waiting for good.
+    /// </summary>
+    [Test]
+    public async Task Restart_for_the_rotator_selects_a_star_when_the_old_one_is_lost()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        double? lostAt = null;
+        double? turnedAt = null;
+        double? stoppedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (lostAt is null && e is SettleDoneEvent)
+            {
+                lostAt = t;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+            else if (lostAt is { } lost && turnedAt is null && e is StarLostEvent && t > lost + 2)
+            {
+                turnedAt = t;
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+            }
+            else if (turnedAt is { } at && stoppedAt is null && t > at + 15)
+            {
+                stoppedAt = t;
+                h.Sim.Mount.RotatorMoving = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(6));
+
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(2);
+        h.Seconds(starts[1].Timestamp).Should().BeGreaterThan(stoppedAt!.Value);
+        h.Events.OfType<StarSelectedEvent>().Should().Contain(e => h.Seconds(e.Timestamp) > stoppedAt.Value);
+    }
+
+    /// <summary>
+    /// After the wait gave up on a driver that keeps reporting moving, a real turn of the angle is still waited for: one
+    /// restart, no corrections while it turns.
+    /// </summary>
+    [Test]
+    public async Task Rotator_stuck_at_moving_still_waits_for_a_real_turn()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        h.Sim.Mount.RotatorMoving = true;
+        double? turnedAt = null;
+        double? stoppedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (turnedAt is null && e is SettleDoneEvent)
+            {
+                turnedAt = t;
+                h.Sim.Mount.RotatorTurning = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+            else if (turnedAt is { } at && stoppedAt is null && t > at + 15)
+            {
+                stoppedAt = t;
+                h.Sim.Mount.RotatorTurning = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(10));
+
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(2, "one restart for the turn");
+        h.Seconds(starts[1].Timestamp).Should().BeGreaterThan(stoppedAt!.Value);
+        h.Events.OfType<GuideStepEvent>().Where(g => h.Seconds(g.Timestamp) > turnedAt!.Value + 3 && h.Seconds(g.Timestamp) < stoppedAt.Value)
+            .Should().BeEmpty("no corrections while it turns");
+        h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.RotatorTurnedGuideCamera && a.Detail!.Contains("turned by -40.0°"));
+        CalibrationErrorDeg(h).Should().BeInRange(-2, 2);
+    }
+
+    /// <summary>
+    /// A rotation right after a meridian flip (NINA's "rotate image after flip") restarts guiding before the post-flip Dec
+    /// self-check has seen a frame. The restart resets the self-check, but the flip time survives it, so the first Dec
+    /// runaway still inverts a wrong Dec-flip setting instead of stopping guiding.
+    /// </summary>
+    [Test]
+    public async Task Rotation_after_a_flip_keeps_the_flip_time_for_the_dec_runaway_check()
+    {
+        var scenario = SimulatorScenario.GoodMount with
+        {
+            Mount = SimulatorScenario.GoodMount.Mount with { DecGuideReversedOnWestPier = false, DecDriftArcsecPerMin = 3 },
+        };
+        var h = new Harness(scenario, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes });
+        h.Sim.Mount.RotatorAngleDeg = 0;
+        Task<SettleResult>? second = null;
+        bool rotated = false;
+        double? turnedAt = null;
+        double? stoppedAt = null;
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (second is null && e is SettleDoneEvent)
+            {
+                h.Guider.StopGuiding();
+                h.Sim.Mount.MeridianFlip();
+                second = h.Guider.StartGuidingAsync(Settle);
+            }
+            else if (second is not null && !rotated && e is StartGuidingEvent)
+            {
+                rotated = true;
+                turnedAt = t;
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 180;
+                h.Sim.Camera.RotateCamera(-180);
+            }
+            else if (turnedAt is { } at && stoppedAt is null && t > at + 15)
+            {
+                stoppedAt = t;
+                h.Sim.Mount.RotatorMoving = false;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(15));
+
+        (await second!).Success.Should().BeTrue();
+        var starts = h.Events.OfType<StartGuidingEvent>().ToList();
+        starts.Should().HaveCount(3, "the first start, the start after the flip, the restart");
+        var corrected = h.Events.OfType<AlertEvent>().Should().ContainSingle(a => a.Code == GuideErrorCode.DecFlipCorrected).Subject;
+        h.Seconds(corrected.Timestamp).Should().BeGreaterThan(h.Seconds(starts[2].Timestamp), "corrected in the restarted run");
+        h.Guider.Settings.DecFlipRequired.Should().BeTrue();
+        h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
+        h.Sim.TruePointingError(h.Clock.Elapsed.TotalSeconds).Dec.Should().BeInRange(-5, 5);
+    }
+
+    // guide frames that sent corrections after t
+    private static int GuideStepsAfter(Harness h, DateTimeOffset t) =>
+        h.Events.OfType<GuideStepEvent>().Count(g => g.Timestamp > t && !g.IsSettling);
+
+    // how far the calibration's RA angle is from the simulated camera's (degrees): East pulses move the star against the
+    // camera's +RA direction, which turns by 180° on pier side West (SimulatedCamera)
+    private static double CalibrationErrorDeg(Harness h)
+    {
+        bool west = h.Sim.Mount.GetSnapshot().PierSide == PierSide.West;
+        double truth = MountTransform.Radians(h.Sim.Camera.CameraAngleDeg + (west ? 0 : 180));
+        return MountTransform.Degrees(MountTransform.NormAngle(h.Guider.Calibration!.XAngle - truth));
     }
 
     // the Dec backlash play model, measured again after a flip (it needs Predictive in Dec)

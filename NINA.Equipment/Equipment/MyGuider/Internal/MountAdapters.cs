@@ -13,19 +13,38 @@ using NINA.Core.Utility;
 using NINA.Equipment.Equipment.MyTelescope;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
-using NINA.INDI;
+using NINA.GuideEngine.Calibration;
 using NINA.GuideEngine.Core;
+using NINA.INDI;
 using NinaPierSide = NINA.Core.Enum.PierSide;
 using PierSide = NINA.GuideEngine.Core.PierSide;
 
 namespace NINA.Equipment.Equipment.MyGuider.Internal;
 
+/// <summary>A rotator's mechanical angle (degrees) and whether its driver reports it moving.</summary>
+internal readonly record struct RotatorReading(double MechanicalDeg, bool IsMoving);
+
 /// <summary>Mount state from NINA's telescope mediator.</summary>
 /// <param name="clock">Time for the computed sidereal time and the log window (tests pass a fixed one).</param>
+/// <param name="rotator">The rotator's state, null without a connected rotator or a readable angle.</param>
+/// <param name="rotatorSettle">
+/// How long after its angle last changed the rotator still counts as turning. NINA polls the rotator, so a driver that
+/// reports the end of a move late, or not at all, would otherwise look stopped between two polls.
+/// </param>
 internal sealed class NinaMountState(ITelescopeMediator telescope, Func<bool>? pauseWhenSlewing = null, Func<bool>? pauseWhenTrackingOff = null,
-    bool mountOptional = false, IClock? clock = null) : IMountState
+    bool mountOptional = false, IClock? clock = null, Func<RotatorReading?>? rotator = null, TimeSpan? rotatorSettle = null) : IMountState
 {
     public const double SiderealArcsecPerSec = 15.041;
+
+    /// <summary>The largest change of the rotator angle that does not count as a move (degrees).</summary>
+    public const double RotatorChangeDeg = 0.05;
+
+    /// <summary>
+    /// An angle change seen across a longer gap between two reads does not count as turning: no guide frames were taken
+    /// (e.g. while NINA centered and rotated with guiding stopped), so the move is over unless the driver says otherwise.
+    /// Well above the frame spacing of long guide exposures, which see every change across a gap of several seconds.
+    /// </summary>
+    public static readonly TimeSpan RotatorReadGapLimit = TimeSpan.FromSeconds(60);
 
     /// <summary>Most slewing/tracking changes logged per <see cref="LogWindow"/>: enough to show a pattern, without flooding the log.</summary>
     private const int MaxLoggedChanges = 30;
@@ -34,6 +53,13 @@ internal sealed class NinaMountState(ITelescopeMediator telescope, Func<bool>? p
     private static readonly TimeSpan LogWindow = TimeSpan.FromMinutes(10);
 
     private readonly IClock clock = clock ?? SystemClock.Instance;
+    private readonly TimeSpan rotatorSettle = rotatorSettle ?? TimeSpan.FromSeconds(4);
+    private readonly object rotatorGate = new();
+
+    // the angle at the last change that counted (so a slow turn adds up), when it changed, and when the angle was last read
+    private double? rotatorAnchorAngle;
+    private DateTimeOffset rotatorChangedAt = DateTimeOffset.MinValue;
+    private DateTimeOffset? rotatorReadAt;
     private bool? lastSlewing;
     private bool? lastTracking;
     private DateTimeOffset logWindowStart = DateTimeOffset.MinValue;
@@ -47,12 +73,27 @@ internal sealed class NinaMountState(ITelescopeMediator telescope, Func<bool>? p
             LogStateChange(info);
         }
 
+        var (rotatorAngle, rotatorMoving, rotatorTurning) = ReadRotator();
         if (info is null || !info.Connected)
         {
             // ST4 guiding works without a mount connection; pier side/declination are then unknown
             return mountOptional
-                ? new MountSnapshot { IsConnected = true, IsTracking = true, PierSide = PierSide.Unknown }
-                : new MountSnapshot { IsConnected = false };
+                ? new MountSnapshot
+                {
+                    IsConnected = true,
+                    IsTracking = true,
+                    PierSide = PierSide.Unknown,
+                    RotatorAngleDeg = rotatorAngle,
+                    RotatorMoving = rotatorMoving,
+                    RotatorTurning = rotatorTurning,
+                }
+                : new MountSnapshot
+                {
+                    IsConnected = false,
+                    RotatorAngleDeg = rotatorAngle,
+                    RotatorMoving = rotatorMoving,
+                    RotatorTurning = rotatorTurning,
+                };
         }
 
         static double? Rate(double arcsecPerSec) => double.IsNaN(arcsecPerSec) || arcsecPerSec <= 0 ? null : arcsecPerSec / SiderealArcsecPerSec;
@@ -75,7 +116,48 @@ internal sealed class NinaMountState(ITelescopeMediator telescope, Func<bool>? p
             IsTracking = info.TrackingEnabled || !(pauseWhenTrackingOff?.Invoke() ?? true),
             GuideRateRa = Rate(info.GuideRateRightAscensionArcsecPerSec),
             GuideRateDec = Rate(info.GuideRateDeclinationArcsecPerSec),
+            RotatorAngleDeg = rotatorAngle,
+            RotatorMoving = rotatorMoving,
+            RotatorTurning = rotatorTurning,
         };
+    }
+
+    // the angle, whether the driver reports the rotator moving, and whether the angle changed within the settle time
+    private (double? Angle, bool Moving, bool Turning) ReadRotator()
+    {
+        if (rotator?.Invoke() is not { } r)
+        {
+            return (null, false, false);
+        }
+
+        var now = clock.UtcNow;
+        lock (rotatorGate)
+        {
+            if (rotatorAnchorAngle is not { } anchor)
+            {
+                rotatorAnchorAngle = r.MechanicalDeg;
+            }
+            else
+            {
+                double change = MountTransform.Norm(r.MechanicalDeg - anchor, -180.0, 180.0);
+                if (Math.Abs(change) > RotatorChangeDeg)
+                {
+                    rotatorAnchorAngle = r.MechanicalDeg;
+
+                    // seen between two guide frames it may still be turning, also with long guide exposures; after a long
+                    // gap (no guide frames, e.g. while NINA centers and rotates with guiding stopped) the move is over
+                    // unless the driver says so
+                    var gapLimit = rotatorSettle > RotatorReadGapLimit ? rotatorSettle : RotatorReadGapLimit;
+                    if (rotatorReadAt is { } readAt && now - readAt <= gapLimit)
+                    {
+                        rotatorChangedAt = now;
+                    }
+                }
+            }
+
+            rotatorReadAt = now;
+            return (r.MechanicalDeg, r.IsMoving, now - rotatorChangedAt < rotatorSettle);
+        }
     }
 
     // the mount's own sidereal time (its RA follows its clock); the computer's for a driver that doesn't report one (INDI: -1)
