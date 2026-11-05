@@ -208,24 +208,24 @@ Guider settings (group "Incidents"; the simulator ones only when the guide camer
 
 An `action` setting with `Options` renders one button per option; `TrySetSetting(name, option)` runs it.
 
-## 4. HTTP API (Touch-N-Stars, /api/native-guider)
+## 4. HTTP API (Touch-N-Stars, /api/internal-guider)
 
-Same envelope and status codes as the rest of the native-guider API (camelCase, `{ success, response }`, 409
+Same envelope and status codes as the rest of the internal-guider API (camelCase, `{ success, response }`, 409
 NotAvailable, 404 when unknown).
 
 | Method | Path | Response |
 |---|---|---|
-| GET | `/native-guider/incidents` | `AdvancedIncidentList` |
-| GET | `/native-guider/incidents/{id}` | `AdvancedIncident` (all frames' telemetry) |
-| GET | `/native-guider/incidents/{id}/image?kind=context\|key&frame=N&maxWidth=1024&stretch=0.2&quality=80` | JPEG, rendered like `/image` (server-side STF stretch); headers X-Frame-Number, X-Image-Binning, X-Image-X0/Y0, X-Frame-Width/Height (image pixels) |
-| GET | `/native-guider/incidents/{id}/crops?frame=N` | `{ frame, crops: [{ star, x0, y0, width, height, pixels[] }] }` (raw 16-bit, like frame-info's crops) |
-| POST | `/native-guider/incidents/{id}/keep` body `{ kept: bool }` | the updated `AdvancedIncidentSummary` |
-| DELETE | `/native-guider/incidents/{id}` | `{ deleted: true }` |
-| DELETE | `/native-guider/incidents` | `{ deleted: n }` (all not kept) |
-| POST | `/native-guider/incidents/mark` body `{ note? }` | `{ id }`, 409 Rejected with the error when refused |
-| GET | `/native-guider/incidents/{id}/download` | `application/zip`, `Content-Disposition: attachment; filename="pins-incident-<id>.zip"` |
+| GET | `/internal-guider/incidents` | `AdvancedIncidentList` |
+| GET | `/internal-guider/incidents/{id}` | `AdvancedIncident` (all frames' telemetry) |
+| GET | `/internal-guider/incidents/{id}/image?kind=context\|key&frame=N&maxWidth=1024&stretch=0.2&quality=80` | JPEG, rendered like `/image` (server-side STF stretch); headers X-Frame-Number, X-Image-Binning, X-Image-X0/Y0, X-Frame-Width/Height (image pixels) |
+| GET | `/internal-guider/incidents/{id}/crops?frame=N` | `{ frame, crops: [{ star, x0, y0, width, height, pixels[] }] }` (raw 16-bit, like frame-info's crops) |
+| POST | `/internal-guider/incidents/{id}/keep` body `{ kept: bool }` | the updated `AdvancedIncidentSummary` |
+| DELETE | `/internal-guider/incidents/{id}` | `{ deleted: true }` |
+| DELETE | `/internal-guider/incidents` | `{ deleted: n }` (all not kept) |
+| POST | `/internal-guider/incidents/mark` body `{ note? }` | `{ id }`, 409 Rejected with the error when refused |
+| GET | `/internal-guider/incidents/{id}/download` | `application/zip`, `Content-Disposition: attachment; filename="pins-incident-<id>.zip"` |
 
-WebSocket `/ws/native-guider`: message type `incident` with `{ action, id, summary }`; `alert` messages carry
+WebSocket `/ws/internal-guider`: message type `incident` with `{ action, id, summary }`; `alert` messages carry
 `incidentId`.
 
 ## 5. Frontend (Touch-N-Stars, src/components/guider/native)

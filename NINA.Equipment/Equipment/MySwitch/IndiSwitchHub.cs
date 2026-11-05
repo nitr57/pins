@@ -86,7 +86,11 @@ namespace NINA.Equipment.Equipment.MySwitch {
         }
 
         protected override void PostDisconnect() {
-            GetInstance().ValuesUpdated -= OnIndiValuesUpdated;
+            // not GetInstance(): after a disconnect disposed the device, a second one created and registered a new hub
+            var current = device;
+            if (current != null) {
+                current.ValuesUpdated -= OnIndiValuesUpdated;
+            }
             Switches = new AsyncObservableCollection<ISwitch>();
         }
 

@@ -1521,7 +1521,14 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                     Logger.Debug($"InternalGuider: Predictive {n.Axis} {n.Kind.ToString().ToLowerInvariant()}: {n.Message}");
                     break;
                 case EngineFaultEvent f:
-                    Logger.Error($"InternalGuider: engine fault in {f.Source}, guiding continues: {f.Message} ({f.Suppressed} more since the last report)");
+                    if (f.Fatal)
+                    {
+                        Logger.Error($"InternalGuider: engine fault in {f.Source}, the guider stopped: {f.Details ?? f.Message}");
+                    }
+                    else
+                    {
+                        Logger.Error($"InternalGuider: engine fault in {f.Source}, guiding continues: {f.Details ?? f.Message} ({f.Suppressed} more since the last report)");
+                    }
                     break;
                 case DecDirectionNoteEvent d:
                     Logger.Debug($"InternalGuider: Dec direction {d.Kind.ToString().ToLowerInvariant()}: {d.Message}");

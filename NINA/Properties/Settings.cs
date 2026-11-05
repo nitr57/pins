@@ -30,22 +30,14 @@ namespace NINA.Properties
     public class Settings
     {
 
-        private static Settings _default;
+        // thread-safe: two threads reading Default at start could each load an instance, and the settings changed
+        // through one were overwritten by the next save of the other
+        private static readonly Lazy<Settings> _default = new(Load);
 
         /// <summary>
         /// Singleton instance for WPF-style Settings.Default access
         /// </summary>
-        public static Settings Default
-        {
-            get
-            {
-                if (_default == null)
-                {
-                    _default = Load();
-                }
-                return _default;
-            }
-        }
+        public static Settings Default => _default.Value;
 
         /// <summary>
         /// Whether the sidebar is collapsed

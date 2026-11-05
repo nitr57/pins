@@ -275,7 +275,18 @@ public sealed class GuidingCoach
         return (range?.GainMin, range?.GainMax, current);
     }
 
-    private static CoachOptions Normalize(CoachOptions o)
+    // Upper limits: the options come from clients, and a typo (driftSeconds 36000, an exposure of 600 s) kept the guider
+    // from guiding for hours. The drift limit leaves room for the longest periodic error the drift analysis looks for
+    // (DriftAnalyzer.MaxPeriodSeconds × MinPeriodsCovered); the exposure range is the internal guider's exposure
+    // setting's; the list lengths stop runaway lists, not a long camera check (exposures × gains × frames × exposure,
+    // which the user can cancel).
+    internal const double MaxDriftSeconds = 1800;
+    internal const double MaxTrialSeconds = 600;
+    internal const double MinExposureSeconds = 0.01;
+    internal const double MaxExposureSeconds = 30;
+    internal const int MaxListLength = 12; // as many as the app's chip lists take
+
+    internal static CoachOptions Normalize(CoachOptions o)
     {
         var steps = o.Steps.Count == 0
             ? CoachStepNames.All
@@ -283,10 +294,18 @@ public sealed class GuidingCoach
         return o with
         {
             Steps = steps,
-            ExposureSeconds = o.ExposureSeconds.Where(e => e > 0 && double.IsFinite(e)).Distinct().ToList(),
+
+            // clamped, not dropped: dropping every requested exposure fell back to the defaults without a word
+            ExposureSeconds = o.ExposureSeconds
+                .Where(e => e > 0 && double.IsFinite(e))
+                .Select(e => Math.Clamp(e, MinExposureSeconds, MaxExposureSeconds))
+                .Distinct()
+                .Take(MaxListLength)
+                .ToList(),
+            Gains = o.Gains.Distinct().Take(MaxListLength).ToList(),
             FramesPerCombination = Math.Clamp(o.FramesPerCombination, 3, 50),
-            DriftSeconds = Math.Max(120, double.IsFinite(o.DriftSeconds) ? o.DriftSeconds : 180),
-            TrialSeconds = Math.Max(30, double.IsFinite(o.TrialSeconds) ? o.TrialSeconds : 120),
+            DriftSeconds = Math.Clamp(double.IsFinite(o.DriftSeconds) ? o.DriftSeconds : 180, 120, MaxDriftSeconds),
+            TrialSeconds = Math.Clamp(double.IsFinite(o.TrialSeconds) ? o.TrialSeconds : 120, 30, MaxTrialSeconds),
         };
     }
 
@@ -1150,11 +1169,14 @@ public sealed class GuidingCoach
                     tooLong ? [Change(CoachSettingNames.ExposureSeconds, CoachSettingsMap.Format(suggested))] : []));
             }
 
-            double pae = a.PolarAlignmentErrorArcmin;
-            string paSeverity = pae < 3 ? CoachSeverities.Good : pae < 5 ? CoachSeverities.Info : pae < 10 ? CoachSeverities.Warning : CoachSeverities.Problem;
-            AddFinding(CoachFindings.Create(CoachCodes.DriftPolarAlignment, CoachStepNames.Drift, paSeverity, ts,
-                new() { ["arcmin"] = Math.Round(pae, 2), ["decAssumed"] = a.DeclinationAssumed, ["driftArcsecPerMin"] = Math.Round(a.DecDriftArcsecPerMin, 3) },
-                pae >= 5 ? Math.Abs(a.DecDriftArcsecPerMin) / 60 * exposureSeconds / 2 + 0.02 * pae : null));
+            // none near the pole, where the drift says nothing usable about the polar alignment
+            if (a.PolarAlignmentErrorArcmin is double pae)
+            {
+                string paSeverity = pae < 3 ? CoachSeverities.Good : pae < 5 ? CoachSeverities.Info : pae < 10 ? CoachSeverities.Warning : CoachSeverities.Problem;
+                AddFinding(CoachFindings.Create(CoachCodes.DriftPolarAlignment, CoachStepNames.Drift, paSeverity, ts,
+                    new() { ["arcmin"] = Math.Round(pae, 2), ["decAssumed"] = a.DeclinationAssumed, ["driftArcsecPerMin"] = Math.Round(a.DecDriftArcsecPerMin, 3) },
+                    pae >= 5 ? Math.Abs(a.DecDriftArcsecPerMin) / 60 * exposureSeconds / 2 + 0.02 * pae : null));
+            }
 
             if (a.GustPercent > 2)
             {

@@ -11,18 +11,18 @@ public sealed record CoachOptions
     /// <summary>Steps to run: CameraCheck, Drift, MountResponse, Trials (the report is always built). Empty = all.</summary>
     public IReadOnlyList<string> Steps { get; init; } = [];
 
-    /// <summary>Camera check exposures in seconds; empty = 1, 2, 3 s.</summary>
+    /// <summary>Camera check exposures in seconds (clamped to 0.01..30, at most 12); empty = 1, 2, 3 s.</summary>
     public IReadOnlyList<double> ExposureSeconds { get; init; } = [];
 
-    /// <summary>Camera check gains; empty = current gain plus two spread over the camera's gain range (current only without a range).</summary>
+    /// <summary>Camera check gains (at most 12); empty = current gain plus two spread over the camera's gain range (current only without a range).</summary>
     public IReadOnlyList<int> Gains { get; init; } = [];
 
     public int FramesPerCombination { get; init; } = 5;
 
-    /// <summary>Drift measurement duration (seconds, at least 120).</summary>
+    /// <summary>Drift measurement duration (seconds, 120..1800).</summary>
     public double DriftSeconds { get; init; } = 180;
 
-    /// <summary>Guided time per trial (seconds, at least 30), after settling.</summary>
+    /// <summary>Guided time per trial (seconds, 30..600), after settling.</summary>
     public double TrialSeconds { get; init; } = 120;
 
     /// <summary>Guide with the current settings again at the end of the trials to detect changing conditions.</summary>

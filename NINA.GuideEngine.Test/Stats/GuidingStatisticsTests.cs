@@ -107,6 +107,21 @@ public class GuidingStatisticsTests
         w.PolarAlignmentDecAssumed.Should().BeTrue();
     }
 
+    [TestCase(85.5)]
+    [TestCase(-89.0)]
+    public void PolarAlignmentIsNotEstimatedNearThePole(double declination)
+    {
+        // the formula divides by cos(dec): 0.5 px/min at 2″/px gave about 438′ at 89°
+        double perFrame = 0.5 / 30.0;
+        var gs = new GuidingStatistics(100, pixelScale: 2.0) { DeclinationDeg = declination };
+        gs.Start(T0);
+        for (int i = 0; i < 60; i++)
+            gs.Add(S(i, 0.1, perFrame, decCorr: perFrame, raCorr: 0.1 - 0.05));
+        var w = gs.GetSnapshot(T0.AddMinutes(2)).Window;
+        w.DecDriftPxPerMin.Should().BeApproximately(0.5, 1e-9, "the drift itself is still reported");
+        w.PolarAlignmentErrorArcmin.Should().BeNull();
+    }
+
     [Test]
     public void DitherLockJumpDoesNotCreateDrift()
     {

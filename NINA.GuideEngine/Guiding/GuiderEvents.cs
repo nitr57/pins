@@ -369,10 +369,17 @@ public sealed record IncidentDeletedEvent(DateTimeOffset Timestamp, string Id) :
 /// <summary>
 /// An engine component failed and the guider carried on without it (the flight recorder, the incident diagnosis, a
 /// Coach callback): <see cref="Source"/> names the component, <see cref="Message"/> the exception. At most one per source
-/// and minute; <see cref="Suppressed"/> counts the faults of that source left out since its last report. Hosts log it.
-/// Not part of PHD2's event set.
+/// and minute; <see cref="Suppressed"/> counts the faults of that source left out since its last report. A crash of the
+/// guide loop itself is reported too, every time and with <see cref="Fatal"/> set: the guider stopped with an Internal
+/// alert. Hosts log it. Not part of PHD2's event set.
 /// </summary>
 public sealed record EngineFaultEvent(DateTimeOffset Timestamp, string Source, string Message, int Suppressed = 0) : GuiderEvent(Timestamp)
 {
     public override string Phd2Name => "EngineFault";
+
+    /// <summary>The whole exception (type, message, stack trace) for the host's log; null when unknown.</summary>
+    public string? Details { get; init; }
+
+    /// <summary>The guider stopped (the guide loop crashed) instead of carrying on.</summary>
+    public bool Fatal { get; init; }
 }

@@ -760,7 +760,12 @@ public sealed partial class Guider : IAsyncDisposable
         }
         catch (Exception ex)
         {
-            Fail(GuideErrorCode.Internal, ex.Message);
+            // The alert only carried the message ("Object reference not set..."), which a submitted log cannot be
+            // diagnosed from: the host logs the type and stack trace of this fault. Emitted directly, not through the
+            // per-source rate limit, so a second crash right after a restart is logged as well.
+            string message = $"{ex.GetType().Name}: {ex.Message}";
+            Emit(new EngineFaultEvent(clock.UtcNow, "Guider.Loop", message) { Details = ex.ToString(), Fatal = true });
+            Fail(GuideErrorCode.Internal, message);
         }
         finally
         {
@@ -1336,6 +1341,7 @@ public sealed partial class Guider : IAsyncDisposable
         UseCalibration(adj);
         ResetGuidingRuntime();
         corrector.GuidingStarted();
+        nonFiniteFrames = 0;
         corrector.SetGuidingEnabled(true, now);
         ResetDecDirection("guiding started");
         stats.Start(now);
@@ -1382,6 +1388,10 @@ public sealed partial class Guider : IAsyncDisposable
 
     #region guiding
 
+    // frames whose offset was not a finite number since the last one that was; the guider stops at MaxNonFiniteFrames
+    private int nonFiniteFrames;
+    private const int MaxNonFiniteFrames = 10;
+
     private MultiStarFrameResult GuidingFrame(GuideFrame frame, MountSnapshot snapshot, DateTimeOffset now, Stopwatch sw, out IReadOnlyList<PulseCommand> pulses)
     {
         pulses = [];
@@ -1406,8 +1416,33 @@ public sealed partial class Guider : IAsyncDisposable
         pulseModelRates = (t.XRate, t.YRate);
         var rates = PulseRates(t);
 
-        if (r.StarFound && r.HasOffset)
+        // An offset that is not a finite number: no known source (a calibration that is not a number is refused when
+        // guiding starts); defensive. It went on to the reacquire handling, the coach measurement, the response and pulse
+        // models, the guide algorithms (which stopped correcting the axis until the next reset) and the guide step event.
+        // The tracker has already taken it into its distance averages, which are restarted.
+        var mountOfs = r.StarFound && r.HasOffset ? t.CameraToMount(r.CameraOffset) : GuidePoint.Invalid;
+        bool nonFiniteOffset = r.StarFound && r.HasOffset
+            && !(double.IsFinite(r.CameraOffset.X) && double.IsFinite(r.CameraOffset.Y) && double.IsFinite(mountOfs.X) && double.IsFinite(mountOfs.Y));
+        if (nonFiniteOffset)
         {
+            // skipped like a rejected jump (no pulse, the models skip the frame), and settling goes on below; a NaN kept
+            // the averages NaN, so settling never succeeded and jumps were no longer rejected after the cause was gone
+            response.NoPulse();
+            pulseModel.Interrupt(mountMoved: paused || measuring);
+            tracker.Distances.NeedReset = true;
+            ReportFault("Guider.NonFiniteOffset", new ArithmeticException(
+                FormattableString.Invariant($"non-finite mount offset ({mountOfs.X}, {mountOfs.Y}) from the camera offset ({r.CameraOffset.X}, {r.CameraOffset.Y})")));
+
+            // a lasting cause would otherwise leave the guider "guiding" without corrections
+            if (++nonFiniteFrames >= MaxNonFiniteFrames)
+            {
+                Fail(GuideErrorCode.Internal, $"{nonFiniteFrames} frames without a usable offset (not a finite number) since the last good one");
+                return r;
+            }
+        }
+        else if (r.StarFound && r.HasOffset)
+        {
+            nonFiniteFrames = 0;
             if (reacquire.IsActive)
             {
                 reacquire.Reset();
@@ -1429,7 +1464,6 @@ public sealed partial class Guider : IAsyncDisposable
                 lastStarPosition = r.Primary.Position;
             }
 
-            var mountOfs = t.CameraToMount(r.CameraOffset);
             double? sigma = MeasurementUncertainty.FrameSigmaPx(r, tracker.FinderOptions.FindMode);
             if (measuring)
             {

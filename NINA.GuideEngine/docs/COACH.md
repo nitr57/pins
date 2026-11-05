@@ -152,7 +152,7 @@ lower RA aggression), `hint.raSluggish` (index < 0.15 with large RMS → raise a
   tests with the closed-loop simulator in virtual time.
 * Host (`InternalGuider`): `IAdvancedGuider` Coach members → engine; applies recommendations to the guider settings; stores
   reports as JSON (`~/.local/share/NINA/InternalGuider/Coach/`); provides the imaging scale and gain range.
-* TNS: plugin API `/api/native-guider/coach/*` + WebSocket event types `coach` and `hint`; a *Coach* tab on
+* TNS: plugin API `/api/internal-guider/coach/*` + WebSocket event types `coach` and `hint`; a *Coach* tab on
   the internal guider page (step selection, live step views, report card, history) and a hint chip in the state
   strip. All finding codes have localized texts: title, explanation (why it matters) and how to fix.
 

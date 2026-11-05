@@ -604,7 +604,7 @@ namespace NINA.INDI.Devices {
                     //
                     // INDI convention: OFFSET = hours EAST of UTC (e.g. +2 for CEST).
                     // The LX200 sign inversion is handled inside the driver.
-                    var utcString = value.ToString("yyyy-MM-ddTHH:mm:ss");
+                    var utcString = value.ToString("yyyy-MM-ddTHH:mm:ss", System.Globalization.CultureInfo.InvariantCulture);
                     var utcOffsetHours = TimeZoneInfo.Local.GetUtcOffset(value).TotalHours;
                     var offsetString = utcOffsetHours.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
                     SetTextValues("TIME_UTC", ("UTC", utcString), ("OFFSET", offsetString));

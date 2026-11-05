@@ -97,6 +97,33 @@ public class CoachAnalysisTests
         var unknown = DriftAnalyzer.Analyze(samples, 2.0, 2.0, null)!;
         unknown.DeclinationAssumed.Should().BeTrue();
         unknown.PolarAlignmentErrorArcmin.Should().BeApproximately(3.82, 0.4, "dec 0 is assumed");
+
+        // the same limit as the guiding statistics: none near the pole (cos(dec) was floored at 0.05, about 87°)
+        DriftAnalyzer.Analyze(samples, 2.0, 2.0, 86)!.PolarAlignmentErrorArcmin.Should().BeNull();
+        DriftAnalyzer.Analyze(samples, 2.0, 2.0, 84)!.PolarAlignmentErrorArcmin.Should().BeApproximately(3.8197 / Math.Cos(84 * Math.PI / 180), 0.15 * 3.8197 / Math.Cos(84 * Math.PI / 180));
+    }
+
+    [Test]
+    public void Coach_options_are_limited()
+    {
+        var o = GuidingCoach.Normalize(new CoachOptions
+        {
+            DriftSeconds = 36000,
+            TrialSeconds = 5000,
+            ExposureSeconds = [600, 0.001, -1, double.NaN, 2, 2],
+            Gains = Enumerable.Range(0, 25).ToList(),
+        });
+
+        o.DriftSeconds.Should().Be(GuidingCoach.MaxDriftSeconds);
+        o.TrialSeconds.Should().Be(GuidingCoach.MaxTrialSeconds);
+        o.ExposureSeconds.Should().Equal([GuidingCoach.MaxExposureSeconds, GuidingCoach.MinExposureSeconds, 2.0], "clamped, not dropped (all dropped fell back to the defaults)");
+        o.Gains.Should().HaveCount(GuidingCoach.MaxListLength);
+
+        var low = GuidingCoach.Normalize(new CoachOptions { DriftSeconds = 10, TrialSeconds = 1 });
+        low.DriftSeconds.Should().Be(120);
+        low.TrialSeconds.Should().Be(30);
+
+        GuidingCoach.MaxDriftSeconds.Should().BeGreaterThanOrEqualTo(DriftAnalyzer.MaxPeriodSeconds * DriftAnalyzer.MinPeriodsCovered, "the longest period the drift analysis looks for must fit");
     }
 
     [Test]

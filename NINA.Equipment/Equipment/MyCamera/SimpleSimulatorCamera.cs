@@ -300,6 +300,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         public void AbortExposure() {
+            CameraState = CameraStates.Idle;
         }
 
         public Task<bool> Connect(CancellationToken token) {
@@ -323,14 +324,19 @@ namespace NINA.Equipment.Equipment.MyCamera {
         public async Task<IExposureData> DownloadExposure(CancellationToken token) {
             try {
                 CameraState = CameraStates.LoadingFile;
+                var fitsPath = System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile), "simulator.fits");
+                if (!System.IO.File.Exists(fitsPath)) {
+                    // the retries only help while the file is being written
+                    throw new System.IO.FileNotFoundException($"The simulator camera reads its image from {fitsPath}, which does not exist", fitsPath);
+                }
+
                 var tries = 0;
                 while (true) {
                     tries++;
                     try {
                         // Determine if the file contains Bayer data based on sensor type
                         bool isBayered = _sensorType != SensorType.Monochrome && _sensorType != SensorType.Color;
-                        
-                        var fitsPath = System.IO.Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile), "simulator.fits");
+
                         var image = await imageDataFactory.CreateFromFile(fitsPath, 16, isBayered, profileService.ActiveProfile.CameraSettings.RawConverter, token);
                         return exposureDataFactory.CreateCachedExposureData(image);
                     } catch (Exception ex) {
@@ -342,7 +348,8 @@ namespace NINA.Equipment.Equipment.MyCamera {
                     }
                 }
             } finally {
-                CameraState = CameraStates.LoadingFile;
+                // it stayed in LoadingFile, which the app showed for good
+                CameraState = CameraStates.Idle;
             }
         }
 

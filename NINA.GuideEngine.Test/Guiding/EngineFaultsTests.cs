@@ -36,6 +36,25 @@ public class EngineFaultsTests
     }
 
     [Test]
+    public void A_report_carries_the_whole_exception_for_the_log()
+    {
+        Exception thrown;
+        try
+        {
+            throw new InvalidOperationException("broken");
+        }
+        catch (Exception ex)
+        {
+            thrown = ex;
+        }
+
+        var report = new EngineFaults().Report(T0, "A", thrown);
+        report!.Details.Should().Contain("System.InvalidOperationException: broken")
+            .And.Contain(nameof(A_report_carries_the_whole_exception_for_the_log), "the stack trace");
+        report.Fatal.Should().BeFalse();
+    }
+
+    [Test]
     public void A_clock_that_went_back_does_not_silence_a_source()
     {
         var faults = new EngineFaults();

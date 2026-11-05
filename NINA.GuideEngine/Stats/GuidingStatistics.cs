@@ -196,6 +196,12 @@ public sealed class GuidingStatistics
     /// <summary>Barrett's constant relating Dec drift (px/min·″/px) to polar misalignment (arcmin).</summary>
     public const double PolarAlignmentFactor = 3.8197;
 
+    /// <summary>
+    /// Above this declination (either hemisphere) no polar alignment error is estimated: the formula divides by cos(dec)
+    /// and gave thousands of arcminutes near the pole. PHD2's guiding assistant has no such limit.
+    /// </summary>
+    public const double PolarAlignmentMaxDeclinationDeg = 85.0;
+
     private readonly Queue<GuideStepSample> allWindow = new();
     private readonly Queue<GuideStepSample> includedWindow = new();
     private WindowedAxisStats winRa;
@@ -396,7 +402,7 @@ public sealed class GuidingStatistics
 
         double? pae = null;
         bool decAssumed = DeclinationDeg is null;
-        if (driftDec is double dd)
+        if (driftDec is double dd && !(DeclinationDeg is double decDeg && Math.Abs(decDeg) > PolarAlignmentMaxDeclinationDeg))
         {
             // polar alignment error from Barrett:
             // http://celestialwonders.com/articles/polaralignment/PolarAlignmentAccuracy.pdf

@@ -26,7 +26,7 @@ namespace NINA.Test.FlatDevice {
     /// WandererCover's open/close wait against scripted cover states (0 = closed, 1 = open, 2 = intermediate,
     /// 3 = moving): it succeeds only at the requested end, tolerates the old end within the start grace (before the motor
     /// starts and as a late status after it), and fails on a stop short of it, a cover that never arrives and a status
-    /// read error.
+    /// read error the cover does not tolerate (it goes on after one it does).
     /// </summary>
     [TestFixture]
     public class WandererCoverTest {
@@ -126,6 +126,63 @@ namespace NINA.Test.FlatDevice {
 
             Assert.That(result.Result, Is.EqualTo(WandererCover.CoverMoveResult.StatusError));
             Assert.That(result.Error, Is.EqualTo(WC_ERROR_TYPE.WC_ERROR_COMMUNICATION));
+        }
+
+        [Test]
+        public async Task Open_GoesOnAfterAStatusReadErrorTheCoverTolerates() {
+            var errors = new List<WC_ERROR_TYPE>();
+            var poll = 0;
+            var result = await WandererCover.WaitForCoverStateAsync(
+                () => poll++ switch {
+                    0 => (WC_ERROR_TYPE.WC_SUCCESS, Moving),
+                    1 => (WC_ERROR_TYPE.WC_ERROR_COMMUNICATION, Closed),
+                    2 => (WC_ERROR_TYPE.WC_SUCCESS, Moving),
+                    _ => (WC_ERROR_TYPE.WC_SUCCESS, Open)
+                },
+                Open,
+                Poll,
+                Timeout,
+                StartGrace,
+                CancellationToken.None,
+                error => {
+                    errors.Add(error);
+                    return true;
+                });
+
+            Assert.That(result.Result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+            Assert.That(errors, Is.EqualTo(new[] { WC_ERROR_TYPE.WC_ERROR_COMMUNICATION }));
+        }
+
+        [Test]
+        public async Task Open_TimesOutWhenEveryReadFailsAndTheErrorsAreTolerated() {
+            var poll = 0;
+            var result = await WandererCover.WaitForCoverStateAsync(
+                () => poll++ == 0 ? (WC_ERROR_TYPE.WC_SUCCESS, Moving) : (WC_ERROR_TYPE.WC_ERROR_COMMUNICATION, Closed),
+                Open,
+                Poll,
+                TimeSpan.FromMilliseconds(100),
+                StartGrace,
+                CancellationToken.None,
+                _ => true);
+
+            Assert.That(result.Result, Is.EqualTo(WandererCover.CoverMoveResult.TimedOut), "the polling ends at the timeout");
+            Assert.That(result.State, Is.EqualTo(Moving), "the last state read, not the failed read's");
+        }
+
+        [Test]
+        public async Task Open_FailsOnAStatusReadErrorOnceTheCoverCountsAsLost() {
+            var poll = 0;
+            var result = await WandererCover.WaitForCoverStateAsync(
+                () => poll++ == 0 ? (WC_ERROR_TYPE.WC_SUCCESS, Moving) : (WC_ERROR_TYPE.WC_ERROR_COMMUNICATION, Closed),
+                Open,
+                Poll,
+                Timeout,
+                StartGrace,
+                CancellationToken.None,
+                _ => poll < 4);
+
+            Assert.That(result.Result, Is.EqualTo(WandererCover.CoverMoveResult.StatusError));
+            Assert.That(poll, Is.EqualTo(4));
         }
 
         // The states are reported in this order; the last one repeats

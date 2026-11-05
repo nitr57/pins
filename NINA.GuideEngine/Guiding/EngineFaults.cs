@@ -32,7 +32,7 @@ internal sealed class EngineFaults
             }
 
             sources[source] = (now, 0);
-            return new EngineFaultEvent(now, source, $"{ex.GetType().Name}: {ex.Message}", suppressed);
+            return new EngineFaultEvent(now, source, $"{ex.GetType().Name}: {ex.Message}", suppressed) { Details = ex.ToString() };
         }
     }
 }

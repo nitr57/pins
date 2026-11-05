@@ -204,13 +204,14 @@ public sealed class LiveHintAnalyser
         // reverses (a fixed North or South would not); nothing to change in the one-direction modes
         int north = recent.Count(x => x.DecDirection == GuideDirection.North);
         int south = recent.Count(x => x.DecDirection == GuideDirection.South);
-        if (north + south >= 15 && Math.Max(north, south) >= 0.9 * (north + south))
+        // the hint names the polar alignment error it points to: without one (near the pole) it said "about 0.0′"
+        if (north + south >= 15 && Math.Max(north, south) >= 0.9 * (north + south) && w.PolarAlignmentErrorArcmin is double arcmin)
         {
             var changes = s.DecGuideMode == DecGuideMode.Auto
                 ? new[] { new CoachSettingChange(CoachSettingNames.DecGuideMode, nameof(DecGuideMode.Drift), s.DecGuideMode.ToString()) }
                 : [];
             yield return Hint(CoachCodes.HintDecDrift, CoachSeverities.Info, ts, expires,
-                new() { ["driftArcsecPerMin"] = Math.Round(w.DecDriftArcsecPerMin ?? 0, 2), ["arcmin"] = Math.Round(w.PolarAlignmentErrorArcmin ?? 0, 1) },
+                new() { ["driftArcsecPerMin"] = Math.Round(w.DecDriftArcsecPerMin ?? 0, 2), ["arcmin"] = Math.Round(arcmin, 1) },
                 changes);
         }
 

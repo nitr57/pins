@@ -56,7 +56,8 @@ public sealed record DriftAnalysis
     /// </summary>
     public double? PeriodicOffsetArcsec { get; init; }
 
-    public double PolarAlignmentErrorArcmin { get; init; }
+    /// <summary>Null above <see cref="Stats.GuidingStatistics.PolarAlignmentMaxDeclinationDeg"/>.</summary>
+    public double? PolarAlignmentErrorArcmin { get; init; }
 
     public bool DeclinationAssumed { get; init; }
 
@@ -155,8 +156,10 @@ public static class DriftAnalyzer
         double maxRateArcsec = maxRatePxPerSec * scale;
         double decDriftArcsecPerMin = decSlope * 60 * scale;
         bool decAssumed = declinationDeg is null;
-        double cosDec = Math.Max(0.05, Math.Cos((declinationDeg ?? 0) * Math.PI / 180));
-        double pae = PolarAlignmentFactor * Math.Abs(decDriftArcsecPerMin) / cosDec;
+        // the same limit as the guiding statistics (this one floored cos(dec) at 0.05, about 87°, up to a 20-fold error)
+        double? pae = Math.Abs(declinationDeg ?? 0) > Stats.GuidingStatistics.PolarAlignmentMaxDeclinationDeg
+            ? null
+            : PolarAlignmentFactor * Math.Abs(decDriftArcsecPerMin) / Math.Cos((declinationDeg ?? 0) * Math.PI / 180);
 
         double seeingTotalPx = Math.Sqrt(seeingRa * seeingRa + seeingDec * seeingDec);
         double gust = GustFraction(ra, dec, smoothRa, smoothDec, half, seeingTotalPx);
