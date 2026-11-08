@@ -99,6 +99,7 @@ public static class CoachFindings
             CoachCodes.HintLowSnr => $"The guide star SNR dropped to {V("snr", "0")} (clouds, dew?).",
             CoachCodes.HintDecDrift => $"Dec corrections are one-sided (drift {V("driftArcsecPerMin")}″/min, polar alignment about {V("arcmin", "0.0")}′).",
             CoachCodes.HintSeeingBound => $"Guiding RMS ({V("rmsArcsec")}″) is close to the seeing floor: nothing to tune.",
+            CoachCodes.HintLongExposure => $"Guide exposure {V("exposureSeconds")} s is long: try {V("suggestedSeconds")} s, many mounts guide better with shorter exposures.",
             _ => code,
         };
     }

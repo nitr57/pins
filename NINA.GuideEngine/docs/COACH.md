@@ -27,7 +27,7 @@ A session runs selected steps in this order (all selected by default), then buil
 | 1 CameraCheck | camera; guiding/looping is stopped by the coach | ~2–3 min | exposure × gain sweep (existing settings-finder measurement) |
 | 2 Drift | calibration (the coach calibrates first if needed) and a star | 3 min (min 2) | guiding output off; seeing vs. mount error |
 | 3 MountResponse | calibration | ~1–2 min | Dec backlash, pulse response per direction |
-| 4 Trials | calibration | 4 × 2 min | guided A/B comparison of settings sets |
+| 4 Trials | calibration | 4–5 × 2 min | guided A/B comparison of settings sets |
 | 5 Report | — | — | error budget, grade, ranked actions, history |
 
 Steps can be skipped (`SkipCoachStep`) or the whole session cancelled. A step that cannot run (e.g. no
@@ -102,14 +102,21 @@ Candidate settings sets derived from the previous steps:
   capped by the drift-limiting exposure;
 * **C – variant**: B with the one parameter the coach is least sure about changed (e.g. RA aggression
   ±0.15 or the alternative exposure);
+* **E – shorter exposure** (optional `ExposureTrial`, default on): the current settings with only the exposure
+  shortened to half of it, rounded down to 0.5 s and at least 1 s (2.5 s → 1 s), when the current exposure is 1.5 s or
+  longer. The camera check judges exposures by the star's jitter in unguided frames, where a longer exposure averages
+  more seeing out; what a shorter exposure gains, a faster reaction to the mount's own errors (gear noise, wind), only
+  shows while guiding. Not added when B or C already guide with that exposure or the camera check found it infeasible
+  at the current gain (e.g. SNR too low). The comparison is per guide frame, so the shorter exposure's frames carry more
+  seeing: E wins only when the faster corrections more than make up for that;
 * **A′ – current again** (optional `RepeatBaseline`, default on) to detect changing conditions.
 Each trial: apply temporarily, settle (tolerance from the profile, max 30 s), then guide `TrialSeconds`,
 measure RMS RA/Dec/total, peak, oscillation index, frames. Significance: guide errors are autocorrelated, so each
 trial uses an effective sample size N_eff = N·(1−ρ²)/(1+ρ²) (the AR(1) form for a variance estimate, as RMS values are
 compared) from the lag-1 autocorrelation ρ of its guide-step errors (per axis, ρ clamped to [0, 0.95]; the smaller of the
-two axes is used), and the standard error of its RMS is ≈ RMS/√(2·N_eff). The best alternative (B or C) is declared `trials.winner` only if its improvement over A exceeds
+two axes is used), and the standard error of its RMS is ≈ RMS/√(2·N_eff). The best alternative (B, C or E) is declared `trials.winner` only if its improvement over A exceeds
 2 × the combined standard error of the two RMS values; otherwise `trials.noImprovement` (the current settings
-are as good as the alternatives within the noise; B and C stay applicable as `trial:<id>`). Thin clouds (see [measurement uncertainty](ALGORITHMS.md#measurement-uncertainty)):
+are as good as the alternatives within the noise; B, C and E stay applicable as `trial:<id>`). Thin clouds (see [measurement uncertainty](ALGORITHMS.md#measurement-uncertainty)):
 each frame's centroid uncertainty σ (star size and SNR, `MeasurementUncertainty`) gives a trial's *cloud noise*, the
 σ² of its frames beyond 1.5² × the trial's median σ² averaged over all its frames (RA + Dec, in ″); the improvement must
 also exceed the 2 standard errors with each trial's cloud noise taken out of its RMS (in quadrature). So a cloud over the
@@ -119,7 +126,7 @@ before. If A and A′ differ by > 25 % **and** by more than 2 combined standard 
 finding warns that the comparison is unreliable. Settings are restored at the end (the user applies the winner
 explicitly).
 
-Without a suggestion only A (and A′) are guided: `trials.nothingToTry` {rms, predictive} instead of a winner. Min move,
+Without a suggestion or exposure trial only A (and A′) are guided: `trials.nothingToTry` {rms, predictive} instead of a winner. Min move,
 aggression and hysteresis are never suggested (nor offered in findings) for an axis with the Predictive algorithm, which
 sets its own gain and needs no dead band; with Predictive on both axes the trials only try camera, Dec guide mode and
 backlash changes.
@@ -145,6 +152,11 @@ A lightweight analyser over the guiding statistics window emits dismissable hint
 lower RA aggression), `hint.raSluggish` (index < 0.15 with large RMS → raise aggression),
 `hint.pulseLimited`, `hint.lowSnr`, `hint.decDrift` (one-sided Dec corrections → polar alignment),
 `hint.seeingBound` (RMS close to the seeing floor: settings are fine, seeing limits).
+
+`hint.longExposure` (guide exposure above 2 s → try 1 s) is a one-time hint: raised once per guiding session, it has
+no expiry and goes when the exposure is 2 s or shorter again. Once dismissed or applied it is never raised again: the
+analyser reports it (`PermanentlyDismissed`), the host stores the id in the profile and hands the stored ids back
+(`SetSuppressed`) when it creates the guider.
 
 ## 5. Engine/host/UI split
 * Engine (`NINA.GuideEngine.Coach`): session orchestrator (async, drives the Guider through its public API
@@ -241,6 +253,7 @@ Severity in brackets; `→` = setting changes carried in `Changes`. Parameter un
 | hint.lowSnr | warning | snr | star SNR dropped (clouds, dew) |
 | hint.decDrift | info | driftArcsecPerMin, arcmin | Dec corrections one-sided → polar alignment / DecGuideMode Drift (a change only from Auto) |
 | hint.seeingBound | good | rmsArcsec | RMS near the seeing floor: nothing to tune |
+| hint.longExposure | info | exposureSeconds, suggestedSeconds | exposure above 2 s → ExposureSeconds 1; shown once, never again after dismiss/apply |
 
 ## 8. Engine implementation notes
 

@@ -386,6 +386,20 @@ public sealed class GuidingCoach
 
     private static int Floor10(double ms) => (int)(Math.Floor(ms / 10) * 10);
 
+    /// <summary>
+    /// Exposure of trial E for the current one: half of it rounded down to 0.5 s, at least 1 s (2.5 s → 1 s, 3 s → 1.5 s,
+    /// 4 s → 2 s); null below 1.5 s.
+    /// </summary>
+    internal static double? ShorterTrialExposure(double currentSeconds)
+    {
+        if (!(currentSeconds >= 1.5 - 1e-6))
+        {
+            return null;
+        }
+
+        return Math.Max(1.0, Math.Floor(currentSeconds + 1e-6) / 2);
+    }
+
     /// <summary>A step could not run; becomes a problem finding and a failed step.</summary>
     private sealed class StepFailedException(string code, string? detail = null, Dictionary<string, object?>? parameters = null) : Exception(detail ?? code)
     {
@@ -1530,7 +1544,7 @@ public sealed class GuidingCoach
             }
         }
 
-        /// <summary>Settings sets A (current), B (suggestion), C (variant) and A2 (current again).</summary>
+        /// <summary>Settings sets A (current), B (suggestion), C (variant), E (shorter exposure) and A2 (current again).</summary>
         private List<CoachTrial> TrialSets()
         {
             var s = guider.BaseSettings;
@@ -1547,6 +1561,11 @@ public sealed class GuidingCoach
                 {
                     list.Add(new CoachTrial { Id = CoachTrialIds.C, Kind = CoachTrialKinds.Variant, Settings = c });
                 }
+            }
+
+            if (options.ExposureTrial && ShorterExposure(s, list) is { } e)
+            {
+                list.Add(new CoachTrial { Id = CoachTrialIds.E, Kind = CoachTrialKinds.Exposure, Settings = e });
             }
 
             if (options.RepeatBaseline)
@@ -1689,6 +1708,42 @@ public sealed class GuidingCoach
             _ => true,
         };
 
+        /// <summary>
+        /// Trial E: the current settings with only a shorter exposure. The camera check judges exposures by the star's jitter
+        /// in unguided frames, where a longer exposure averages more seeing out; what a shorter one gains, a faster reaction
+        /// to the mount's own errors (gear noise, wind), only shows while guiding. Null when the exposure is already short,
+        /// another trial already guides with that exposure, or the camera check found it infeasible (e.g. too little SNR).
+        /// </summary>
+        private List<CoachSettingChange>? ShorterExposure(GuiderSettings s, IReadOnlyList<CoachTrial> planned)
+        {
+            double current = Math.Round(s.ExposureMs / 1000.0, 3);
+            if (ShorterTrialExposure(current) is not { } shorter)
+            {
+                return null;
+            }
+
+            string value = CoachSettingsMap.Format(shorter);
+            if (planned.Any(t => t.Settings.Any(c => c.Name == CoachSettingNames.ExposureSeconds && c.Value == value)))
+            {
+                return null;
+            }
+
+            var (_, _, currentGain) = coach.GainRange();
+            List<CoachCameraResult> results;
+            lock (gate)
+            {
+                results = cameraResults.ToList();
+            }
+
+            var measured = results.FirstOrDefault(r => Math.Abs(r.ExposureSeconds - shorter) < 1e-6 && r.Gain == (currentGain ?? -1));
+            if (measured is { Feasible: false })
+            {
+                return null;
+            }
+
+            return [Change(CoachSettingNames.ExposureSeconds, value)];
+        }
+
         private List<CoachSettingChange>? Variant(GuiderSettings s, List<CoachSettingChange> b, bool aggressionChanged)
         {
             var c = b.ToDictionary(x => x.Name);
@@ -1763,7 +1818,7 @@ public sealed class GuidingCoach
                     new() { ["changePercent"] = Math.Round(verdict.ConditionsChangePercent ?? 0, 1) }));
             }
 
-            if (!list.Any(t => t.Kind is CoachTrialKinds.Suggestion or CoachTrialKinds.Variant))
+            if (!list.Any(t => t.Kind is CoachTrialKinds.Suggestion or CoachTrialKinds.Variant or CoachTrialKinds.Exposure))
             {
                 // only the current settings were guided (e.g. Predictive axes and nothing from the camera check): no winner
                 var s = guider.BaseSettings;
@@ -2168,7 +2223,8 @@ public sealed class GuidingCoach
                     + 3 * 3 * options.FramesPerCombination * 0.5,
                 CoachStepNames.Drift => options.DriftSeconds + 15,
                 CoachStepNames.MountResponse => (32 * MountResponseProcedure.AverageFrames + 20) * (exposure + 0.7),
-                CoachStepNames.Trials => (options.RepeatBaseline ? 4 : 3) * (options.TrialSeconds + 20),
+                CoachStepNames.Trials => ((options.RepeatBaseline ? 4 : 3) + (options.ExposureTrial && ShorterTrialExposure(exposure) is not null ? 1 : 0))
+                    * (options.TrialSeconds + 20),
                 _ => 0,
             };
         }

@@ -29,6 +29,7 @@ internal static class CoachMapping
             DriftSeconds = o.DriftSeconds,
             TrialSeconds = o.TrialSeconds,
             RepeatBaseline = o.RepeatBaseline,
+            ExposureTrial = o.ExposureTrial,
             AllowCalibration = o.AllowCalibration,
         };
 

@@ -36,7 +36,9 @@ public sealed record LiveHintInput
 /// <summary>
 /// Lightweight analyser over the guiding statistics window that raises dismissable live hints (<c>hint.*</c> codes of
 /// docs/COACH.md §7) while guiding normally. Each hint id is raised at most once per <see cref="RepeatInterval"/>, shows
-/// for <see cref="Lifetime"/> and can be dismissed for the rest of the guiding session. Thread-safe.
+/// for <see cref="Lifetime"/> and can be dismissed for the rest of the guiding session. One-time hints
+/// (<see cref="IsOneTime"/>) are raised once per guiding session, stay until their condition ends and, once dismissed or
+/// applied, are never raised again (<see cref="PermanentlyDismissed"/>, <see cref="SetSuppressed"/>). Thread-safe.
 /// </summary>
 public sealed class LiveHintAnalyser
 {
@@ -49,15 +51,25 @@ public sealed class LiveHintAnalyser
     /// <summary>Oscillation index below which RA corrects too little (PHD2's alert threshold).</summary>
     public const double OscillationLow = GuidingStatistics.OscillationAlertLow;
 
+    /// <summary>Guide exposure (seconds) above which hint.longExposure suggests a shorter one.</summary>
+    public const double LongExposureSeconds = 2.0;
+
+    /// <summary>Exposure (seconds) hint.longExposure suggests: the default guide exposure.</summary>
+    public const double SuggestedExposureSeconds = 1.0;
+
     private const int RecentSize = 100;
     private const int SnrRecent = 10;
 
     private readonly object gate = new();
     private readonly Dictionary<string, DateTimeOffset> lastRaised = [];
     private readonly HashSet<string> dismissed = [];
+    private readonly HashSet<string> suppressed = [];
     private readonly List<CoachFinding> active = [];
     private readonly Queue<Step> recent = new();
     private double? seeingFloor;
+
+    /// <summary>A one-time hint was dismissed or applied: the host stores the id and hands it back with <see cref="SetSuppressed"/>.</summary>
+    public event Action<string>? PermanentlyDismissed;
 
     public TimeSpan RepeatInterval { get; init; } = TimeSpan.FromMinutes(10);
 
@@ -83,6 +95,21 @@ public sealed class LiveHintAnalyser
         }
     }
 
+    /// <summary>Hints shown once and never again after they were dismissed or applied.</summary>
+    public static bool IsOneTime(string id) => id == CoachCodes.HintLongExposure;
+
+    /// <summary>One-time hints dismissed in an earlier session (stored by the host): never raised. Replaces the previous set.</summary>
+    public void SetSuppressed(IEnumerable<string> ids)
+    {
+        ArgumentNullException.ThrowIfNull(ids);
+        lock (gate)
+        {
+            suppressed.Clear();
+            suppressed.UnionWith(ids.Where(IsOneTime));
+            active.RemoveAll(h => suppressed.Contains(h.Id));
+        }
+    }
+
     /// <summary>Active hints: not expired and not dismissed.</summary>
     public IReadOnlyList<CoachFinding> GetActive(DateTimeOffset now)
     {
@@ -92,20 +119,32 @@ public sealed class LiveHintAnalyser
         }
     }
 
-    /// <summary>Hides the hint for the rest of the guiding session. False when the id was never raised.</summary>
+    /// <summary>
+    /// Hides the hint for the rest of the guiding session, a one-time hint for good (<see cref="PermanentlyDismissed"/>).
+    /// False when the id was never raised.
+    /// </summary>
     public bool Dismiss(string id)
     {
+        bool permanent;
         lock (gate)
         {
             bool known = lastRaised.ContainsKey(id) || active.Any(h => h.Id == id);
             active.RemoveAll(h => h.Id == id);
-            if (known)
+            if (!known)
             {
-                dismissed.Add(id);
+                return false;
             }
 
-            return known;
+            dismissed.Add(id);
+            permanent = IsOneTime(id) && suppressed.Add(id);
         }
+
+        if (permanent)
+        {
+            PermanentlyDismissed?.Invoke(id);
+        }
+
+        return true;
     }
 
     /// <summary>A new guiding session starts: dismissed and active hints and the recent-step history are cleared.</summary>
@@ -141,9 +180,15 @@ public sealed class LiveHintAnalyser
             }
 
             var raised = new List<CoachFinding>();
-            foreach (var candidate in Candidates(input, w))
+            var candidates = Candidates(input, w).ToList();
+
+            // a one-time hint stays while its condition holds (no expiry) and goes when it ends, e.g. a shorter exposure
+            active.RemoveAll(h => IsOneTime(h.Id) && !candidates.Any(c => c.Id == h.Id));
+            foreach (var candidate in candidates)
             {
-                if (dismissed.Contains(candidate.Id) || (lastRaised.TryGetValue(candidate.Id, out var last) && now - last < RepeatInterval))
+                bool oneTime = IsOneTime(candidate.Id);
+                if (dismissed.Contains(candidate.Id) || (oneTime && (suppressed.Contains(candidate.Id) || lastRaised.ContainsKey(candidate.Id)))
+                    || (lastRaised.TryGetValue(candidate.Id, out var last) && now - last < RepeatInterval))
                 {
                     continue;
                 }
@@ -215,13 +260,22 @@ public sealed class LiveHintAnalyser
                 changes);
         }
 
+        // long guide exposures react late to the mount's faster errors (wind, gear noise); shorter ones usually guide better
+        double exposure = s.ExposureMs / 1000.0;
+        if (exposure > LongExposureSeconds + 1e-6)
+        {
+            yield return Hint(CoachCodes.HintLongExposure, CoachSeverities.Info, ts, null,
+                new() { ["exposureSeconds"] = Math.Round(exposure, 2), ["suggestedSeconds"] = SuggestedExposureSeconds },
+                [new CoachSettingChange(CoachSettingNames.ExposureSeconds, CoachSettingsMap.Format(SuggestedExposureSeconds), CoachSettingsMap.Format(exposure))]);
+        }
+
         if (seeingFloor is { } floor && floor > 0 && w.RmsTotalArcsec <= 1.15 * floor)
         {
             yield return Hint(CoachCodes.HintSeeingBound, CoachSeverities.Good, ts, expires, new() { ["rmsArcsec"] = Math.Round(w.RmsTotalArcsec, 2) }, []);
         }
     }
 
-    private static CoachFinding Hint(string code, string severity, DateTime ts, DateTime expires, Dictionary<string, object?> p,
+    private static CoachFinding Hint(string code, string severity, DateTime ts, DateTime? expires, Dictionary<string, object?> p,
         IReadOnlyList<CoachSettingChange> changes, string? qualifier = null) =>
         CoachFindings.Create(code, CoachStepNames.Live, severity, ts, p, changes: changes, qualifier: qualifier, expiresAt: expires);
 

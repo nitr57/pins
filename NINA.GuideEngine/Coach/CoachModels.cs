@@ -28,6 +28,9 @@ public sealed record CoachOptions
     /// <summary>Guide with the current settings again at the end of the trials to detect changing conditions.</summary>
     public bool RepeatBaseline { get; init; } = true;
 
+    /// <summary>Also guide with only a shorter exposure (trial E) when the current one is 1.5 s or longer.</summary>
+    public bool ExposureTrial { get; init; } = true;
+
     /// <summary>Calibrate when a step needs a calibration and none is valid (otherwise such steps fail).</summary>
     public bool AllowCalibration { get; init; } = true;
 }
@@ -291,10 +294,10 @@ public sealed record CoachPulse
 
 public sealed record CoachTrial
 {
-    /// <summary>A (current), B (suggestion), C (variant), A2 (current again).</summary>
+    /// <summary>A (current), B (suggestion), C (variant), E (shorter exposure), A2 (current again).</summary>
     public required string Id { get; init; }
 
-    /// <summary>current, suggestion, variant or currentRepeat.</summary>
+    /// <summary>current, suggestion, variant, exposure or currentRepeat.</summary>
     public required string Kind { get; init; }
 
     /// <summary>Settings that differ from the current settings (empty for A/A2).</summary>
@@ -478,6 +481,7 @@ public static class CoachTrialIds
     public const string A = "A";
     public const string B = "B";
     public const string C = "C";
+    public const string E = "E";
     public const string A2 = "A2";
 }
 
@@ -486,6 +490,9 @@ public static class CoachTrialKinds
     public const string Current = "current";
     public const string Suggestion = "suggestion";
     public const string Variant = "variant";
+
+    /// <summary>The current settings with only a shorter exposure (trial E).</summary>
+    public const string Exposure = "exposure";
     public const string CurrentRepeat = "currentRepeat";
 }
 
@@ -612,4 +619,5 @@ public static class CoachCodes
     public const string HintLowSnr = "hint.lowSnr";
     public const string HintDecDrift = "hint.decDrift";
     public const string HintSeeingBound = "hint.seeingBound";
+    public const string HintLongExposure = "hint.longExposure";
 }
