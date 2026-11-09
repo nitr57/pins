@@ -462,10 +462,18 @@ public enum ReacquireAction
 /// <summary>Lost-star reacquisition policy with a plausibility check on candidate stars.</summary>
 public sealed class ReacquirePolicy(SafetySettings settings)
 {
+    /// <summary>First interval of the full-frame search after the timeout; it doubles up to <see cref="GiveUpSearchMaxInterval"/>.</summary>
+    public static readonly TimeSpan GiveUpSearchFirstInterval = TimeSpan.FromSeconds(2);
+
+    /// <summary>Longest interval of the full-frame search after the timeout.</summary>
+    public static readonly TimeSpan GiveUpSearchMaxInterval = TimeSpan.FromSeconds(30);
+
     private DateTimeOffset? lostSince;
     private int frames;
     private double lostMass;
     private double lostSnr;
+    private TimeSpan giveUpSearchInterval;
+    private DateTimeOffset nextGiveUpSearch;
 
     public bool IsActive => lostSince is not null;
 
@@ -482,6 +490,27 @@ public sealed class ReacquirePolicy(SafetySettings settings)
         frames = 0;
         lostMass = lastGoodMass;
         lostSnr = lastGoodSnr;
+        giveUpSearchInterval = GiveUpSearchFirstInterval;
+        nextGiveUpSearch = DateTimeOffset.MinValue;
+    }
+
+    /// <summary>
+    /// After the timeout (<see cref="ReacquireAction.GiveUp"/> while the guider keeps searching): whether a full-frame
+    /// search is due. It ran on every second frame for as long as the star stayed lost, with sensor-sized allocations
+    /// and convolutions each time (an hour of clouds on a Pi); the interval now doubles from
+    /// <see cref="GiveUpSearchFirstInterval"/> up to <see cref="GiveUpSearchMaxInterval"/>. The search near the last
+    /// position still runs on every frame, so a star that comes back in place is found at once.
+    /// </summary>
+    public bool FullFrameSearchDue(DateTimeOffset now)
+    {
+        if (lostSince is null || now < nextGiveUpSearch)
+        {
+            return false;
+        }
+
+        nextGiveUpSearch = now + giveUpSearchInterval;
+        giveUpSearchInterval = TimeSpan.FromTicks(Math.Min(giveUpSearchInterval.Ticks * 2, GiveUpSearchMaxInterval.Ticks));
+        return true;
     }
 
     public void Reset() => lostSince = null;

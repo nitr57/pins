@@ -25,6 +25,9 @@ using System.Threading.Tasks;
 using NINA.Core.Locale;
 using NINA.Core.Utility;
 using NINA.Core.Utility.Notification;
+using NINA.Equipment.Interfaces;
+using NINA.Profile.Interfaces;
+using System.Runtime.ExceptionServices;
 
 namespace NINA.Sequencer.SequenceItem.Telescope {
 
@@ -48,16 +51,21 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
     [Export(typeof(ISequenceItem))]
     [JsonObject(MemberSerialization.OptIn)]
     public class SlewToGuiderCalibrationPosition : SequenceItem, IValidatable {
+        /// <summary>Lowest altitude of the calibration position (and of the backlash-clearing point below it).</summary>
+        public const double MinAltitudeDegrees = 10.0;
+
         private readonly ITelescopeMediator telescopeMediator;
         private readonly IGuiderMediator guiderMediator;
+        private readonly IProfileService profileService;
 
         [ImportingConstructor]
-        public SlewToGuiderCalibrationPosition(ITelescopeMediator telescopeMediator, IGuiderMediator guiderMediator) {
+        public SlewToGuiderCalibrationPosition(ITelescopeMediator telescopeMediator, IGuiderMediator guiderMediator, IProfileService profileService) {
             this.telescopeMediator = telescopeMediator;
             this.guiderMediator = guiderMediator;
+            this.profileService = profileService;
         }
 
-        private SlewToGuiderCalibrationPosition(SlewToGuiderCalibrationPosition cloneMe) : this(cloneMe.telescopeMediator, cloneMe.guiderMediator) {
+        private SlewToGuiderCalibrationPosition(SlewToGuiderCalibrationPosition cloneMe) : this(cloneMe.telescopeMediator, cloneMe.guiderMediator, cloneMe.profileService) {
             CopyMetaData(cloneMe);
         }
 
@@ -103,14 +111,22 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
         public override async Task Execute(IProgress<ApplicationStatus> progress, CancellationToken token) {
             var info = telescopeMediator.GetInfo();
 
+            if (!info.Connected) {
+                throw new SequenceEntityFailedException(Loc.Instance["LblTelescopeNotConnected"]);
+            }
+
             if (info.AtPark) {
                 Notification.ShowError(Loc.Instance["LblTelescopeParkedWarning"]);
                 throw new SequenceEntityFailedException(Loc.Instance["LblTelescopeParkedWarning"]);
             }
 
-            double lst = info.SiderealTime;
+            // INDI reports -1 for an unknown sidereal time (only NaN was refused, and the slew went to a wrong RA): outside
+            // 0..24 h it is computed from the mount's site longitude, as the internal guider does
+            double lst = info.SiderealTime is >= 0 and < 24
+                ? info.SiderealTime
+                : double.IsFinite(info.SiteLongitude) ? AstroUtil.GetLocalSiderealTimeNow(info.SiteLongitude) : double.NaN;
             if (double.IsNaN(lst)) {
-                // the mount has not reported its sidereal time yet, e.g. right after connecting
+                // the mount has not reported its sidereal time or site yet, e.g. right after connecting
                 throw new SequenceEntityFailedException("The mount's sidereal time is not known yet");
             }
 
@@ -137,7 +153,14 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
 
             Logger.Info($"SlewToGuiderCalibrationPosition: LST={lst:F4}h pointEast={pointEast} → RA={targetRa:F4}h Dec={TargetDec:F1}° ClearBacklash={ClearBacklash}");
 
+            if (AltitudeProblem(info.SiteLatitude, pointEast) is { } altitudeProblem) {
+                throw new SequenceEntityFailedException(altitudeProblem);
+            }
+
+            // only guiding is resumed: StopGuiding is also true for a guider that was merely looping
+            bool wasGuiding = !GuiderWasOnlyLooping();
             var stoppedGuiding = await guiderMediator.StopGuiding(token);
+            ExceptionDispatchInfo slewError = null;
             try {
                 if (ClearBacklash) {
                     // Pre-clear Dec backlash: slew 1° south of target, then north to target so the
@@ -151,17 +174,86 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
                 if (!await telescopeMediator.SlewToCoordinatesAsync(coordinates, token)) {
                     throw new SequenceEntityFailedException("The slew to the calibration position failed");
                 }
-            } finally {
-                // a failed slew must not leave the following items without guiding; a cancelled one stops them anyway
-                if (stoppedGuiding && !token.IsCancellationRequested) {
-                    await guiderMediator.StartGuiding(false, progress, token);
+            } catch (Exception e) {
+                slewError = ExceptionDispatchInfo.Capture(e);
+            }
+
+            // A failed slew must not leave the following items without guiding; a cancelled one stops them anyway. The
+            // result of the restart was ignored: the following items exposed unguided without anyone noticing.
+            if (stoppedGuiding && wasGuiding && !token.IsCancellationRequested) {
+                bool restarted;
+                try {
+                    restarted = await guiderMediator.StartGuiding(false, progress, token);
+                } catch (Exception e) when (slewError is not null) {
+                    // the slew's error is the one to report
+                    Logger.Error($"SlewToGuiderCalibrationPosition: guiding could not be restarted after the failed slew: {e.Message}");
+                    restarted = true;
+                }
+
+                if (!restarted) {
+                    if (slewError is null) {
+                        throw new SequenceEntityFailedException("Guiding could not be restarted after the slew to the calibration position");
+                    }
+
+                    Logger.Error("SlewToGuiderCalibrationPosition: guiding could not be restarted after the failed slew");
                 }
             }
+
+            slewError?.Throw();
+        }
+
+        // PHD2 app states for a guider that is not guiding (the internal guider reports the same names); other guiders
+        // (MetaGuide, SkyGuard) name their states differently and are resumed whenever StopGuiding stopped them
+        private bool GuiderWasOnlyLooping() {
+            return (guiderMediator.GetDevice() as IGuider)?.State is "Looping" or "Selected" or "Stopped";
+        }
+
+        /// <summary>
+        /// Why the calibration position (and the backlash-clearing point 1° below it) cannot be reached safely: below
+        /// <see cref="MinAltitudeDegrees"/> or the profile's custom horizon; null when it can, or when the site is unknown.
+        /// The position is at a fixed hour angle, so its altitude does not depend on the time. <paramref name="pointEast"/>
+        /// null (Stay, the side is known only when the item runs) reports a problem only when neither side can be reached.
+        /// </summary>
+        private string AltitudeProblem(double latitude, bool? pointEast) {
+            if (!double.IsFinite(latitude)) {
+                return null;
+            }
+
+            if (pointEast is { } east) {
+                return SideAltitudeProblem(latitude, east);
+            }
+
+            var eastProblem = SideAltitudeProblem(latitude, true);
+            var westProblem = SideAltitudeProblem(latitude, false);
+
+            return eastProblem is not null && westProblem is not null ? $"{eastProblem}; {westProblem}" : null;
+        }
+
+        private string SideAltitudeProblem(double latitude, bool east) {
+            var horizon = profileService?.ActiveProfile?.AstrometrySettings?.Horizon;
+            var declinations = ClearBacklash ? new[] { TargetDec, TargetDec - 1.0 } : new[] { TargetDec };
+
+            // east of the meridian the hour angle is negative
+            double hourAngle = east ? -HaOffsetDegrees : HaOffsetDegrees;
+            foreach (double dec in declinations) {
+                double altitude = AstroUtil.GetAltitude(hourAngle, latitude, dec);
+                double limit = MinAltitudeDegrees;
+                if (horizon is not null) {
+                    limit = Math.Max(limit, horizon.GetAltitude(AstroUtil.GetAzimuth(hourAngle, altitude, latitude, dec)));
+                }
+
+                if (altitude < limit) {
+                    return $"The calibration position {(east ? "east" : "west")} of the meridian at Dec {dec:F1}° is {altitude:F0}° high, below the limit of {limit:F0}° (horizon or {MinAltitudeDegrees:F0}°)";
+                }
+            }
+
+            return null;
         }
 
         public bool Validate() {
             var i = new List<string>();
-            if (!telescopeMediator.GetInfo().Connected) {
+            var info = telescopeMediator.GetInfo();
+            if (info?.Connected != true) {
                 i.Add(Loc.Instance["LblTelescopeNotConnected"]);
             }
 
@@ -171,6 +263,18 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
 
             if (HaOffsetDegrees < 0 || HaOffsetDegrees > 90) {
                 i.Add("The meridian offset must lie between 0° and 90°");
+            }
+
+            // shown in the sequence before the run (the altitude does not depend on the time)
+            if (i.Count == 0) {
+                bool? side = PointingSide switch {
+                    CalibrationPointingSide.East => true,
+                    CalibrationPointingSide.West => false,
+                    _ => null,
+                };
+                if (AltitudeProblem(info.SiteLatitude, side) is { } altitudeProblem) {
+                    i.Add(altitudeProblem);
+                }
             }
 
             Issues = i;

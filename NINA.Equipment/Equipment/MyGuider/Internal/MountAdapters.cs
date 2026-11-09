@@ -10,12 +10,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using NINA.Core.Enum;
 using NINA.Core.Utility;
+using NINA.Equipment.Equipment.MyCamera;
 using NINA.Equipment.Equipment.MyTelescope;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 using NINA.GuideEngine.Calibration;
 using NINA.GuideEngine.Core;
-using NINA.INDI;
 using NinaPierSide = NINA.Core.Enum.PierSide;
 using PierSide = NINA.GuideEngine.Core.PierSide;
 
@@ -270,6 +270,12 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
             throw new InvalidOperationException("mount is parked");
         }
 
+        if (!info.CanPulseGuide)
+        {
+            // any driver type: NINA's PulseGuide only warns and sends nothing, and the pulse counted as sent
+            throw new InvalidOperationException("the mount cannot pulse guide");
+        }
+
         var dir = direction switch
         {
             GuideDirection.North => GuideDirections.guideNorth,
@@ -279,7 +285,15 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
         };
 
         var started = DateTime.UtcNow;
-        await Task.Run(() => telescope.PulseGuide(dir, durationMs), ct).ConfigureAwait(false);
+        if (telescope.GetDevice() is IndiTelescope indiMount)
+        {
+            // a driver error reaches the guider (IndiTelescope.PulseGuide only logged it and notified for every pulse)
+            await Task.Run(() => indiMount.PulseGuideForGuider(dir, durationMs), ct).ConfigureAwait(false);
+        }
+        else
+        {
+            await Task.Run(() => telescope.PulseGuide(dir, durationMs), ct).ConfigureAwait(false);
+        }
 
         // wait for the pulse to complete: nominal duration, then the driver's busy flag (bounded)
         var remaining = TimeSpan.FromMilliseconds(durationMs) - (DateTime.UtcNow - started);
@@ -318,18 +332,20 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
     }
 }
 
-/// <summary>Pulse guiding through the guide camera's ST4 port (INDI TELESCOPE_TIMED_GUIDE_* on the camera device).</summary>
-internal sealed class CameraSt4PulseOutput(Func<string?> cameraDevice) : IPulseOutput
+/// <summary>
+/// Pulse guiding through the guide camera's ST4 port (INDI TELESCOPE_TIMED_GUIDE_* on the camera device), awaited like
+/// <see cref="MountPulseOutput"/>: the nominal duration, then the driver's end of the pulse (bounded). A pulse the camera
+/// rejected (Alert) throws an output failure, which the guider counts towards its limit: a port that cannot guide stops
+/// guiding instead of "correcting" into nothing.
+/// </summary>
+internal sealed class CameraSt4PulseOutput(Func<IndiCamera?> guideCamera) : IPulseOutput
 {
-    /// <summary>
-    /// Added to the pulse before it counts as done: INDI accepts the timed-guide property at once and the camera driver
-    /// times the pulse itself, so this covers its timer and the round trip.
-    /// </summary>
-    private const int CompletionMarginMs = 20;
+    /// <summary>Shortest wait for the end of a pulse after its nominal duration (otherwise half the pulse).</summary>
+    private const int MinCompletionWaitMs = 1000;
 
     public string Name => "Camera ST4";
 
-    public bool IsConnected => cameraDevice() is not null;
+    public bool IsConnected => guideCamera() is not null;
 
     public bool SupportsSimultaneousPulses => false;
 
@@ -340,18 +356,35 @@ internal sealed class CameraSt4PulseOutput(Func<string?> cameraDevice) : IPulseO
             return;
         }
 
-        string device = cameraDevice() ?? throw new InvalidOperationException("guide camera not connected");
-        bool ns = direction is GuideDirection.North or GuideDirection.South;
-        string property = ns ? "TELESCOPE_TIMED_GUIDE_NS" : "TELESCOPE_TIMED_GUIDE_WE";
-        var elements = ns
-            ? new Dictionary<string, object> { ["TIMED_GUIDE_N"] = direction == GuideDirection.North ? durationMs : 0, ["TIMED_GUIDE_S"] = direction == GuideDirection.South ? durationMs : 0 }
-            : new Dictionary<string, object> { ["TIMED_GUIDE_W"] = direction == GuideDirection.West ? durationMs : 0, ["TIMED_GUIDE_E"] = direction == GuideDirection.East ? durationMs : 0 };
-        if (!INDIClient.Instance.SetProperty(device, property, elements, out var error))
+        var camera = guideCamera() ?? throw new InvalidOperationException("guide camera not connected");
+        var dir = direction switch
         {
-            throw new InvalidOperationException($"ST4 pulse failed: {error}");
+            GuideDirection.North => GuideDirections.guideNorth,
+            GuideDirection.South => GuideDirections.guideSouth,
+            GuideDirection.East => GuideDirections.guideEast,
+            _ => GuideDirections.guideWest,
+        };
+
+        var started = DateTime.UtcNow;
+        await Task.Run(() => camera.St4PulseGuide(dir, durationMs), ct).ConfigureAwait(false);
+
+        var remaining = TimeSpan.FromMilliseconds(durationMs) - (DateTime.UtcNow - started);
+        if (remaining > TimeSpan.Zero)
+        {
+            await Task.Delay(remaining, ct).ConfigureAwait(false);
         }
 
-        await Task.Delay(durationMs + CompletionMarginMs, ct).ConfigureAwait(false);
+        var deadline = DateTime.UtcNow + TimeSpan.FromMilliseconds(Math.Max(MinCompletionWaitMs, durationMs / 2));
+        while (camera.IsSt4PulseGuiding && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(MountPulseOutput.IndiBusyPollInterval, ct).ConfigureAwait(false);
+        }
+
+        if (camera.TakeRejectedSt4Pulse(dir) is { } reason)
+        {
+            throw new InvalidOperationException($"ST4 pulse failed: {reason}");
+        }
+
         Logger.Trace($"InternalGuider: ST4 {direction} {durationMs} ms");
     }
 }

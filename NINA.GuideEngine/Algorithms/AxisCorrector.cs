@@ -115,7 +115,13 @@ public sealed class AxisCorrector
 
     public PulseLimiter Limiter { get; }
 
-    public IBacklashCompensation Backlash { get; }
+    public IBacklashCompensation Backlash { get; private set; }
+
+    /// <summary>
+    /// Swaps the Dec backlash compensation (the guider switching between the fixed one and the play model); the
+    /// corrector itself, with its Dec mode, drift direction and limiter, stays.
+    /// </summary>
+    internal void UseBacklash(IBacklashCompensation backlash) => Backlash = backlash;
 
     private DecGuideMode decGuideMode = DecGuideMode.Auto;
     private GuideDirection? driftDecDirection;

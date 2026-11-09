@@ -228,6 +228,125 @@ public class DecDriftGuidingTests
     }
 
     [Test]
+    public async Task A_settle_cut_short_by_a_stop_leaves_the_one_direction_mode()
+    {
+        // a dither lets Dec guide both ways while settling; only a settle that finished put South back, so a stop in the
+        // middle left the guider in Auto for good
+        Task<SettleResult>? dither = null;
+        bool restarted = false;
+        var modesAfter = new List<DecGuideMode>();
+        await Guide(BacklashDrift(), DecGuideMode.South, ResistSwitch, TimeSpan.FromMinutes(12), onEvent: (g, e) =>
+        {
+            if (e is not GuideStepEvent step)
+            {
+                return;
+            }
+
+            if (dither is null && step.Time > 300 && !step.IsSettling)
+            {
+                dither = g.DitherAsync(5, false, Settle);
+            }
+            else if (dither is not null && !restarted && step.IsSettling)
+            {
+                restarted = true;
+                g.StopGuiding();
+                _ = g.StartGuidingAsync(Settle);
+            }
+            else if (restarted && !step.IsSettling)
+            {
+                modesAfter.Add(g.DecGuideModeNow);
+            }
+        });
+
+        restarted.Should().BeTrue();
+        modesAfter.Should().NotBeEmpty().And.OnlyContain(m => m == DecGuideMode.South);
+    }
+
+    [Test]
+    public async Task A_dec_mode_chosen_while_settling_holds_after_the_settle()
+    {
+        // the settle's end wrote the mode saved at the dither back over the one chosen meanwhile
+        Task<SettleResult>? dither = null;
+        bool changed = false;
+        var modesAfter = new List<DecGuideMode>();
+        await Guide(BacklashDrift(), DecGuideMode.South, ResistSwitch, TimeSpan.FromMinutes(10), onEvent: (g, e) =>
+        {
+            if (e is not GuideStepEvent step)
+            {
+                return;
+            }
+
+            if (dither is null && step.Time > 300 && !step.IsSettling)
+            {
+                dither = g.DitherAsync(5, false, Settle);
+            }
+            else if (dither is not null && !changed && step.IsSettling)
+            {
+                changed = true;
+                g.UpdateSettings(g.Settings with { DecGuideMode = DecGuideMode.Auto });
+            }
+            else if (changed && !step.IsSettling)
+            {
+                modesAfter.Add(g.DecGuideModeNow);
+            }
+        });
+
+        (await dither!).Success.Should().BeTrue();
+        modesAfter.Should().NotBeEmpty().And.OnlyContain(m => m == DecGuideMode.Auto);
+    }
+
+    [Test]
+    public async Task Drift_chosen_again_starts_with_both_directions()
+    {
+        // the corrector lives on across settings changes: Drift → Auto → Drift with no measured frame in between (paused,
+        // star lost) kept the direction of the first Drift run for deduced moves and the next frame
+        Guider? guider = null;
+        await Guide(BacklashDrift(), DecGuideMode.Drift, ResistSwitch, TimeSpan.FromMinutes(12), attach: (g, _, _) => guider = g);
+
+        guider!.DriftDecDirectionNow.Should().Be(GuideDirection.South, "the drift run picked South");
+        guider.UpdateSettings(guider.Settings with { DecGuideMode = DecGuideMode.Auto });
+        guider.UpdateSettings(guider.Settings with { DecGuideMode = DecGuideMode.Drift });
+
+        guider.DriftDecDirectionNow.Should().BeNull();
+    }
+
+    [Test]
+    public async Task A_settings_change_keeps_the_backlash_compensation_and_the_limiter()
+    {
+        // every settings change (TNS, the coach) built a new limiter and compensation: the compensation forgot its last
+        // direction (the next reversal went out without it) and the limiter its raised Dec maximum and grace
+        (IBacklashCompensation Backlash, PulseLimiter Limiter, GuideDirection? Last)? before = null;
+        (IBacklashCompensation Backlash, PulseLimiter Limiter, GuideDirection? Last, int MaxDec)? after = null;
+        await Guide(DriftWithoutBacklash(), DecGuideMode.Auto, ResistSwitch, TimeSpan.FromMinutes(8),
+            configure: s => s with { MaxDecDurationMs = 250, Backlash = s.Backlash with { Enabled = true, PulseMs = 300 } },
+            onEvent: (g, e) =>
+            {
+                if (e is not GuideStepEvent { IsSettling: false } step || step.Time < 300 || after is not null)
+                {
+                    return;
+                }
+
+                if (before is null)
+                {
+                    before = (g.BacklashNow, g.LimiterNow, (g.BacklashNow as BacklashCompensation)?.LastDirection);
+                    g.UpdateSettings(g.Settings with { });
+                }
+                else
+                {
+                    after = (g.BacklashNow, g.LimiterNow, (g.BacklashNow as BacklashCompensation)?.LastDirection, g.LimiterNow.MaxDecDurationMs);
+                }
+            });
+
+        before.Should().NotBeNull();
+        after.Should().NotBeNull();
+        after!.Value.Backlash.Should().BeSameAs(before!.Value.Backlash);
+        after.Value.Limiter.Should().BeSameAs(before.Value.Limiter);
+        before.Value.Last.Should().NotBeNull("Dec was guided before the change");
+        after.Value.Last.Should().NotBeNull("the compensation keeps its last direction");
+        after.Value.MaxDec.Should().Be(300, "the compensation's pulse stays above the configured 250 ms maximum");
+    }
+
+    [Test]
     public async Task Choosing_the_drift_mode_while_guiding_uses_the_drift_measured_so_far()
     {
         DecDirectionState? before = null;

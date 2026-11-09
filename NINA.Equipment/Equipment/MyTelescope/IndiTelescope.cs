@@ -569,6 +569,33 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         }
 
         /// <summary>
+        /// A guide pulse for the internal guider (MountPulseOutput): the checks of <see cref="PulseGuide"/>, but a failure
+        /// reaches the caller, which counts it towards its limit of failed pulses. PulseGuide logged it and showed a
+        /// notification for every pulse, and the guider counted the pulse as sent.
+        /// </summary>
+        internal void PulseGuideForGuider(GuideDirections direction, int duration) {
+            if (!ShouldBeConnected || device is null) {
+                throw new InvalidOperationException("mount not connected");
+            }
+
+            if (!CanPulseGuide) {
+                throw new InvalidOperationException("the mount cannot pulse guide");
+            }
+
+            if (AtPark) {
+                throw new InvalidOperationException("mount is parked");
+            }
+
+            try {
+                device.PulseGuide(direction, duration);
+            } catch (NotImplementedException e) {
+                throw new InvalidOperationException($"the mount has no timed guide property: {e.Message}", e);
+            }
+
+            InvalidatePropertyCache();
+        }
+
+        /// <summary>
         /// Why the driver rejected the last pulse on this direction's axis, or null; taken once. The internal guider asks
         /// after each pulse, so that a pulse the mount did not carry out is not counted as a move.
         /// </summary>

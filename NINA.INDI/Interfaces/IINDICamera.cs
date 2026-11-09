@@ -12,6 +12,7 @@
 
 #endregion "copyright"
 
+using NINA.Core.Enum;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -72,5 +73,14 @@ namespace NINA.INDI.Interfaces {
         string GetLastBlobFormat();
         void AbortExposure();
         void StopExposure();
+
+        /// <summary>A timed guide pulse on the camera's ST4 port (TELESCOPE_TIMED_GUIDE_*); throws when it has none.</summary>
+        void St4PulseGuide(GuideDirections direction, int duration);
+
+        /// <summary>True while an ST4 pulse runs (from sending it until the driver reports its end, bounded).</summary>
+        bool IsSt4PulseGuiding { get; }
+
+        /// <summary>Why the driver rejected the last ST4 pulse on this direction's axis (Alert), or null; taken once.</summary>
+        string TakeRejectedSt4Pulse(GuideDirections direction);
     }
 }

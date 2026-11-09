@@ -8,8 +8,8 @@ using NINA.GuideEngine.MultiStar;
 namespace NINA.GuideEngine.Guiding;
 
 // The Dec backlash play model (docs/notes/PLAY-MODEL-BACKLASH.md): one instance for the guider's lifetime, so the gear's
-// position and what was learned survive the corrector being rebuilt on a settings change. A calibration measures the
-// shape of the play with either backlash model, so switching to the play model uses it.
+// position and what was learned survive a settings change and a swap to the fixed compensation and back. A calibration
+// measures the shape of the play with either backlash model, so switching to the play model uses it.
 public sealed partial class Guider
 {
     private readonly PlayModelBacklash playBacklash = new();
@@ -55,8 +55,10 @@ public sealed partial class Guider
     {
         if (!UsesPlayModel(s))
         {
-            // the fixed compensation, with the pulse it learned before (Guider.Backlash.cs)
-            return CreateFixedBacklash(s.Backlash, limiter);
+            // the fixed compensation, with the pulse it learned before (Guider.Backlash.cs); the one in use keeps its state
+            return corrector.Backlash is BacklashCompensation inUse
+                ? UpdateFixedBacklash(inUse, s.Backlash)
+                : CreateFixedBacklash(s.Backlash, limiter);
         }
 
         playBacklash.Limiter = limiter;

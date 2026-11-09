@@ -115,6 +115,27 @@ public sealed class MultiStarTracker
     }
 
     /// <summary>
+    /// Tracks <paramref name="primaryStar"/>, one of the stars of a full-frame search (<paramref name="found"/>), with the
+    /// others as secondaries at their offsets from it. AutoFind gives offsets from its own primary, which need not be the
+    /// star chosen here (a reacquire takes the one nearest the last position): the secondaries were then searched in the
+    /// wrong places and dropped as lost.
+    /// </summary>
+    public AutoSelectResult InitializeFromSearch(GuideFrame frame, GuideStar primaryStar, IReadOnlyList<GuideStar> found)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        ArgumentNullException.ThrowIfNull(primaryStar);
+        ArgumentNullException.ThrowIfNull(found);
+        primaryStar.OffsetFromPrimary = new GuidePoint(0, 0);
+        var result = InitializeCore(frame, [primaryStar], primaryStar.Position, null);
+        if (!result.Success || !UsesSecondaries(frame))
+            return result;
+
+        foreach (var gs in SecondariesFrom(found.Where(s => !ReferenceEquals(s, primaryStar)), primary.Position))
+            guideStars.Add(new TrackedStar(gs, primary.Position));
+        return result with { Stars = guideStars.ToList() };
+    }
+
+    /// <summary>
     /// (Re)initialises from AutoFind results computed elsewhere (list primary first). The primary is
     /// re-measured at <paramref name="primaryHint"/> (default: the first star's position).
     /// </summary>
@@ -252,10 +273,18 @@ public sealed class MultiStarTracker
     /// <summary>AutoFind's stars except the one at (or crowding) <paramref name="primaryPos"/>, with offsets from it; empty in single-star mode.</summary>
     private List<GuideStar> FindSecondaries(GuideFrame frame, GuidePoint primaryPos)
     {
+        return UsesSecondaries(frame)
+            ? SecondariesFrom(GuideStar.AutoFind(frame, 0, SearchRegion, IntRect.Empty, options.MaxListSize, FinderOptions), primaryPos)
+            : [];
+    }
+
+    private bool UsesSecondaries(GuideFrame frame) => options.MultiStarEnabled && !options.UseSubframes && frame.Subframe.IsEmpty;
+
+    /// <summary>The stars of a search except the one at (or crowding) <paramref name="primaryPos"/>, with offsets from it.</summary>
+    private List<GuideStar> SecondariesFrom(IEnumerable<GuideStar> found, GuidePoint primaryPos)
+    {
         var list = new List<GuideStar>();
-        if (!options.MultiStarEnabled || options.UseSubframes || !frame.Subframe.IsEmpty)
-            return list;
-        foreach (var gs in GuideStar.AutoFind(frame, 0, SearchRegion, IntRect.Empty, options.MaxListSize, FinderOptions))
+        foreach (var gs in found)
         {
             if (list.Count >= options.MaxListSize - 1)
                 break;

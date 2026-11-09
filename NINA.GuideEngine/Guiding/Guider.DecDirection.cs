@@ -32,6 +32,13 @@ public sealed partial class Guider
     /// <summary>The Dec direction the corrector may use for the current frame, null for both (loop thread only: tests).</summary>
     internal GuideDirection? DriftDecDirectionNow => corrector.DriftDecDirection;
 
+    // for tests: the Dec mode and the parts of the corrector that must survive a settings change
+    internal DecGuideMode DecGuideModeNow => corrector.DecGuideMode;
+
+    internal IBacklashCompensation BacklashNow => corrector.Backlash;
+
+    internal PulseLimiter LimiterNow => corrector.Limiter;
+
     // guiding (re)started, a meridian flip, the Dec axis reversed, other pixels: drift and direction are learned anew. The
     // note goes out at once: after a flip while paused the star is usually lost, and the next measured frame may be far off
     private void ResetDecDirection(string reason)
@@ -69,6 +76,9 @@ public sealed partial class Guider
 
         decPolicy.Reset(keepHold: true);
         decPolicy.TakeNotes();
+
+        // the corrector lives on across settings changes: a direction from an earlier Drift run must not carry over
+        corrector.DriftDecDirection = null;
         if (now == DecGuideMode.Drift)
         {
             decPolicy.NoteReset("Dec guide mode Drift");

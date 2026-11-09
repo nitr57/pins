@@ -1006,6 +1006,54 @@ public class ClosedLoopTests
     }
 
     /// <summary>
+    /// A dither whose settle the rotator interrupts settles again on the new star, still with both Dec directions: the
+    /// restart ended the dither's exception, and the new settle guided South only.
+    /// </summary>
+    [Test]
+    public async Task Dither_interrupted_by_the_rotator_guides_dec_both_ways_while_settling_again()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { RotatorTurnsGuideCamera = RotatorGuideCamera.Yes, DecGuideMode = DecGuideMode.South });
+        h.Sim.Mount.RotatorAngleDeg = 10;
+        Task<SettleResult>? dither = null;
+        double? turnedAt = null;
+        int starts = 0;
+        var settlingModes = new List<DecGuideMode>();
+        var modesAfter = new List<DecGuideMode>();
+        h.OnEvent = e =>
+        {
+            double t = h.Seconds(e.Timestamp);
+            if (e is StartGuidingEvent)
+            {
+                starts++;
+            }
+            else if (dither is null && e is SettleDoneEvent)
+            {
+                dither = h.Guider.DitherAsync(3, false, Settle);
+                turnedAt = t;
+                h.Sim.Mount.RotatorMoving = true;
+                h.Sim.Mount.RotatorAngleDeg = 50;
+                h.Sim.Camera.RotateCamera(-40);
+            }
+            else if (turnedAt is { } at && h.Sim.Mount.RotatorMoving && t > at + 15)
+            {
+                h.Sim.Mount.RotatorMoving = false;
+            }
+            else if (starts == 2 && e is GuideStepEvent)
+            {
+                (dither!.IsCompleted ? modesAfter : settlingModes).Add(h.Guider.DecGuideModeNow);
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(8));
+
+        starts.Should().Be(2);
+        (await dither!).Success.Should().BeTrue();
+        settlingModes.Should().NotBeEmpty().And.OnlyContain(m => m == DecGuideMode.Auto);
+        modesAfter.Should().NotBeEmpty().And.OnlyContain(m => m == DecGuideMode.South);
+    }
+
+    /// <summary>
     /// The rotator turns during a calibration that was asked for: guiding starts again with a new star and makes that
     /// calibration, instead of guiding with the old one turned.
     /// </summary>

@@ -132,7 +132,7 @@ public sealed record GuiderSettings
     /// <summary>Analyse the guiding statistics while guiding and raise live coaching hints (<see cref="Coach.LiveHintAnalyser"/>).</summary>
     public bool LiveHints { get; init; } = true;
 
-    /// <summary>Downscaled image published with <see cref="FrameReadyEvent"/> every N frames (1 = every frame).</summary>
+    /// <summary>Publish the processed frame (full resolution) with <see cref="FrameReadyEvent"/> every N frames (1 = every frame).</summary>
     public int FrameEventInterval { get; init; } = 1;
 
     /// <summary>Flight recorder (incidents); records only once the host set a store (<see cref="Guider.SetIncidentStore"/>).</summary>

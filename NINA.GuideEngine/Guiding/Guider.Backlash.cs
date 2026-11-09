@@ -4,9 +4,10 @@ using NINA.GuideEngine.Algorithms;
 
 namespace NINA.GuideEngine.Guiding;
 
-// The Dec backlash pulse the adaptive compensation learned (PHD2 keeps it in its profile). It survives a rebuild of the
-// corrector (any settings change) and, through the host, the session, as long as the configured pulse is the one it was
-// learned from. The adaptive range stays that of the configured pulse, so a learned pulse never widens it.
+// The Dec backlash pulse the adaptive compensation learned (PHD2 keeps it in its profile). It survives a settings change
+// (the compensation is updated in place, or rebuilt after the play model was in use) and, through the host, the
+// session, as long as the configured pulse is the one it was learned from. The adaptive range stays that of the
+// configured pulse, so a learned pulse never widens it.
 public sealed partial class Guider
 {
     private BacklashState? storedBacklash;
@@ -39,6 +40,22 @@ public sealed partial class Guider
     private BacklashCompensation CreateFixedBacklash(BacklashSettings s, PulseLimiter limiter)
     {
         var backlash = new BacklashCompensation(BacklashPulse(s), s.FloorMs, BacklashCeiling(s), s.Enabled, limiter);
+        backlashPulseSeen = backlash.PulseWidthMs;
+        backlashPulseMs = backlash.IsEnabled ? backlash.PulseWidthMs : 0;
+        return backlash;
+    }
+
+    // the compensation in use takes the settings and keeps its last direction and history (SetPulseWidth leaves equal values
+    // alone and clears the history only on a change of more than 100 ms, as in PHD2)
+    private BacklashCompensation UpdateFixedBacklash(BacklashCompensation backlash, BacklashSettings s)
+    {
+        int pulse = BacklashPulse(s);
+        backlash.SetPulseWidth(pulse, s.FloorMs, BacklashCeiling(s));
+
+        // off at a 0 ms pulse, as the constructor does
+        backlash.Enable(s.Enabled && backlash.PulseWidthMs > 0);
+
+        // the pulse set from the settings is not one the compensation learned
         backlashPulseSeen = backlash.PulseWidthMs;
         backlashPulseMs = backlash.IsEnabled ? backlash.PulseWidthMs : 0;
         return backlash;

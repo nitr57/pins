@@ -10,6 +10,29 @@ namespace NINA.GuideEngine.Test.Guiding;
 [TestFixture]
 public class SafetyTests
 {
+    [Test]
+    public void After_the_timeout_the_full_frame_search_backs_off_to_every_30_s()
+    {
+        // it ran on every second frame for as long as the star stayed lost
+        var p = new ReacquirePolicy(new SafetySettings());
+        p.StarLost(T0, 1000, 20);
+        var due = new List<double>();
+        for (double t = 0; t <= 200; t += 0.5)
+        {
+            if (p.FullFrameSearchDue(T0.AddSeconds(t)))
+            {
+                due.Add(t);
+            }
+        }
+
+        due.Take(6).Should().Equal(0, 2, 6, 14, 30, 60);
+        due.Zip(due.Skip(1), (a, b) => b - a).Should().OnlyContain(gap => gap <= 30);
+
+        p.Reset();
+        p.StarLost(T0.AddSeconds(400), 1000, 20);
+        p.FullFrameSearchDue(T0.AddSeconds(400)).Should().BeTrue("a new loss starts over");
+    }
+
     private static readonly DateTimeOffset T0 = new(2026, 9, 23, 22, 0, 0, TimeSpan.Zero);
     private readonly SafetySettings settings = new();
 

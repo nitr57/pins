@@ -44,11 +44,12 @@ public class MountPulseOutputTests
         const int driverLateMs = 40;
         var telescope = new ConnectedIndiTelescope();
         var mediator = new Mock<ITelescopeMediator>();
-        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true });
+        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true, CanPulseGuide = true });
         mediator.Setup(m => m.GetDevice()).Returns(telescope);
         var clock = Stopwatch.StartNew();
         long endedAtMs = -1;
-        mediator.Setup(m => m.PulseGuide(It.IsAny<GuideDirections>(), It.IsAny<int>())).Callback(() =>
+        // the internal guider pulses an INDI mount through IndiTelescope itself (errors reach it), not the mediator
+        telescope.OnPulse = () =>
         {
             telescope.Pulsing = true;
             // the driver reports the end of the pulse a little after it
@@ -57,7 +58,7 @@ public class MountPulseOutputTests
                 Interlocked.Exchange(ref endedAtMs, clock.ElapsedMilliseconds);
                 telescope.Pulsing = false;
             });
-        });
+        };
 
         await new MountPulseOutput(mediator.Object).PulseAsync(GuideDirection.North, pulseMs, CancellationToken.None);
         long doneAtMs = clock.ElapsedMilliseconds;
@@ -75,7 +76,7 @@ public class MountPulseOutputTests
     {
         var telescope = new ConnectedIndiTelescope { Rejection = rejection };
         var mediator = new Mock<ITelescopeMediator>();
-        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true });
+        mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true, CanPulseGuide = true });
         mediator.Setup(m => m.GetDevice()).Returns(telescope);
 
         Func<Task> pulse = () => new MountPulseOutput(mediator.Object).PulseAsync(GuideDirection.South, 20, CancellationToken.None);
@@ -100,6 +101,7 @@ public class MountPulseOutputTests
         {
             fake.SetupGet(d => d.IsPulseGuiding).Returns(() => Pulsing);
             fake.Setup(d => d.TakeRejectedPulse(It.IsAny<GuideDirections>())).Returns(() => Rejection);
+            fake.Setup(d => d.PulseGuide(It.IsAny<GuideDirections>(), It.IsAny<int>())).Callback(() => OnPulse?.Invoke());
             device = fake.Object;
             // connectedExpectation is set only by a real Connect; properties read as defaults without it
             typeof(NINA.Equipment.Equipment.IndiDevice<IINDITelescope>).GetField("connectedExpectation", BindingFlags.NonPublic | BindingFlags.Instance)!.SetValue(this, true);
@@ -108,5 +110,7 @@ public class MountPulseOutputTests
         public volatile bool Pulsing;
 
         public volatile string? Rejection;
+
+        public Action? OnPulse;
     }
 }

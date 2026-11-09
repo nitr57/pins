@@ -12,6 +12,7 @@
 
 #endregion "copyright"
 
+using NINA.Core.Enum;
 using NINA.Core.Utility;
 using NINA.INDI.Enums;
 using NINA.INDI.Interfaces;
@@ -70,6 +71,12 @@ namespace NINA.INDI.Devices {
         private readonly ConcurrentDictionary<string, bool> _pendingProfileSwitches = new();
 
         public INDICamera(INDIDeviceInfo device) : base(device) {
+            _st4.TimedOut += (property, durationMs) => ReportSt4Problem(
+                $"[{DeviceName}] The camera did not report the end of a {durationMs} ms ST4 pulse on {property} within "
+                + $"{PulseGuideTracker.CompletionMargin.TotalMilliseconds:F0} ms of when it should have ended; treating it as finished");
+            _st4.Failed += failure => ReportSt4Problem(failure.Rejected
+                ? $"[{DeviceName}] The camera rejected a {failure.DurationMs} ms ST4 pulse on {failure.Property} (Alert after {failure.ElapsedMs:F0} ms)"
+                : $"[{DeviceName}] The camera reported the end of a {failure.DurationMs} ms ST4 pulse on {failure.Property} after {failure.ElapsedMs:F0} ms");
         }
 
         /// <summary>
@@ -77,6 +84,72 @@ namespace NINA.INDI.Devices {
         /// seconds all night.
         /// </summary>
         public bool LogFramesAtDebug { get; init; }
+
+        // The ST4 port's pulses, tracked like the mount's (INDITelescope): the driver answers a pulse with Busy or Alert at
+        // once and with Ok when it ended. Initialized here: the base constructor already receives the driver's properties.
+        private readonly PulseGuideTracker _st4 = new();
+
+        // ST4 pulses that timed out, failed or ended early: one warning per interval, the rest at Debug (a guide camera
+        // pulses every few seconds all night)
+        private static readonly TimeSpan St4WarningInterval = TimeSpan.FromMinutes(10);
+        private readonly object _st4WarningLock = new();
+        private DateTime _lastSt4Warning = DateTime.MinValue;
+        private int _st4ProblemsSinceWarning;
+
+        public void St4PulseGuide(GuideDirections direction, int duration) {
+            // both elements of the axis, the opposite one as 0 (libindi keeps the last values, see INDITelescope.PulseGuide)
+            var (property, values) = direction switch {
+                GuideDirections.guideNorth => (PulseGuideTracker.NorthSouth, new[] { ("TIMED_GUIDE_N", (double)duration), ("TIMED_GUIDE_S", 0.0) }),
+                GuideDirections.guideSouth => (PulseGuideTracker.NorthSouth, new[] { ("TIMED_GUIDE_N", 0.0), ("TIMED_GUIDE_S", (double)duration) }),
+                GuideDirections.guideWest => (PulseGuideTracker.WestEast, new[] { ("TIMED_GUIDE_W", (double)duration), ("TIMED_GUIDE_E", 0.0) }),
+                GuideDirections.guideEast => (PulseGuideTracker.WestEast, new[] { ("TIMED_GUIDE_W", 0.0), ("TIMED_GUIDE_E", (double)duration) }),
+                _ => throw new ArgumentOutOfRangeException(nameof(direction), direction, null)
+            };
+
+            // marked before sending: the driver's Busy may arrive before SetNumberValues returns
+            _st4.PulseSending(property, duration);
+            try {
+                SetNumberValues(property, values);
+            } catch (ArgumentException ex) {
+                _st4.PulseNotSent(property);
+                throw new InvalidOperationException($"the camera has no ST4 port ({property}): {ex.Message}", ex);
+            } catch {
+                _st4.PulseNotSent(property);
+                throw;
+            }
+        }
+
+        public bool IsSt4PulseGuiding => _st4.IsPulseGuiding;
+
+        private void ReportSt4Problem(string message) {
+            bool warn;
+            int count;
+            lock (_st4WarningLock) {
+                count = ++_st4ProblemsSinceWarning;
+                var now = DateTime.UtcNow;
+                warn = now - _lastSt4Warning >= St4WarningInterval;
+                if (warn) {
+                    _lastSt4Warning = now;
+                    _st4ProblemsSinceWarning = 0;
+                }
+            }
+
+            if (warn) {
+                Logger.Warning($"{message}. The mount may not have moved as far as the guider assumes "
+                    + $"({count} such pulse(s) since the last warning; further ones are logged at Debug level for {St4WarningInterval.TotalMinutes:F0} minutes)");
+            } else {
+                Logger.Debug(message);
+            }
+        }
+
+        public string TakeRejectedSt4Pulse(GuideDirections direction) {
+            var property = direction is GuideDirections.guideNorth or GuideDirections.guideSouth
+                ? PulseGuideTracker.NorthSouth
+                : PulseGuideTracker.WestEast;
+            return _st4.TakeRejected(property) is { } failure
+                ? $"the camera rejected the {failure.DurationMs} ms ST4 pulse on {failure.Property}"
+                : null;
+        }
 
         private void LogFrame(string message, [CallerMemberName] string memberName = "", [CallerFilePath] string sourceFilePath = "", [CallerLineNumber] int lineNumber = 0) {
             if (LogFramesAtDebug) {
@@ -320,6 +393,11 @@ namespace NINA.INDI.Devices {
 
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
             base.OnNumberPropertyUpdated(p);
+
+            if (p.Name is PulseGuideTracker.NorthSouth or PulseGuideTracker.WestEast) {
+                _st4.Observe(p);
+                return;
+            }
 
             // A failed or refused exposure: no BLOB will come, so end the wait now with no data (the download reports the
             // failed frame) instead of at the camera timeout. Only an exposure in flight, and only its own Alert (see

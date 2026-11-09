@@ -108,7 +108,10 @@ public sealed partial class Guider : IAsyncDisposable
     private bool flipInverted;
     private bool deferEvents;
     private readonly List<GuiderEvent> deferredEvents = [];
-    private DecGuideMode? savedDecGuideMode;
+    // A dither switched a one-direction Dec mode (North/South) to both directions for its settle (PHD2 PhdController).
+    // The mode in force is always settings.DecGuideMode: a saved copy was restored only by a settle that finished, so a
+    // settle cut short left Dec guided both ways for good, and a mode changed meanwhile was overwritten by the old one.
+    private bool decBothWaysForSettle;
     private int pulseFailures;
 
     // correction the pulses of this frame's guide step apply, reported to the algorithms once they went out
@@ -473,6 +476,7 @@ public sealed partial class Guider : IAsyncDisposable
         pulseModel.Interrupt(mountMoved: true);
         EmitPeriodicErrorModel(clock.UtcNow);
         settle.Cancel();
+        EndDecBothWays();
         recenter.Cancel();
         calibrationProcess = null;
         CancelPlayProbe();
@@ -784,6 +788,7 @@ public sealed partial class Guider : IAsyncDisposable
             }
 
             settle.Cancel();
+            EndDecBothWays();
             recenter.Cancel();
             calibrationProcess = null;
             CancelPlayProbe();
@@ -1392,12 +1397,18 @@ public sealed partial class Guider : IAsyncDisposable
         // a start, or a dither whose run the rotator stopped (Guider.Rotator.cs), settles on the star guiding starts with
         if (pending is { } p)
         {
+            if (p.Kind == PendingKind.Dither)
+            {
+                BeginDecBothWays();
+            }
+
             BeginSettle(p.Settle);
         }
     }
 
     private void ResetGuidingRuntime()
     {
+        EndDecBothWays();
         secondariesLostFrames = 0;
         runaway.Reset();
         response.Reset();
@@ -1748,7 +1759,7 @@ public sealed partial class Guider : IAsyncDisposable
                     Alert(GuideErrorCode.StarReacquireTimeout, "still searching");
                 }
 
-                if (frame.FrameNumber % 2 == 0)
+                if (reacquire.FullFrameSearchDue(now))
                 {
                     TryReacquireFullFrame(frame);
                 }
@@ -1783,9 +1794,7 @@ public sealed partial class Guider : IAsyncDisposable
             return;
         }
 
-        var ordered = new List<GuideStar> { best };
-        ordered.AddRange(found.Where(s => !ReferenceEquals(s, best)));
-        tracker.Initialize(frame, ordered, best.Position);
+        tracker.InitializeFromSearch(frame, best, found);
     }
 
     private void InvertDecAfterFlip(DateTimeOffset now)
@@ -1839,14 +1848,35 @@ public sealed partial class Guider : IAsyncDisposable
         Emit(new SettleBeginEvent(now));
     }
 
-    private void FinishSettle(DateTimeOffset now, SettleResult result)
+    // the Dec mode the corrector uses for the settings' mode: both directions while a dither's settle allows them
+    private DecGuideMode DecModeInUse(DecGuideMode configured) =>
+        decBothWaysForSettle && configured is (DecGuideMode.North or DecGuideMode.South) ? DecGuideMode.Auto : configured;
+
+    // the dither's settle is over (finished, cut short, or guiding stopped): back to the configured Dec mode
+    // PHD2 PhdController: temporarily allow both Dec directions while settling after a dither
+    private void BeginDecBothWays()
     {
-        if (savedDecGuideMode is { } mode)
+        if (settings.DecGuideMode is DecGuideMode.North or DecGuideMode.South)
         {
-            corrector.DecGuideMode = mode;
-            savedDecGuideMode = null;
+            decBothWaysForSettle = true;
+            corrector.DecGuideMode = DecGuideMode.Auto;
+        }
+    }
+
+    private void EndDecBothWays()
+    {
+        if (!decBothWaysForSettle)
+        {
+            return;
         }
 
+        decBothWaysForSettle = false;
+        corrector.DecGuideMode = settings.DecGuideMode;
+    }
+
+    private void FinishSettle(DateTimeOffset now, SettleResult result)
+    {
+        EndDecBothWays();
         corrector.GuidingDitherSettleDone(result.Success);
         Emit(new SettleDoneEvent(now, result.Success ? 0 : 1, result.Error, result.TotalFrames, result.DroppedFrames));
         CompletePending(result);
@@ -1894,13 +1924,7 @@ public sealed partial class Guider : IAsyncDisposable
 
         Emit(new GuidingDitheredEvent(now, plan.MountDelta.X, plan.MountDelta.Y));
 
-        // PHD2 PhdController: temporarily allow both Dec directions while settling after a dither
-        if (corrector.DecGuideMode is DecGuideMode.North or DecGuideMode.South)
-        {
-            savedDecGuideMode = corrector.DecGuideMode;
-            corrector.DecGuideMode = DecGuideMode.Auto;
-        }
-
+        BeginDecBothWays();
         runaway.Reset();
         response.Reset();
         BeginSettle(op.Settle);
@@ -1915,6 +1939,7 @@ public sealed partial class Guider : IAsyncDisposable
             calibrationProcess = null;
             CancelPlayProbe();
             settle.Cancel();
+            EndDecBothWays();
             recenter.Cancel();
             Emit(new GuidingStoppedEvent(clock.UtcNow));
             CompletePending(SettleResult.Failed(GuideErrorCode.None, "guiding stopped"));
@@ -2160,22 +2185,44 @@ public sealed partial class Guider : IAsyncDisposable
         {
             freshRa.RestorePeriodicError(storedModel);
         }
-        var limiter = new PulseLimiter();
+        // The corrector, its limiter and the fixed backlash compensation stay for the guider's lifetime and take the new
+        // values. Rebuilding them on every change (TNS, the coach) lost the limiter's grace after a dither (false limit
+        // alerts), the compensation's last direction (the next Dec reversal went out uncompensated) and the Dec state
+        // (a new corrector started in Auto: setting the mode reset the play model, and Drift ran both ways until the
+        // next measured frame).
+        var limiter = corrector.Limiter;
         limiter.SetMaxRaDuration(s.MaxRaDurationMs);
         limiter.SetMaxDecDuration(s.MaxDecDurationMs);
         var backlash = CreateBacklash(s, limiter);
-        var newCorrector = new AxisCorrector(ra, dec, limiter, backlash)
+        if (backlash is BacklashCompensation { IsEnabled: true } fixedPulse && fixedPulse.PulseWidthMs > limiter.MaxDecDurationMs)
         {
-            DecGuideMode = s.DecGuideMode,
-            MinPulseMs = s.MinPulseMs,
-        };
-        if (IsCoachMeasuring)
-        {
-            // a new corrector starts with output enabled: keep it off during a coach measurement
-            newCorrector.SetGuidingEnabled(false, clock.UtcNow);
+            // the compensation raises the Dec maximum to its pulse (BacklashCompensation.SetCompValues); the maximum
+            // was just set back from the settings
+            limiter.SetMaxDecDuration(fixedPulse.PulseWidthMs);
         }
 
-        corrector = newCorrector;
+        corrector.UseBacklash(backlash);
+        if (!ReferenceEquals(corrector.RaAlgorithm, ra) || !ReferenceEquals(corrector.DecAlgorithm, dec))
+        {
+            corrector.RaAlgorithm = ra;
+            corrector.DecAlgorithm = dec;
+            if (!corrector.GuidingEnabled)
+            {
+                // output off (a coach measurement): a new algorithm learns that, as the ones in use did
+                (ra as GuideAlgorithmBase)?.GuidingDisabled();
+                (dec as GuideAlgorithmBase)?.GuidingDisabled();
+            }
+        }
+
+        corrector.MinPulseMs = s.MinPulseMs;
+        if (s.DecGuideMode is not (DecGuideMode.North or DecGuideMode.South))
+        {
+            // Off, Auto or Drift chosen during a dither's settle applies at once
+            decBothWaysForSettle = false;
+        }
+
+        // resets the backlash state only when the effective mode really changes (PHD2 Scope::SetDecGuideMode)
+        corrector.DecGuideMode = DecModeInUse(s.DecGuideMode);
         if (!initial)
         {
             DecGuideModeChanged(old.DecGuideMode, s.DecGuideMode);
@@ -2320,6 +2367,7 @@ public sealed partial class Guider : IAsyncDisposable
         }
 
         settle.Cancel();
+        EndDecBothWays();
         recenter.Cancel();
         calibrationProcess = null;
         CancelPlayProbe();

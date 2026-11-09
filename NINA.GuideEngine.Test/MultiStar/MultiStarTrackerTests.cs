@@ -450,6 +450,31 @@ public class MultiStarTrackerTests
     }
 
     [Test]
+    public void InitializeFromSearch_GivesTheSecondariesOffsetsFromTheChosenStar()
+    {
+        // a reacquire takes the star nearest the last position, not AutoFind's primary: AutoFind's offsets are from
+        // its own primary and sent the secondaries' search to the wrong places
+        var scene = new Scene();
+        var frame = scene.Render(0, 0, 1);
+        var found = GuideStar.AutoFind(frame, 0, 15, IntRect.Empty, 12, new StarFinderOptions());
+        found.Count.Should().BeGreaterThanOrEqualTo(3);
+        var chosen = found[^1];
+        var t = NewTracker();
+
+        var sel = t.InitializeFromSearch(frame, chosen, found);
+
+        sel.Success.Should().BeTrue();
+        var primary = new GuidePoint(t.PrimaryStar.X, t.PrimaryStar.Y);
+        primary.Distance(chosen.Position).Should().BeLessThan(1);
+        t.GuideStars.Count.Should().BeGreaterThan(1);
+        foreach (var secondary in t.GuideStars.Skip(1))
+        {
+            (primary + secondary.OffsetFromPrimary).Distance(secondary.ReferencePoint).Should().BeLessThan(0.5);
+            secondary.Position.Distance(primary).Should().BeGreaterThan(15, "a star crowding the primary is no secondary");
+        }
+    }
+
+    [Test]
     public void SelectStarAt_ManualSingleStar()
     {
         var scene = new Scene();

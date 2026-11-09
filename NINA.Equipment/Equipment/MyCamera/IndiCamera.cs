@@ -59,6 +59,19 @@ namespace NINA.Equipment.Equipment.MyCamera {
 
         protected override string ConnectionLostMessage => Loc.Instance["LblCameraConnectionLost"];
 
+        // The ST4 port for the internal guider (CameraSt4PulseOutput): failures reach the caller.
+        internal void St4PulseGuide(GuideDirections direction, int duration) {
+            if (!ShouldBeConnected || device is null) {
+                throw new InvalidOperationException("guide camera not connected");
+            }
+
+            device.St4PulseGuide(direction, duration);
+        }
+
+        internal bool IsSt4PulseGuiding => device?.IsSt4PulseGuiding == true;
+
+        internal string TakeRejectedSt4Pulse(GuideDirections direction) => device?.TakeRejectedSt4Pulse(direction);
+
         protected override IINDICamera GetInstance() {
             return device ??= new INDICamera(_device) { LogFramesAtDebug = logFramesAtDebug };
         }

@@ -52,6 +52,9 @@ internal sealed class GuideCameraSource(IGuideCameraMediator camera) : ICameraSo
     /// <summary>The INDI device name when the guide camera is an INDI camera (its ST4 port is addressed by it), otherwise null.</summary>
     public string? IndiDeviceName => Info.Connected && camera.GetDevice() is IndiCamera indi ? indi.Id : null;
 
+    /// <summary>The INDI guide camera (its ST4 port), otherwise null.</summary>
+    internal IndiCamera? IndiCamera => Info.Connected ? camera.GetDevice() as IndiCamera : null;
+
     public bool IsConnected => Info.Connected;
 
     public int SensorWidth => Info.XSize;

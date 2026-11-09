@@ -452,7 +452,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
                     throw new GuideCameraException("The camera ST4 guide output needs an INDI guide camera. Choose the mount as guide output, or an INDI camera as guide camera.");
                 }
 
-                output = new CameraSt4PulseOutput(() => source.IndiDeviceName);
+                output = new CameraSt4PulseOutput(() => source.IndiCamera);
                 sessionUsesCameraSt4 = true;
             }
             else

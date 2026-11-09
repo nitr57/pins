@@ -762,7 +762,7 @@ public class MountAdapterTests
     [Test]
     public async Task Mount_pulse_maps_directions_and_waits_for_completion()
     {
-        var info = new TelescopeInfo { Connected = true };
+        var info = new TelescopeInfo { Connected = true, CanPulseGuide = true };
         var mediator = new Mock<ITelescopeMediator>();
         mediator.Setup(m => m.GetInfo()).Returns(info);
         var calls = new List<(GuideDirections, int)>();
