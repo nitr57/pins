@@ -29,12 +29,13 @@ public class CalibrationAdjusterTests
     };
 
     private static ScopePointing Pointing(double dec = 10, PierSide side = PierSide.East, double? rot = null, int bin = 1,
-        bool decFlip = false, double rate = 0.5) => new()
+        bool decFlip = false, double rate = 0.5, RotatorGuideCamera turns = RotatorGuideCamera.Yes) => new()
     {
         Mount = new MountSnapshot { IsConnected = true, DeclinationDeg = dec, PierSide = side, GuideRateRa = rate, GuideRateDec = rate },
         Binning = bin,
         PixelSizeUm = 3.8,
         RotatorAngleDeg = rot,
+        RotatorTurnsGuideCamera = turns,
         DecFlipRequired = decFlip,
     };
 
@@ -184,15 +185,115 @@ public class CalibrationAdjusterTests
         CalibrationRunner.AngleDiffDeg(a.Calibration.XAngle, MountTransform.Radians(0)).Should().BeLessThan(1e-9);
         CalibrationRunner.AngleDiffDeg(a.Calibration.YAngle, MountTransform.Radians(90)).Should().BeLessThan(1e-9);
         a.Calibration.RotatorAngleDeg.Should().Be(40);
+        a.CalibrationChanged.Should().BeTrue();
+        a.RotatorTurn.Should().Be(new RotatorTurn(10, 40, -30));
+        a.Alerts.Should().OnlyContain(x => !x.ShowToUser, "the guider tells the user, together with the new guide star");
 
         // tiny delta ignored
-        CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 10 }, Pointing(rot: 10.04)).Calibration.XAngle
-            .Should().Be(Cal().XAngle);
+        var tiny = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 10 }, Pointing(rot: 10.04));
+        tiny.Calibration.XAngle.Should().Be(Cal().XAngle);
+        tiny.RotatorTurn.Should().BeNull();
+    }
 
-        // unknown at calibration time
-        CalibrationAdjustment c = CalibrationAdjuster.AdjustForScopePointing(Cal(), Pointing(rot: 40));
-        c.Alerts.Should().ContainSingle(x => x.Type == CalibrationAlertType.RotatorPositionUnknown);
-        c.Calibration.RotatorAngleDeg.Should().Be(40);
+    [Test]
+    public void ReversedRotatorTurnsTheCalibrationTheOtherWay()
+    {
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 10 }, Pointing(rot: 40, turns: RotatorGuideCamera.Reversed));
+
+        CalibrationRunner.AngleDiffDeg(a.Calibration.XAngle, MountTransform.Radians(60)).Should().BeLessThan(1e-9);
+        CalibrationRunner.AngleDiffDeg(a.Calibration.YAngle, MountTransform.Radians(150)).Should().BeLessThan(1e-9);
+        a.Calibration.RotatorAngleDeg.Should().Be(40);
+    }
+
+    [Test]
+    public void RotatorDeltaTakesTheShorterWayAroundZero()
+    {
+        // the mechanical angle wraps: 350° to 10° is a move of +20°, not -340°
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 350 }, Pointing(rot: 10));
+
+        CalibrationRunner.AngleDiffDeg(a.Calibration.XAngle, MountTransform.Radians(10)).Should().BeLessThan(1e-9);
+        a.RotatorTurn!.CalibrationTurnDeg.Should().BeApproximately(-20, 1e-9);
+    }
+
+    [Test]
+    public void RotatorThatDoesNotTurnTheGuideCameraKeepsTheAnglesAndFollowsTheRotator()
+    {
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 10 }, Pointing(rot: 40, turns: RotatorGuideCamera.No));
+
+        a.Calibration.XAngle.Should().Be(Cal().XAngle);
+        a.Calibration.YAngle.Should().Be(Cal().YAngle);
+        a.Calibration.RotatorAngleDeg.Should().Be(40, "saying later that the guide camera turns starts from where the rotator is");
+        a.CalibrationChanged.Should().BeTrue();
+        a.RotatorTurn.Should().BeNull();
+        a.Alerts.Should().ContainSingle(x => x.Type == CalibrationAlertType.RotatorFollowed).Which.ShowToUser.Should().BeFalse();
+    }
+
+    [Test]
+    public void RotatorJitterLeavesACalibrationThatDoesNotTurnAlone()
+    {
+        // within the tolerance the calibration is not changed, so it is not stored again at every start
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 10 }, Pointing(rot: 10.04, turns: RotatorGuideCamera.No));
+
+        a.Calibration.Should().Be(Cal() with { RotatorAngleDeg = 10 });
+        a.CalibrationChanged.Should().BeFalse();
+        a.Alerts.Should().BeEmpty();
+
+        // also across 0°
+        var wrap = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 359.98 }, Pointing(rot: 0.02, turns: RotatorGuideCamera.No));
+        wrap.CalibrationChanged.Should().BeFalse();
+    }
+
+    [TestCase(RotatorGuideCamera.No, false)]
+    [TestCase(RotatorGuideCamera.Yes, true)]
+    [TestCase(RotatorGuideCamera.Reversed, true)]
+    public void CalibrationWithoutRotatorAngleTakesTheCurrentOne(RotatorGuideCamera turns, bool shown)
+    {
+        // Deviation from PHD2, which asks for a new calibration. When the rotator turns the guide camera, a turn since the
+        // calibration is not known, so the user is told
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal(), Pointing(rot: 40, turns: turns));
+
+        a.IsValid.Should().BeTrue();
+        a.Calibration.XAngle.Should().Be(Cal().XAngle);
+        a.Calibration.RotatorAngleDeg.Should().Be(40);
+        a.CalibrationChanged.Should().BeTrue();
+        a.RotatorTurn.Should().BeNull();
+        var alert = a.Alerts.Should().ContainSingle(x => x.Type == CalibrationAlertType.RotatorPositionUnknown).Subject;
+        alert.ShowToUser.Should().Be(shown);
+        alert.Message.Contains("Calibrate again").Should().Be(shown);
+    }
+
+    [Test]
+    public void CalibrationWithoutRotatorAngleAndNoRotatorStaysWithout()
+    {
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal(), Pointing(rot: null));
+
+        a.Calibration.RotatorAngleDeg.Should().BeNull();
+        a.CalibrationChanged.Should().BeFalse();
+        a.Alerts.Should().BeEmpty();
+    }
+
+    [Test]
+    public void FlipAndHalfATurnOfTheRotatorAddUp()
+    {
+        // after a meridian flip the rotator turned by 180° (e.g. NINA's "rotate image after flip"): the flip turns RA by
+        // 180°, the rotator both angles by 180°
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 0 }, Pointing(side: PierSide.West, rot: 180));
+
+        a.Flipped.Should().BeTrue();
+        Math.Abs(a.RotatorTurn!.CalibrationTurnDeg).Should().BeApproximately(180, 1e-9);
+        CalibrationRunner.AngleDiffDeg(a.Calibration.XAngle, MountTransform.Radians(30)).Should().BeLessThan(1e-9);
+        CalibrationRunner.AngleDiffDeg(a.Calibration.YAngle, MountTransform.Radians(300)).Should().BeLessThan(1e-9);
+        a.Calibration.RotatorAngleDeg.Should().Be(180);
+    }
+
+    [Test]
+    public void NoRotatorLeavesTheCalibrationAlone()
+    {
+        var a = CalibrationAdjuster.AdjustForScopePointing(Cal() with { RotatorAngleDeg = 10 }, Pointing(rot: null));
+
+        a.Calibration.Should().Be(Cal() with { RotatorAngleDeg = 10 });
+        a.CalibrationChanged.Should().BeFalse();
+        a.Alerts.Should().BeEmpty();
     }
 
     [Test]

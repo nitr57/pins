@@ -106,8 +106,21 @@ public sealed record MountSnapshot
 
     public double? GuideRateDec { get; init; }
 
-    /// <summary>Rotator sky angle in degrees if a rotator is present.</summary>
+    /// <summary>
+    /// Mechanical rotator angle in degrees if a rotator is connected and its angle could be read. The sky angle is not
+    /// used: a plate-solve sync changes it without turning the rotator. Whether the guide camera turns with the rotator is
+    /// <see cref="NINA.GuideEngine.Guiding.GuiderSettings.RotatorTurnsGuideCamera"/>.
+    /// </summary>
     public double? RotatorAngleDeg { get; init; }
+
+    /// <summary>The rotator's driver reports it moving.</summary>
+    public bool RotatorMoving { get; init; }
+
+    /// <summary>
+    /// The rotator's angle changed so recently that it may still be turning. This covers drivers that report the end of a
+    /// move late or not at all, since the host sees the rotator only every device poll.
+    /// </summary>
+    public bool RotatorTurning { get; init; }
 
     public bool IsMoving => IsSlewing || IsHoming;
 }

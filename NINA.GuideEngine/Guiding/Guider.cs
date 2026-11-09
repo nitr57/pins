@@ -356,6 +356,7 @@ public sealed partial class Guider : IAsyncDisposable
 
             this.forceCalibration = forceCalibration;
             startGuidingRequested = true;
+            ResetRotatorWait();
             if (state is GuiderState.Stopped or GuiderState.Failed or GuiderState.Paused or GuiderState.Selected)
             {
                 ResetGuidingRuntime();
@@ -545,6 +546,7 @@ public sealed partial class Guider : IAsyncDisposable
         decDrift.Break();
         pulseModel.Interrupt(mountMoved: false);
         SetLockPositionCore(position);
+        NoteStarRotatorAngle(SafeSnapshot());
     });
 
     /// <summary>
@@ -954,7 +956,19 @@ public sealed partial class Guider : IAsyncDisposable
         {
             // then tracked on this frame too: the overlay shows the new stars at once, a failed choice keeps the old star
             manualSelect = null;
-            request.Completion.TrySetResult(SelectStarCore(frame, request.Position, now));
+            var selected = SelectStarCore(frame, request.Position, now);
+            if (selected.Success)
+            {
+                NoteStarRotatorAngle(snapshot);
+            }
+
+            request.Completion.TrySetResult(selected);
+        }
+
+        // a rotator that turns the guide camera: wait until it stopped, and select a new star after it turned
+        if (startGuidingRequested && !RotatorAllowsStart(snapshot, now))
+        {
+            return null;
         }
 
         if (autoSelectRequested)
@@ -964,6 +978,7 @@ public sealed partial class Guider : IAsyncDisposable
             if (sel.Success)
             {
                 autoSelectRequested = false;
+                NoteStarRotatorAngle(snapshot);
                 lastGoodMass = sel.Primary.Mass;
                 lastGoodSnr = sel.Primary.Snr;
                 Emit(new StarSelectedEvent(now, sel.Primary.Position.X, sel.Primary.Position.Y));
@@ -1104,6 +1119,16 @@ public sealed partial class Guider : IAsyncDisposable
 
     private void BeginGuiding(GuidePoint starPosition, MountSnapshot snapshot, DateTimeOffset now, out IReadOnlyList<PulseCommand> pulses)
     {
+        NoteStarRotatorAngle(snapshot);
+        rotatorWaitSince = null;
+        BeginGuidingCore(starPosition, snapshot, now, out pulses);
+
+        // a new star after a rotation, with no calibration turned for it (none kept, or a new one is made)
+        AlertNewStarAfterRotation();
+    }
+
+    private void BeginGuidingCore(GuidePoint starPosition, MountSnapshot snapshot, DateTimeOffset now, out IReadOnlyList<PulseCommand> pulses)
+    {
         pulses = [];
         if (!forceCalibration && calibration is not null)
         {
@@ -1114,6 +1139,7 @@ public sealed partial class Guider : IAsyncDisposable
             bool lacksDec = settings.DecGuideMode != DecGuideMode.Off && !adj.Calibration.HasDecCalibration;
             if (adj.IsValid && !lacksDec)
             {
+                AlertRotatorTurn(adj);
                 if (!StartPlayProbe(starPosition, adj, snapshot, now, out pulses))
                 {
                     EnterGuiding(starPosition, adj, now);
@@ -1293,6 +1319,7 @@ public sealed partial class Guider : IAsyncDisposable
             PixelSizeUm = settings.PixelSizeUm > 0 ? settings.PixelSizeUm : camera.PixelSizeUm,
             DecFlipRequired = settings.DecFlipRequired,
             DecCompensationEnabled = settings.DecCompensation,
+            RotatorTurnsGuideCamera = settings.RotatorTurnsGuideCamera,
         });
 
         foreach (var a in adj.Alerts.Where(a => a.ShowToUser))
@@ -1304,6 +1331,7 @@ public sealed partial class Guider : IAsyncDisposable
                 CalibrationAlertType.PixelSizeChanged => GuideErrorCode.CalibrationInvalidated,
                 CalibrationAlertType.Flipped => GuideErrorCode.CalibrationFlipped,
                 CalibrationAlertType.CalibrationTooFarFromEquator => GuideErrorCode.CalibrationHighDeclination,
+                CalibrationAlertType.RotatorPositionUnknown => GuideErrorCode.CalibrationRotatorUnknown,
                 _ => GuideErrorCode.CalibrationInvalidated,
             };
             Alert(code, a.Message);
@@ -1361,7 +1389,8 @@ public sealed partial class Guider : IAsyncDisposable
             flipInverted = false;
         }
 
-        if (pending is { Kind: PendingKind.Guide } p)
+        // a start, or a dither whose run the rotator stopped (Guider.Rotator.cs), settles on the star guiding starts with
+        if (pending is { } p)
         {
             BeginSettle(p.Settle);
         }
@@ -1899,6 +1928,11 @@ public sealed partial class Guider : IAsyncDisposable
 
     private void ResumeCore()
     {
+        if (RestartIfRotatorTurned(SafeSnapshot(), resume: true))
+        {
+            return;
+        }
+
         var now = clock.UtcNow;
         fullPause = false;
         if (calibration is not null && adjustment is not null)
@@ -1907,6 +1941,7 @@ public sealed partial class Guider : IAsyncDisposable
             var adj = AdjustCalibration(calibration, SafeSnapshot());
             if (adj.IsValid)
             {
+                AlertRotatorTurn(adj);
                 UseCalibration(adj);
                 if (adj.Flipped && settings.VerifyDecAfterFlip && settings.DecGuideMode != DecGuideMode.Off)
                 {
@@ -1983,6 +2018,13 @@ public sealed partial class Guider : IAsyncDisposable
             }
 
             ResumeCore();
+            return;
+        }
+
+        // a paused run (by the user) waits for Resume, which checks the rotator
+        if (state != GuiderState.Paused)
+        {
+            RestartIfRotatorTurned(snapshot);
         }
     }
 

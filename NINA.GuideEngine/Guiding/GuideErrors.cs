@@ -44,6 +44,8 @@ public enum GuideErrorCode
     CalibrationFlipped = 224,
     DecFlipCorrected = 225,
     CalibrationReturnIncomplete = 226,
+    RotatorTurnedGuideCamera = 227,
+    CalibrationRotatorUnknown = 228,
 
     // Mount / output 300-399
     PulseLimitReached = 300,
@@ -150,6 +152,12 @@ public static class GuideErrorCatalog
         E(GuideErrorCode.CalibrationReturnIncomplete, GuideErrorSeverity.Warning, "Calibration return move incomplete",
             "The star did not return near its starting point during calibration; this may indicate backlash or a slipping clutch.",
             "Check the mount mechanics and recalibrate."),
+        E(GuideErrorCode.RotatorTurnedGuideCamera, GuideErrorSeverity.Info, "Rotator turned the guide camera",
+            "The rotator turns the guide camera. After a rotation the guide star is gone and the calibration no longer fits, and frames taken while it turns are smeared. Guiding waits until the rotator has stopped, then starts with a new guide star and the calibration turned with the rotator.",
+            "No action needed. If guiding pushes the star away after a rotator move, switch the setting 'Rotator turns the guide camera' between Yes and Reversed, or set it to No when the guide camera does not turn with the rotator, and calibrate again. If the rotator never reports that it stopped, check its driver; guiding starts anyway after 2 minutes."),
+        E(GuideErrorCode.CalibrationRotatorUnknown, GuideErrorSeverity.Warning, "Calibration without rotator angle",
+            "The kept calibration has no rotator angle (it was made before the guider recorded one, or without a rotator), so the guider can't tell whether the rotator turned the guide camera since. The current angle is taken as the calibration's.",
+            "Calibrate again if the guide camera was turned since this calibration. After that, rotations are followed."),
         E(GuideErrorCode.PulseLimitReached, GuideErrorSeverity.Warning, "Correction limited by max pulse",
             "Several consecutive corrections were clamped to the maximum pulse length.",
             "Check for a large drift (polar alignment, cable snag) or increase the max pulse duration."),
