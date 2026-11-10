@@ -68,8 +68,9 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
 
         public int MinBrightness { get; private set; }
 
+        // after a disconnect device is null until the next connect
         public bool LightOn {
-            get => device.LightOn;
+            get => device?.LightOn ?? false;
             set {
                 try {
                     if (SupportsOnOff) {
@@ -94,7 +95,7 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
         }
 
         public int Brightness {
-            get => device.Brightness;
+            get => device?.Brightness ?? 0;
             set {
                 try {
                     if (SupportsOnOff) {
@@ -118,9 +119,9 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
 
         public string PortName { get => string.Empty; set { } }
 
-        public bool SupportsOpenClose => device.SupportsOpenClose;
+        public bool SupportsOpenClose => device?.SupportsOpenClose ?? false;
 
-        public bool SupportsOnOff => device.SupportsOnOff;
+        public bool SupportsOnOff => device?.SupportsOnOff ?? false;
 
         protected override string ConnectionLostMessage => Loc.Instance["LblFlatDeviceConnectionLost"];
 
@@ -139,36 +140,34 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
             }
         }
 
+        // The result comes from the INDI device: CoverState goes through GetProperty's cache and can predate the end of
+        // the move. A cover the driver reported in error is moved anyway, since an INDI Alert stays until the next
+        // command; a move the driver ends with Alert throws FlatDeviceCoverErrorException, which FlatDeviceVM reports.
         public async Task<bool> Open(CancellationToken ct, int delay = 300) {
-            if (SupportsOpenClose) {
-                if (CoverState == CoverState.Error)
-                {
-                    throw new Exception();
-                }
-
-                // Turn off lights before opening
-                LightOn = false;
-
-                await device.Open(ct);
-                if (CoverState == CoverState.Error) {
-                    throw new Exception();
-                }
+            if (device is not { } dev || !dev.SupportsOpenClose) {
+                return false;
             }
-            return CoverState == CoverState.Open;
+
+            // Turn off lights before opening
+            LightOn = false;
+
+            try {
+                return await dev.Open(ct, delay);
+            } catch (InvalidOperationException ex) {
+                throw new FlatDeviceCoverErrorException(ex.Message, ex);
+            }
         }
 
         public async Task<bool> Close(CancellationToken ct, int delay = 300) {
-            if (SupportsOpenClose) {
-                if (CoverState == CoverState.Error) {
-                    throw new Exception();
-                }
-
-                await device.Close(ct);
-                if (CoverState == CoverState.Error) {
-                    throw new Exception();
-                }
+            if (device is not { } dev || !dev.SupportsOpenClose) {
+                return false;
             }
-            return CoverState == CoverState.Closed;
+
+            try {
+                return await dev.Close(ct, delay);
+            } catch (InvalidOperationException ex) {
+                throw new FlatDeviceCoverErrorException(ex.Message, ex);
+            }
         }
 
         protected override Task PreConnect() {

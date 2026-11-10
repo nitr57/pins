@@ -29,10 +29,16 @@ namespace NINA.INDI.Devices {
             base.OnTextPropertyUpdated(p);
         }
 
-        // Open/Close wait while coverState is NeitherOpenNorClosed, which only a CAP_PARK update ends;
-        // Unknown ends the wait and lets them report the cover as not opened/closed
+        // A lost connection ends a running Open/Close as not opened/closed
         protected override void OnConnectionLost() {
-            coverState = CoverState.Unknown;
+            lock (moveLock) {
+                if (move is { } running) {
+                    running.Ended = true;
+                    move = null;
+                }
+
+                coverState = CoverState.Unknown;
+            }
         }
 
         public override void OnNumberPropertyUpdated(INDINumberProperty p) {
@@ -42,10 +48,47 @@ namespace NINA.INDI.Devices {
         public override void OnSwitchPropertyUpdated(INDISwitchProperty p) {
             base.OnSwitchPropertyUpdated(p);
 
-            if (p.Name == "CAP_PARK" && p.State != PropertyState.Busy) {
-                var sw = GetSwitchProperty("CAP_PARK");
-                coverState = (sw?.Switches.FirstOrDefault(s => s.Name == "PARK")?.Value ?? true) ? CoverState.Closed : CoverState.Open;
+            if (p.Name != "CAP_PARK") {
+                return;
             }
+
+            bool park = p.Switches.FirstOrDefault(s => s.Name == Park)?.Value ?? false;
+            bool unpark = p.Switches.FirstOrDefault(s => s.Name == Unpark)?.Value ?? false;
+
+            lock (moveLock) {
+                if (move is { } running) {
+                    if (p.State == PropertyState.Alert) {
+                        running.Result = false;
+                        running.Ended = true;
+                        move = null;
+                    } else if (p.State != PropertyState.Busy && (running.Target == Park ? park : unpark)) {
+                        running.Result = true;
+                        running.Ended = true;
+                        move = null;
+                    } else {
+                        // Busy, in transit with neither switch on, or the old end once more: still moving
+                        coverState = CoverState.NeitherOpenNorClosed;
+                        return;
+                    }
+                }
+
+                coverState = CoverStateOf(p.State, park, unpark);
+            }
+        }
+
+        // The INDI dust cap interface: PARK or UNPARK on is that end, also with Alert (a refused move restores the
+        // previous switch, so the cover is still there); neither on (the initial definition, an abort, a cover in
+        // transit) is unknown. Busy is a move in progress, e.g. one started from the control panel.
+        private static CoverState CoverStateOf(PropertyState state, bool park, bool unpark) {
+            if (state == PropertyState.Busy) {
+                return CoverState.NeitherOpenNorClosed;
+            }
+
+            if (park) {
+                return CoverState.Closed;
+            }
+
+            return unpark ? CoverState.Open : CoverState.Unknown;
         }
 
         public override void OnBlobPropertyUpdated(INDIBlobProperty p) {
@@ -66,7 +109,32 @@ namespace NINA.INDI.Devices {
             return ["FLAT_LIGHT_INTENSITY"];
         }
 
-        private CoverState coverState = CoverState.Unknown;
+        private const string Park = "PARK";
+        private const string Unpark = "UNPARK";
+
+        // Only driver updates set the cover state: SetSwitchValue writes the target into the local copy of CAP_PARK
+        // before sending it, so the local switch says nothing about where the cover is.
+        private volatile CoverState coverState = CoverState.Unknown;
+
+        // The commanded move until a driver update ends it. Stock drivers publish CAP_PARK with neither switch on while
+        // the cover travels (Wanderer V4 EC: Idle) and may send the old end with Ok after their Busy, so only an Alert
+        // or the target switch without Busy ends it (indidustcapinterface.cpp: "Unknown: PARK and UNPARK are either not
+        // toggled or state is IPS_ALERT"). Each Open/Close has its own: FlatDeviceVM lets an Open and a Close overlap
+        // (a client's request during a sequence's), and the newer one supersedes the older.
+        private sealed class CoverMove(string target) {
+            public string Target { get; } = target;
+
+            // true at the target, false with Alert, null when it ended without the driver's answer
+            public bool? Result { get; set; }
+
+            public bool Ended { get; set; }
+
+            public bool Superseded { get; set; }
+        }
+
+        private readonly object moveLock = new();
+        private CoverMove move;
+
         public CoverState CoverState => SupportsOpenClose ? coverState : CoverState.NotPresent;
 
         public int MaxBrightness {
@@ -96,58 +164,101 @@ namespace NINA.INDI.Devices {
             (GetSwitchPropertyValue("CAP_PARK", "PARK") ?? false)
             && GetProperty("CAP_PARK")?.State != PropertyState.Busy;
 
-        // Ceiling for Open/Close's poll loops. coverState is only ever advanced by a driver
-        // update (CAP_PARK leaving Busy state), so a driver that stops replying mid-motion
-        // would otherwise leave the caller polling forever with only its own cancellation
-        // token as a way out.
-        private static readonly TimeSpan MoveTimeout = TimeSpan.FromMinutes(2);
+        // Ceiling for Open/Close's wait: only a driver update ends a commanded move, so a driver that stops replying
+        // mid-motion would otherwise leave the caller waiting with only its own cancellation token as a way out.
+        // Internal so tests can shorten it.
+        internal TimeSpan MoveTimeout { get; set; } = TimeSpan.FromMinutes(2);
 
-        public async Task<bool> Open(CancellationToken ct, int delay = 300) {
-            if (!Connected || !SupportsOpenClose) {
-                return false;
-            }
-
-            // Initiate the move
-            coverState = CoverState.NeitherOpenNorClosed;
-            SetSwitchValue("CAP_PARK", "UNPARK", true);
-            Logger.Info("Commanded flat device to unpark");
-
-            var started = DateTime.UtcNow;
-            while (coverState == CoverState.NeitherOpenNorClosed && !ct.IsCancellationRequested) {
-                if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Flat device did not report unpark completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
-                }
-                await Task.Delay(delay, ct);
-            }
-
-            Logger.Debug($"FlatDevice reached unpark position");
-
-            return coverState == CoverState.Open;
+        /// <summary>
+        /// Opens the cover: true once the driver reports it open, false when it does not within
+        /// <see cref="MoveTimeout"/> or the connection ends. Throws <see cref="InvalidOperationException"/> when the
+        /// driver ends the move with Alert (refused or failed).
+        /// </summary>
+        public Task<bool> Open(CancellationToken ct, int delay = 300) {
+            return MoveCover(Unpark, "opening", ct, delay);
         }
 
-        public async Task<bool> Close(CancellationToken ct, int delay = 300) {
+        /// <summary>Closes the cover; see <see cref="Open"/>.</summary>
+        public Task<bool> Close(CancellationToken ct, int delay = 300) {
+            return MoveCover(Park, "closing", ct, delay);
+        }
+
+        private async Task<bool> MoveCover(string target, string verb, CancellationToken ct, int delay) {
             if (!Connected || !SupportsOpenClose) {
                 return false;
             }
 
-            // Initiate the move
-            coverState = CoverState.NeitherOpenNorClosed;
-            SetSwitchValue("CAP_PARK", "PARK", true);
-            Logger.Info("Commanded flat device to park");
-
-            var started = DateTime.UtcNow;
-            while (coverState == CoverState.NeitherOpenNorClosed && !ct.IsCancellationRequested) {
-                if (DateTime.UtcNow - started > MoveTimeout) {
-                    Logger.Warning($"Flat device did not report park completion within {MoveTimeout.TotalSeconds:F0}s — giving up waiting");
-                    break;
-                }
-                await Task.Delay(delay, ct);
+            if (GetSwitchProperty("CAP_PARK")?.Switches.Any(s => s.Name == target) != true) {
+                Logger.Warning($"[{DeviceName}] CAP_PARK has no {target} switch; not {verb} the cover");
+                return false;
             }
 
-            Logger.Debug($"FlatDevice reached park position");
+            var mine = new CoverMove(target);
+            lock (moveLock) {
+                if (move is { } older) {
+                    older.Superseded = true;
+                    older.Ended = true;
+                }
 
-            return coverState == CoverState.Closed;
+                move = mine;
+                coverState = CoverState.NeitherOpenNorClosed;
+            }
+
+            try {
+                SetSwitchValue("CAP_PARK", target, true);
+                Logger.Info($"[{DeviceName}] Commanded the flat device to {target.ToLowerInvariant()}");
+
+                var started = DateTime.UtcNow;
+                while (true) {
+                    lock (moveLock) {
+                        if (mine.Ended) {
+                            break;
+                        }
+                    }
+
+                    if (!Connected) {
+                        Logger.Warning($"[{DeviceName}] The flat device disconnected while {verb} the cover");
+                        break;
+                    }
+
+                    if (DateTime.UtcNow - started > MoveTimeout) {
+                        Logger.Warning($"[{DeviceName}] The flat device did not report the end of {verb} the cover within {MoveTimeout.TotalSeconds:F0} s; giving up waiting");
+                        break;
+                    }
+
+                    await Task.Delay(delay, ct);
+                }
+            } finally {
+                lock (moveLock) {
+                    if (ReferenceEquals(move, mine)) {
+                        // timeout, cancellation, lost connection or a failed send: where the cover is, only the
+                        // driver's next update tells
+                        mine.Ended = true;
+                        move = null;
+                        coverState = CoverState.Unknown;
+                    }
+                }
+            }
+
+            bool? result;
+            bool superseded;
+            lock (moveLock) {
+                // also an answer that came after the wait gave up
+                result = mine.Result;
+                superseded = mine.Superseded;
+            }
+
+            if (superseded) {
+                Logger.Warning($"[{DeviceName}] {char.ToUpperInvariant(verb[0])}{verb[1..]} the cover was superseded by another cover command");
+                return false;
+            }
+
+            if (result == false) {
+                throw new InvalidOperationException($"The flat device driver reported an error (CAP_PARK Alert) while {verb} the cover");
+            }
+
+            Logger.Debug($"[{DeviceName}] Flat device {verb} the cover: {(result == true ? "done" : "not confirmed")}");
+            return result == true;
         }
 
         public bool SupportsOnOff {

@@ -32,7 +32,9 @@ namespace NINA.Equipment.Equipment.MyFocuser {
     public partial class NitecrawlerFocuser : BaseINPC, IFocuser, IFocuserReportsMoveEnd {
         private readonly IProfileService _profileService;
         private readonly int _uniqueId;
-        private readonly static TimeSpan _sameFocuserPositionTimeout = TimeSpan.FromMinutes(1);
+        // a move that ends without progress is sent again for this long; also how long a move may report moving without
+        // the position changing before it counts as blocked (the Nitecrawler moves slowly over long distances)
+        private readonly static TimeSpan _sameFocuserPositionTimeout = TimeSpan.FromMinutes(3);
 
         public NitecrawlerFocuser(int id, uint serial, IProfileService profileService) {
             Id = $"{serial}";
@@ -265,44 +267,60 @@ namespace NINA.Equipment.Equipment.MyFocuser {
 
         public Task<bool> Connect(CancellationToken token) {
             return Task.Run(() => {
-                // Verify, the focuser _uniqueId actually exists
-                int[] ids = new int[NC_MAX_NUM];
-                ScanFocusers(out var count, ids);
-                if (!ids.Take(count).Contains(_uniqueId)) {
-                    Notification.ShowError(Loc.Instance["LblNitecrawlerFocuserNotAvailableError"]);
-                    Logger.Error("Selected Nitecrawler focuser not available (disconnected?)");
-                    return false;
-                }
-                if (FocuserOpen(_uniqueId) == NC_ERROR_TYPE.NC_SUCCESS) {
-                    DriverInfo = $"SDK: {DriverVersion}; FW: {GetFwVersionString()}";
-
-                    // A failed read leaves maxStep 0, which written back would set the focuser's max step to 0
-                    var configErr = GetFocuserConfig(_uniqueId, out var config);
-                    if (configErr == NC_ERROR_TYPE.NC_SUCCESS) {
-                        readingMaxStepFromFocuser = true;
-                        try {
-                            TargetMaxStep = config.maxStep;
-                        } finally {
-                            readingMaxStepFromFocuser = false;
-                        }
-                    } else {
-                        Logger.Error($"Nitecrawler could not read the focuser configuration: {configErr}; leaving its max step as it is");
-                    }
-
-                    RaisePropertyChanged(nameof(MaxStep));
-
-                    Connected = true;
-                    return true;
-                } else {
-                    Logger.Error("Failed to connect to Nitecrawler focuser");
+                try {
+                    return ConnectCore();
+                } catch (Exception ex) {
+                    Logger.Error($"Nitecrawler focuser Connect crashed: {ex}");
+                    Notification.ShowError($"Nitecrawler focuser connection error: {ex.Message}");
                     return false;
                 }
             }, token);
         }
 
+        private bool ConnectCore() {
+            // Verify, the focuser _uniqueId actually exists
+            int[] ids = new int[NC_MAX_NUM];
+            var scanErr = ScanFocusers(out var count, ids);
+            if (scanErr != NC_ERROR_TYPE.NC_SUCCESS || !ids.Take(count).Contains(_uniqueId)) {
+                Notification.ShowError(Loc.Instance["LblNitecrawlerFocuserNotAvailableError"]);
+                Logger.Error($"Selected Nitecrawler focuser not available (disconnected?), scan result {scanErr}");
+                return false;
+            }
+
+            var openErr = FocuserOpen(_uniqueId);
+            if (openErr == NC_ERROR_TYPE.NC_SUCCESS) {
+                DriverInfo = $"SDK: {DriverVersion}; FW: {GetFwVersionString()}";
+
+                // A failed read leaves maxStep 0, which written back would set the focuser's max step to 0
+                var configErr = GetFocuserConfig(_uniqueId, out var config);
+                if (configErr == NC_ERROR_TYPE.NC_SUCCESS) {
+                    readingMaxStepFromFocuser = true;
+                    try {
+                        TargetMaxStep = config.maxStep;
+                    } finally {
+                        readingMaxStepFromFocuser = false;
+                    }
+                } else {
+                    Logger.Error($"Nitecrawler could not read the focuser configuration: {configErr}; leaving its max step as it is");
+                }
+
+                RaisePropertyChanged(nameof(MaxStep));
+
+                Connected = true;
+                return true;
+            } else {
+                Logger.Error($"Failed to connect to Nitecrawler focuser: {openErr}");
+                return false;
+            }
+        }
+
         private string GetFwVersionString() {
             NC_VERSION version = new();
-            _ = GetVersion(_uniqueId, out version);
+            var err = GetVersion(_uniqueId, out version);
+            if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                Logger.Error($"Nitecrawler could not read the focuser firmware version: {err}");
+                return "Unknown";
+            }
 
             uint major = (version.firmware >> 24) & 0xFF;
             uint minor = (version.firmware >> 16) & 0xFF;
@@ -312,12 +330,29 @@ namespace NINA.Equipment.Equipment.MyFocuser {
         }
 
         public void Disconnect() {
-            _ = FocuserClose(_uniqueId);
+            // first: a status read failing during the close must not start a removal check that disconnects again
             Connected = false;
+            try {
+                var err = FocuserClose(_uniqueId);
+                if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                    Logger.Error($"Nitecrawler failed to close the focuser: {err}");
+                }
+            } catch (Exception ex) {
+                Logger.Error($"Nitecrawler focuser Disconnect crashed: {ex}");
+            }
         }
 
+        // Also runs from FocuserVM's cancellation callback, where an exception would escape into Cancel(): only logged,
+        // without the removal check (a scan) that would hold up the cancellation
         public void Halt() {
-            FocuserStopMove(_uniqueId);
+            try {
+                var err = FocuserStopMove(_uniqueId);
+                if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                    Logger.Error($"Nitecrawler failed to stop the focuser: {err}");
+                }
+            } catch (Exception ex) {
+                Logger.Error($"Nitecrawler focuser Halt crashed: {ex}");
+            }
         }
 
         public async Task Move(int position, CancellationToken ct, int waitInMs = 1000) {
@@ -333,26 +368,13 @@ namespace NINA.Equipment.Equipment.MyFocuser {
                 }
 
                 await CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
-                NC_FOCUSER_STATUS status = default;
-                bool moving;
-                do {
-                    err = GetFocuserStatus(_uniqueId, out status);
+                var (result, last) = await NativeMoveWait.WaitAsync(ReadMoveStatus, TimeSpan.FromMilliseconds(100), _sameFocuserPositionTimeout, () => DateTime.UtcNow, ct);
+                if (result == MoveWaitResult.Stalled) {
+                    Halt();
+                    throw new Exception($"Focuser stopped: it reported moving for {_sameFocuserPositionTimeout.TotalMinutes:F0} min without leaving position {last.Position}");
+                }
 
-                    if (err == NC_ERROR_TYPE.NC_SUCCESS) {
-                        System.Threading.Interlocked.Exchange(ref _consecutiveCommErrors, 0);
-                        moving = status.moving == 1;
-                    } else if (err == NC_ERROR_TYPE.NC_ERROR_COMMUNICATION && HandleCommunicationError("move status poll")) {
-                        // Transient glitch and the device is still present - keep polling rather than aborting the move
-                        moving = true;
-                    } else {
-                        if (err != NC_ERROR_TYPE.NC_ERROR_COMMUNICATION) {
-                            Logger.Error($"Nitecrawler error to get moving state {err}");
-                        }
-                        throw new Exception($"Focuser error {err}");
-                    }
-
-                    await CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
-                } while (moving && !ct.IsCancellationRequested);
+                await CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
 
                 if (lastPosition == Position) {
                     ++samePositionCount;
@@ -368,8 +390,27 @@ namespace NINA.Equipment.Equipment.MyFocuser {
                     lastMovementTime = DateTime.Now;
                 }
 
-                lastPosition = status.position;
+                lastPosition = (int)last.Position;
             }
+        }
+
+        private MoveStatus ReadMoveStatus() {
+            var err = GetFocuserStatus(_uniqueId, out var status);
+            if (err == NC_ERROR_TYPE.NC_SUCCESS) {
+                System.Threading.Interlocked.Exchange(ref _consecutiveCommErrors, 0);
+                return new MoveStatus(true, status.moving == 1, status.position);
+            }
+
+            if (err == NC_ERROR_TYPE.NC_ERROR_COMMUNICATION && HandleCommunicationError("move status poll")) {
+                // Transient glitch and the device is still present - keep polling rather than aborting the move
+                return MoveStatus.Unread;
+            }
+
+            if (err != NC_ERROR_TYPE.NC_ERROR_COMMUNICATION) {
+                Logger.Error($"Nitecrawler error to get moving state {err}");
+            }
+
+            throw new Exception($"Focuser error {err}");
         }
 
         #region Unsupported

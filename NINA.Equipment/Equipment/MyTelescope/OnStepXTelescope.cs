@@ -1950,15 +1950,50 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         // Caller holds pulseLock.
         private DateTime PulseEnd => raPulseEnd > decPulseEnd ? raPulseEnd : decPulseEnd;
 
+        // The refusal last notified by PulseGuide; a pulse that goes through clears it
+        private volatile string? notifiedPulseRefusal;
+
         /// <summary>
-        /// Sends the pulse at once, past any read in progress (:Mg has no reply). A pulse the controller would refuse
-        /// (Guide::validate: parked, a goto running, which a pulse would abort, or a limit or hardware error) throws
-        /// instead, judged on the last known status without reading it again, which would delay the pulse.
+        /// For NINA's other callers (the Direct Guider's dither, manual pulses, plugins), which, as with ASCOM and INDI
+        /// mounts, don't expect a pulse to throw: a pulse that is refused or cannot be sent is logged, and a refusal is
+        /// notified once per reason until a pulse goes through. The internal guider uses
+        /// <see cref="PulseGuideForGuider"/>, which throws.
         /// </summary>
         public void PulseGuide(GuideDirections direction, int duration) {
             if (!Connected) {
                 Notification.ShowWarning(Loc.Instance["LblTelescopeNotConnected"]);
                 return;
+            }
+
+            try {
+                PulseGuideForGuider(direction, duration);
+            } catch (PulseRefusedException ex) {
+                Logger.Warning(ex.Message);
+                if (ex.Reason != notifiedPulseRefusal) {
+                    notifiedPulseRefusal = ex.Reason;
+                    Notification.ShowWarning(ex.Message);
+                }
+            } catch (InvalidOperationException ex) {
+                // logged where it failed, without a notification of its own
+                Logger.Debug($"OnStepX: {direction} pulse of {duration} ms not sent: {ex.Message}");
+            }
+        }
+
+        /// <summary>A guide pulse the controller would refuse; <see cref="Reason"/> without the status it was read from.</summary>
+        internal sealed class PulseRefusedException(string reason, string message) : InvalidOperationException(message) {
+            public string Reason { get; } = reason;
+        }
+
+        /// <summary>
+        /// Sends the pulse at once, past any read in progress (:Mg has no reply). A pulse the controller would refuse
+        /// (Guide::validate: parked, a goto running, which a pulse would abort, or a limit or hardware error) throws
+        /// <see cref="PulseRefusedException"/> instead, judged on the last known status without reading it again, which
+        /// would delay the pulse; one that cannot be sent, also without a connection, throws
+        /// <see cref="InvalidOperationException"/>.
+        /// </summary>
+        internal void PulseGuideForGuider(GuideDirections direction, int duration) {
+            if (!Connected) {
+                throw new InvalidOperationException("OnStepX: the guide pulse could not be sent: not connected");
             }
             if (duration < 1) {
                 return;
@@ -1966,11 +2001,12 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             lock (pulseLock) {
                 // a pulse aborts a goto that may already run (Guide::validate), and the last status predates it
                 if (motionCommandAt > latestStatusAt) {
-                    throw new InvalidOperationException("OnStepX refuses guide pulses: a goto, park or home has just been started");
+                    const string justStarted = "a goto, park or home has just been started";
+                    throw new PulseRefusedException(justStarted, $"OnStepX refuses guide pulses: {justStarted}");
                 }
             }
             if (LatestStatus(PulseRefusalStatusMaxAge) is { } known && PulseRefusal(known) is { } reason) {
-                throw new InvalidOperationException($"OnStepX refuses guide pulses: {reason} ({known.Raw})");
+                throw new PulseRefusedException(reason, $"OnStepX refuses guide pulses: {reason} ({known.Raw})");
             }
 
             var dir = direction switch {
@@ -1995,9 +2031,11 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 throw new InvalidOperationException("OnStepX: the guide pulse could not be sent: the connection was lost", ex);
             }
             if (onLine is not { } start) {
+                Logger.Warning("OnStepX: guide pulse not sent");
                 throw new InvalidOperationException("OnStepX: the guide pulse could not be sent");
             }
 
+            notifiedPulseRefusal = null;
             lock (pulseLock) {
                 var end = start + TimeSpan.FromMilliseconds(ms) + PulseEndMargin;
                 if (dir is OnStepXDirection.East or OnStepXDirection.West) {

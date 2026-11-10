@@ -73,7 +73,16 @@ namespace NINA.Equipment.Equipment.MyRotator {
                     mask = (uint)MASK_ROTATOR_REVERSE_DIRECTION,
                     reverseDirection = value ? 1 : 0
                 };
-                _ = SetRotatorConfig(_uniqueId, config);
+                var err = SetRotatorConfig(_uniqueId, config);
+                if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                    // the getter reads the rotator again, so the change below shows the direction it kept
+                    Logger.Error($"Nitecrawler failed to set the reverse direction to {value}: {err}");
+
+                    if (err == NC_ERROR_TYPE.NC_ERROR_COMMUNICATION && Connected) {
+                        HandleCommunicationError("set reverse direction");
+                    }
+                }
+
                 RaisePropertyChanged(nameof(Reverse));
             }
         }
@@ -255,23 +264,31 @@ namespace NINA.Equipment.Equipment.MyRotator {
 
         public Task<bool> Connect(CancellationToken token) {
             return Task.Run(() => {
-                // Verify, the Rotator _uniqueId actually exists
-                int[] ids = new int[NC_MAX_NUM];
-                ScanRotators(out var count, ids);
-                if (!ids.Take(count).Contains(_uniqueId)) {
-                    Notification.ShowError(Loc.Instance["LblNitecrawlerRotatorNotAvailableError"]);
-                    Logger.Error("Selected Nitecrawler Rotator not available (disconnected?)");
-                    return false;
-                }
-                if (RotatorOpen(_uniqueId) == NC_ERROR_TYPE.NC_SUCCESS) {
-                    DriverInfo = $"SDK: {DriverVersion}; FW: {GetFwVersionString()}";
+                try {
+                    // Verify, the Rotator _uniqueId actually exists
+                    int[] ids = new int[NC_MAX_NUM];
+                    var scanErr = ScanRotators(out var count, ids);
+                    if (scanErr != NC_ERROR_TYPE.NC_SUCCESS || !ids.Take(count).Contains(_uniqueId)) {
+                        Notification.ShowError(Loc.Instance["LblNitecrawlerRotatorNotAvailableError"]);
+                        Logger.Error($"Selected Nitecrawler Rotator not available (disconnected?), scan result {scanErr}");
+                        return false;
+                    }
 
-                    GetRotatorConfig(_uniqueId, out var config);
+                    var openErr = RotatorOpen(_uniqueId);
+                    if (openErr == NC_ERROR_TYPE.NC_SUCCESS) {
+                        DriverInfo = $"SDK: {DriverVersion}; FW: {GetFwVersionString()}";
 
-                    Connected = true;
-                    return true;
-                } else {
-                    Logger.Error("Failed to connect to Nitecrawler Rotator");
+                        GetRotatorConfig(_uniqueId, out var config);
+
+                        Connected = true;
+                        return true;
+                    } else {
+                        Logger.Error($"Failed to connect to Nitecrawler Rotator: {openErr}");
+                        return false;
+                    }
+                } catch (Exception ex) {
+                    Logger.Error($"Nitecrawler Rotator Connect crashed: {ex}");
+                    Notification.ShowError($"Nitecrawler Rotator connection error: {ex.Message}");
                     return false;
                 }
             }, token);
@@ -279,7 +296,11 @@ namespace NINA.Equipment.Equipment.MyRotator {
 
         private string GetFwVersionString() {
             NC_VERSION version = new();
-            _ = GetVersion(_uniqueId, out version);
+            var err = GetVersion(_uniqueId, out version);
+            if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                Logger.Error($"Nitecrawler could not read the rotator firmware version: {err}");
+                return "Unknown";
+            }
 
             uint major = (version.firmware >> 24) & 0xFF;
             uint minor = (version.firmware >> 16) & 0xFF;
@@ -289,13 +310,33 @@ namespace NINA.Equipment.Equipment.MyRotator {
         }
 
         public void Disconnect() {
-            _ = RotatorClose(_uniqueId);
+            // first: a status read failing during the close must not start a removal check that disconnects again
             Connected = false;
+            try {
+                var err = RotatorClose(_uniqueId);
+                if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                    Logger.Error($"Nitecrawler failed to close the rotator: {err}");
+                }
+            } catch (Exception ex) {
+                Logger.Error($"Nitecrawler Rotator Disconnect crashed: {ex}");
+            }
         }
 
+        // Also runs from RotatorVM's cancellation callback, where an exception would escape into Cancel(): only logged,
+        // without the removal check (a scan) that would hold up the cancellation
         public void Halt() {
-            RotatorStopMove(_uniqueId);
+            try {
+                var err = RotatorStopMove(_uniqueId);
+                if (err != NC_ERROR_TYPE.NC_SUCCESS) {
+                    Logger.Error($"Nitecrawler failed to stop the rotator: {err}");
+                }
+            } catch (Exception ex) {
+                Logger.Error($"Nitecrawler Rotator Halt crashed: {ex}");
+            }
         }
+
+        // a rotator that keeps reporting a move without its position changing for this long is blocked
+        private static readonly TimeSpan MoveStallTimeout = TimeSpan.FromMinutes(3);
 
         public async Task<bool> Move(float angle, CancellationToken ct) {
             if(!Connected) {
@@ -318,28 +359,32 @@ namespace NINA.Equipment.Equipment.MyRotator {
             }
 
             await CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
-            NC_ROTATOR_STATUS status = default;
-            bool moving;
-            do {
-                err = GetRotatorStatus(_uniqueId, out status);
-
-                if (err == NC_ERROR_TYPE.NC_SUCCESS) {
-                    System.Threading.Interlocked.Exchange(ref _consecutiveCommErrors, 0);
-                    moving = status.moving == 1;
-                } else if (err == NC_ERROR_TYPE.NC_ERROR_COMMUNICATION && HandleCommunicationError("move status poll")) {
-                    // Transient glitch and the device is still present - keep polling rather than aborting the move
-                    moving = true;
-                } else {
-                    if (err != NC_ERROR_TYPE.NC_ERROR_COMMUNICATION) {
-                        Logger.Error($"Nitecrawler error to get moving state {err}");
-                    }
-                    throw new Exception($"Rotator error {err}");
-                }
-
-                await CoreUtil.Wait(TimeSpan.FromMilliseconds(100), ct);
-            } while (moving && !ct.IsCancellationRequested);
+            var (result, last) = await NativeMoveWait.WaitAsync(ReadMoveStatus, TimeSpan.FromMilliseconds(100), MoveStallTimeout, () => DateTime.UtcNow, ct);
+            if (result == MoveWaitResult.Stalled) {
+                Halt();
+                throw new Exception($"Nitecrawler rotator stopped: it reported moving for {MoveStallTimeout.TotalMinutes:F0} min without leaving {last.Position:F2}°");
+            }
 
             return true;
+        }
+
+        private MoveStatus ReadMoveStatus() {
+            var err = GetRotatorStatus(_uniqueId, out var status);
+            if (err == NC_ERROR_TYPE.NC_SUCCESS) {
+                System.Threading.Interlocked.Exchange(ref _consecutiveCommErrors, 0);
+                return new MoveStatus(true, status.moving == 1, status.position);
+            }
+
+            if (err == NC_ERROR_TYPE.NC_ERROR_COMMUNICATION && HandleCommunicationError("move status poll")) {
+                // Transient glitch and the device is still present - keep polling rather than aborting the move
+                return MoveStatus.Unread;
+            }
+
+            if (err != NC_ERROR_TYPE.NC_ERROR_COMMUNICATION) {
+                Logger.Error($"Nitecrawler error to get moving state {err}");
+            }
+
+            throw new Exception($"Rotator error {err}");
         }
 
         public async Task<bool> MoveAbsoluteMechanical(float targetPosition, CancellationToken ct) {

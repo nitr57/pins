@@ -290,6 +290,11 @@ internal sealed class MountPulseOutput(ITelescopeMediator telescope) : IPulseOut
             // a driver error reaches the guider (IndiTelescope.PulseGuide only logged it and notified for every pulse)
             await Task.Run(() => indiMount.PulseGuideForGuider(dir, durationMs), ct).ConfigureAwait(false);
         }
+        else if (telescope.GetDevice() is OnStepXTelescope onStepX)
+        {
+            // a refused or unsent pulse reaches the guider (OnStepXTelescope.PulseGuide only logs it for other callers)
+            await Task.Run(() => onStepX.PulseGuideForGuider(dir, durationMs), ct).ConfigureAwait(false);
+        }
         else
         {
             await Task.Run(() => telescope.PulseGuide(dir, durationMs), ct).ConfigureAwait(false);

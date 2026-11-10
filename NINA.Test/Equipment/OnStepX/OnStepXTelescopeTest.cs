@@ -477,8 +477,8 @@ namespace NINA.Test.Equipment.OnStepX {
             var slew = telescope.SlewToCoordinates(new Coordinates(Angle.ByHours(5), Angle.ByDegree(20), Epoch.JNOW), CancellationToken.None);
             await WaitUntil(() => port.Written.Contains(":MS#"));
 
-            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
-                Throws.InvalidOperationException.With.Message.Contains("just been started"));
+            Assert.That(() => telescope.PulseGuideForGuider(GuideDirections.guideNorth, 100),
+                Throws.InstanceOf<InvalidOperationException>().With.Message.Contains("just been started"));
             Assert.That(port.Written.Any(c => c.StartsWith(":Mg")), Is.False);
             Assert.That(await slew, Is.True);
         }
@@ -759,9 +759,46 @@ namespace NINA.Test.Equipment.OnStepX {
             port.On(":GU#", status);
             _ = telescope.Slewing;
 
-            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
-                Throws.InvalidOperationException.With.Message.Contains(reason));
+            Assert.That(() => telescope.PulseGuideForGuider(GuideDirections.guideNorth, 100),
+                Throws.InstanceOf<InvalidOperationException>().With.Message.Contains(reason));
             Assert.That(port.Written.Any(c => c.StartsWith(":Mg")), Is.False);
+        }
+
+        [Test]
+        public async Task PulseGuide_RefusedForAnotherCaller_DoesNotThrow() {
+            // the Direct Guider's dither and manual pulses don't expect a throw (as with ASCOM and INDI mounts)
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "NpEW222#");
+            _ = telescope.Slewing;
+
+            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100), Throws.Nothing);
+            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100), Throws.Nothing);
+            Assert.That(port.Written.Any(c => c.StartsWith(":Mg")), Is.False);
+        }
+
+        [Test]
+        public async Task InternalGuider_RefusedPulse_ReachesTheGuider() {
+            // the internal guider pulses through PulseGuideForGuider, so a refusal counts as an output failure
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.On(":GU#", "NpEW222#");
+            _ = telescope.Slewing;
+            var mediator = new Mock<NINA.Equipment.Interfaces.Mediator.ITelescopeMediator>();
+            mediator.Setup(m => m.GetInfo()).Returns(new TelescopeInfo { Connected = true, CanPulseGuide = true });
+            mediator.Setup(m => m.GetDevice()).Returns(telescope);
+            var output = new NINA.Equipment.Equipment.MyGuider.Internal.MountPulseOutput(mediator.Object);
+
+            Assert.That(async () => await output.PulseAsync(NINA.GuideEngine.Core.GuideDirection.North, 100, CancellationToken.None),
+                Throws.InstanceOf<InvalidOperationException>().With.Message.Contains("limit"));
+            mediator.Verify(m => m.PulseGuide(It.IsAny<GuideDirections>(), It.IsAny<int>()), Times.Never);
+        }
+
+        [Test]
+        public async Task PulseGuideForGuider_NotConnected_Throws() {
+            var (telescope, _) = await Connected(FakeOnStepXPort.Umi17S());
+            telescope.Disconnect();
+
+            Assert.That(() => telescope.PulseGuideForGuider(GuideDirections.guideNorth, 100),
+                Throws.InstanceOf<InvalidOperationException>().With.Message.Contains("not connected"));
         }
 
         [Test]
@@ -988,8 +1025,8 @@ namespace NINA.Test.Equipment.OnStepX {
             port.On(":GU#", "nNphEo290#");
             _ = telescope.Slewing;
 
-            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
-                Throws.InvalidOperationException.With.Message.Contains("homing"));
+            Assert.That(() => telescope.PulseGuideForGuider(GuideDirections.guideNorth, 100),
+                Throws.InstanceOf<InvalidOperationException>().With.Message.Contains("homing"));
         }
 
         [Test]
@@ -1396,8 +1433,17 @@ namespace NINA.Test.Equipment.OnStepX {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
             port.FailWritesOf(":Mgn0100#", new TimeoutException());
 
-            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
-                Throws.InvalidOperationException.With.Message.Contains("guide pulse could not be sent: writing :Mgn0100# timed out"));
+            Assert.That(() => telescope.PulseGuideForGuider(GuideDirections.guideNorth, 100),
+                Throws.InstanceOf<InvalidOperationException>().With.Message.Contains("guide pulse could not be sent: writing :Mgn0100# timed out"));
+            Assert.That(telescope.Connected, Is.True);
+        }
+
+        [Test]
+        public async Task PulseGuide_WriteTimeoutForAnotherCaller_DoesNotThrow() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.FailWritesOf(":Mgn0100#", new TimeoutException());
+
+            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100), Throws.Nothing);
             Assert.That(telescope.Connected, Is.True);
         }
 
