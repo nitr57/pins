@@ -203,9 +203,7 @@ Notification.Broadcaster = async (message) => {
 
 // Set up the progress broadcaster to use SignalR
 var signalRProgressBroadcaster = app.Services.GetRequiredService<SignalRProgressBroadcaster>();
-Progress.Broadcaster = async (message) => {
-    await signalRProgressBroadcaster.BroadcastProgressAsync(message);
-};
+Progress.Broadcaster = signalRProgressBroadcaster.BroadcastProgressAsync;
 
 // Earth rotation parameters (UT1-UTC, polar motion) from the IERS, which upstream NINA updates at startup in App.xaml.cs.
 // Only when they are outdated (the updater's own limit of 10 days) is anything logged: the update needs
@@ -240,48 +238,77 @@ System.Windows.Application.ApplicationLifetime = lifetime;
 lifetime.ApplicationStopping.Register(() => {
     Logger.Info("Application shutting down...");
 
+    var shutdownClock = System.Diagnostics.Stopwatch.StartNew();
+    string phase = "start";
+
+    // systemd kills pins 180 s after the stop (TimeoutStopSec in pins.service), in the middle of whatever runs. Before
+    // that, end it with the log flushed and the phase that hung in it.
+    using var watchdog = new System.Threading.Timer(_ => {
+        Logger.Error($"Shutdown still in phase \"{phase}\" after {shutdownClock.Elapsed.TotalSeconds:F0} s; exiting without finishing it");
+        Logger.CloseAndFlush();
+        Environment.Exit(1);
+    }, null, TimeSpan.FromSeconds(170), System.Threading.Timeout.InfiniteTimeSpan);
+
+    // Each phase logs its duration, so a slow stop shows where it hangs
+    void RunPhase(string name, Action action) {
+        phase = name;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        action();
+        Logger.Info($"Shutdown: {name} took {clock.Elapsed.TotalSeconds:F1} s");
+    }
+
     // First: indiserver ending from now on is the shutdown, not a crash, so no recovery may restart it and its drivers
     INDIClient.Instance.BeginShutdown();
 
     // Halt MCP jobs (slews, focuser moves, exposures, also a park) through their tokens before the equipment goes away
     // under them: whoever stops pins wants it stopped, and a park can be started again afterwards
-    try {
-        var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5));
-        if (stillRunning > 0) {
-            Logger.Warning($"{stillRunning} MCP job(s) did not stop before shutdown");
+    RunPhase("stopping MCP jobs", () => {
+        try {
+            var stillRunning = app.Services.StopPinsMcpJobs(TimeSpan.FromSeconds(5));
+            if (stillRunning > 0) {
+                Logger.Warning($"{stillRunning} MCP job(s) did not stop before shutdown");
+            }
+        } catch (Exception ex) {
+            Logger.Error("Failed to stop MCP jobs", ex);
         }
-    } catch (Exception ex) {
-        Logger.Error("Failed to stop MCP jobs", ex);
-    }
+    });
 
     // The guide camera isn't part of the equipment ApplicationVM.Closing disconnects. Stop the guider before
     // taking its camera away, and close the camera before Closing shuts down the camera SDKs (Atik).
-    try {
-        Nito.AsyncEx.AsyncContext.Run(async () => {
-            await app.Services.GetRequiredService<IGuiderMediator>().Disconnect();
-            await app.Services.GetRequiredService<IGuideCameraMediator>().Disconnect();
-        });
-    } catch (Exception ex) {
-        Logger.Error("Failed to disconnect the guide camera", ex);
-    }
+    RunPhase("disconnecting the guider and guide camera", () => {
+        try {
+            Nito.AsyncEx.AsyncContext.Run(async () => {
+                await app.Services.GetRequiredService<IGuiderMediator>().Disconnect();
+                await app.Services.GetRequiredService<IGuideCameraMediator>().Disconnect();
+            });
+        } catch (Exception ex) {
+            Logger.Error("Failed to disconnect the guide camera", ex);
+        }
+    });
 
     // ApplicationVM.Closing disposes the INDI client before it disconnects the equipment, which would cut off the
     // DISCONNECT that INDI devices send in the background, and the drivers then never close their hardware (cooler,
     // ports). So disconnect the equipment here first and let those handshakes finish while the server still runs;
     // Closing then finds it disconnected.
-    try {
-        if (app.Services.GetService<IApplicationDeviceConnectionVM>() is ApplicationDeviceConnectionVM deviceConnection) {
-            Nito.AsyncEx.AsyncContext.Run(deviceConnection.DisconnectEquipment);
+    RunPhase("disconnecting the equipment", () => {
+        try {
+            if (app.Services.GetService<IApplicationDeviceConnectionVM>() is ApplicationDeviceConnectionVM deviceConnection) {
+                Nito.AsyncEx.AsyncContext.Run(deviceConnection.DisconnectEquipment);
+            }
+
+            INDIClient.Instance.WaitForDeviceDisconnects(TimeSpan.FromSeconds(10));
+        } catch (Exception ex) {
+            Logger.Error("Failed to disconnect the equipment", ex);
         }
+    });
 
-        INDIClient.Instance.WaitForDeviceDisconnects(TimeSpan.FromSeconds(10));
-    } catch (Exception ex) {
-        Logger.Error("Failed to disconnect the equipment", ex);
-    }
-
-    // Call ApplicationVM.Closing() to properly disconnect equipment and cleanup
+    // Call ApplicationVM.Closing() to properly disconnect equipment and cleanup. It ends the process itself
+    // (Environment.Exit), so the log line comes before it; its steps (image save queue up to a minute, plugin
+    // teardowns) are timestamped Debug lines in the log file at log level Debug.
     var applicationVM = app.Services.GetService<IApplicationVM>();
     if (applicationVM != null) {
+        phase = "ApplicationVM.Closing (INDI client, equipment, image save queue, plugin teardowns)";
+        Logger.Info($"Shutdown: {shutdownClock.Elapsed.TotalSeconds:F1} s so far; closing the application");
         try {
             // Use reflection to call the private Closing method
             var closingMethod = applicationVM.GetType().GetMethod("Closing",

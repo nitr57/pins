@@ -36,11 +36,14 @@ namespace NINA.Core.Utility {
         // out first: otherwise the last tick of a progress (e.g. 100 %) could be the one that never arrives
         private static readonly Dictionary<string, (ProgressMessage Message, Timer Timer)> held = new();
 
-        // Guards the throttle state and the order of the sends. Messages go out one after another in the order they were
-        // published; sent in parallel, an update could reach the clients (and the broadcaster's list of active progresses,
-        // which new clients get) after the delete of its source and leave a progress bar that never goes away.
+        // Guards the throttle state and the order of the sends. The broadcaster is invoked under it, in the order the
+        // messages were published: out of order, an update could reach the clients (and the broadcaster's list of active
+        // progresses, which new clients get) after the delete of its source and leave a progress bar that never goes away.
+        // The sends are not awaited: one client that stopped reading (a phone that lost the WLAN) held every later
+        // message back for everyone until SignalR dropped it (~30 s). The order per client is kept by SignalR, which
+        // starts the write to every connection inside SendAsync and queues the writes of a connection in order.
+        // The broadcaster's synchronous part therefore runs on the publishing thread, under the gate: it must not block.
         private static readonly object gate = new();
-        private static Task sendChain = Task.CompletedTask;
 
         // Under gate
         private static void BroadcastProgress(ProgressMessage message) {
@@ -49,15 +52,19 @@ namespace NINA.Core.Utility {
                 return;
             }
 
-            sendChain = sendChain.ContinueWith(_ => Send(broadcaster, message), TaskScheduler.Default).Unwrap();
-        }
-
-        private static async Task Send(ProgressBroadcaster broadcaster, ProgressMessage message) {
+            Task send;
             try {
-                await broadcaster(message);
+                send = broadcaster(message);
             } catch (Exception ex) {
                 Logger.Error($"Failed to broadcast progress: {ex}");
+                return;
             }
+
+            send?.ContinueWith(
+                t => Logger.Error($"Failed to broadcast progress: {t.Exception}"),
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
         }
 
         // Under gate

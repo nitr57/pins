@@ -62,6 +62,9 @@ namespace NINA.Core.SignalR {
                     // suppress this stale broadcast to prevent the dialog re-appearing on the client.
                     long broadcastSeq = Interlocked.Increment(ref _globalSequence);
 
+                    // The send is started under the lock, which keeps the order against a clear, and awaited after it:
+                    // awaited inside, a client that stopped reading held every later dialog and clear back
+                    Task send;
                     await _broadcastLock.WaitAsync();
                     try {
                         if (data.Active) {
@@ -72,10 +75,12 @@ namespace NINA.Core.SignalR {
                             _activeDialogs[data.ContentType] = data;
                         }
 
-                        await _hubContext.Clients.All.SendAsync("ReceiveDialog", data);
+                        send = _hubContext.Clients.All.SendAsync("ReceiveDialog", data);
                     } finally {
                         _broadcastLock.Release();
                     }
+
+                    await send;
                 } else {
                     Logger.Warning($"Cannot broadcast dialog: data={data != null}, hubContext={_hubContext != null}");
                 }
@@ -114,13 +119,16 @@ namespace NINA.Core.SignalR {
                     long clearSeq = Interlocked.Increment(ref _globalSequence);
                     _clearSequences[contentType] = clearSeq;
 
+                    Task send;
                     await _broadcastLock.WaitAsync();
                     try {
                         _activeDialogs.TryRemove(contentType, out _);
-                        await _hubContext.Clients.All.SendAsync("ClearDialog", contentType);
+                        send = _hubContext.Clients.All.SendAsync("ClearDialog", contentType);
                     } finally {
                         _broadcastLock.Release();
                     }
+
+                    await send;
                 }
             } catch (Exception ex) {
                 Logger.Error($"Failed to clear dialog via SignalR: {ex.Message}");

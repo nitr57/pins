@@ -12,6 +12,8 @@ Group=pi
 Restart=always
 RestartSec=5
 KillMode=mixed
+# NINA/Program.cs ends a hanging shutdown itself after 170 s, with the log flushed
+TimeoutStopSec=180
 
 [Install]
 WantedBy=multi-user.target

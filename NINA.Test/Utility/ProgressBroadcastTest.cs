@@ -24,8 +24,9 @@ using System.Threading.Tasks;
 namespace NINA.Test.Utility {
 
     /// <summary>
-    /// The progress messages Touch-N-Stars gets: in the order they were published, also when a send is slow, and with the
-    /// last update of a throttled burst sent after the throttle interval instead of dropped.
+    /// The progress messages Touch-N-Stars gets: handed to the broadcaster in the order they were published, also when a
+    /// send is slow or never ends (the order per client is SignalR's), and with the last update of a throttled burst sent
+    /// after the throttle interval instead of dropped.
     /// </summary>
     [TestFixture]
     [NonParallelizable]
@@ -50,13 +51,19 @@ namespace NINA.Test.Utility {
             Progress.Broadcaster = previous;
         }
 
-        private void Capture(Func<ProgressMessage, int> delayMs) {
-            Progress.Broadcaster = async message => {
-                await Task.Delay(delayMs(message));
+        // Records each message when the broadcaster is invoked, then lets its send take what the test gives it
+        private void Capture(Func<ProgressMessage, Task> send) {
+            Progress.Broadcaster = message => {
                 lock (received) {
                     received.Add(message);
                 }
+
+                return send(message);
             };
+        }
+
+        private void Capture(Func<ProgressMessage, int> delayMs) {
+            Capture(message => Task.Delay(delayMs(message)));
         }
 
         private List<ProgressMessage> Received() {
@@ -68,16 +75,21 @@ namespace NINA.Test.Utility {
         private ApplicationStatus Status(string text, double progress = -1) => new() { Source = source, Status = text, Progress = progress };
 
         [Test]
-        public async Task Messages_ArriveInTheOrderTheyWerePublished_AlsoWhenASendIsSlow() {
-            // the create's send is slow; sent in parallel, the update and the delete would overtake it
-            Capture(m => m.State == "create" ? 200 : 0);
+        public void ASendThatNeverEnds_DoesNotHoldBackTheMessagesAfterIt() {
+            // a client that stopped reading: its send only ends when SignalR drops the connection
+            var stalled = new TaskCompletionSource();
+            Capture(m => m.State == "create" ? stalled.Task : Task.CompletedTask);
 
-            Progress.PublishNewStatus(Status("Exposing"));
-            Progress.PublishUpdateStatus(Status("Downloading"));
-            Progress.PublishRemoveStatus(Status(""));
-            await Task.Delay(600);
+            try {
+                Progress.PublishNewStatus(Status("Exposing"));
+                Progress.PublishUpdateStatus(Status("Downloading"));
+                Progress.PublishRemoveStatus(Status(""));
 
-            Assert.That(Received().Select(m => m.State), Is.EqualTo(new[] { "create", "update", "delete" }));
+                // in order, each handed over when it was published
+                Assert.That(Received().Select(m => m.State), Is.EqualTo(new[] { "create", "update", "delete" }));
+            } finally {
+                stalled.SetResult();
+            }
         }
 
         [Test]

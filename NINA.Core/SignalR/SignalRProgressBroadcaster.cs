@@ -47,7 +47,7 @@ namespace NINA.Core.SignalR {
                     } else if (message.State == "delete") {
                         _activeProgresses.TryRemove(message.Source, out _);
                     }
-                    await _hubContext.Clients.All.SendAsync("ReceiveProgress", message);
+                    await _hubContext.Clients.All.SendAsync("ReceiveProgress", message).ConfigureAwait(false);
                 }
             } catch (Exception ex) {
                 Utility.Logger.Error($"Failed to broadcast progress via SignalR: {ex.Message}");
