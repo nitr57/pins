@@ -2,6 +2,7 @@
 
 using Microsoft.Extensions.Logging;
 using NINA.Mcp.Jobs;
+using NINA.Mcp.Logs;
 using NINA.Mcp.Tools;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -240,7 +241,38 @@ public sealed class McpDispatcher {
         return SerializeResult(result);
     }
 
+    /// <summary>
+    /// Calls the tool. A tool that is not read-only logs its call and its answer at Information (jobs log their own start
+    /// and end), so the pins log tells what an AI client did; queries are not logged, since clients poll them.
+    /// </summary>
     private async Task<ToolCallResult> InvokeToolAsync(McpTool tool, JsonElement? arguments, CancellationToken cancellationToken) {
+        bool logged = !tool.Annotations.ReadOnly;
+
+        if (logged) {
+            logger.LogInformation("MCP tool {Tool} called: {Arguments}", tool.Name, LogText.Arguments(arguments));
+        }
+
+        ToolCallResult result;
+
+        try {
+            result = await InvokeToolCoreAsync(tool, arguments, cancellationToken).ConfigureAwait(false);
+        } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && logged) {
+            logger.LogInformation("MCP tool {Tool}: the client aborted the request", tool.Name);
+            throw;
+        }
+
+        if (logged) {
+            logger.LogInformation(
+                "MCP tool {Tool} answered {Outcome}: {Text}",
+                tool.Name,
+                result.IsError ? "error" : "ok",
+                LogText.Compact(result.Text));
+        }
+
+        return result;
+    }
+
+    private async Task<ToolCallResult> InvokeToolCoreAsync(McpTool tool, JsonElement? arguments, CancellationToken cancellationToken) {
         try {
             var result = await tool.InvokeAsync(new ToolArguments(arguments), toolContext, cancellationToken).ConfigureAwait(false);
 

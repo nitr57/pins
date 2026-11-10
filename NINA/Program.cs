@@ -310,13 +310,14 @@ lifetime.ApplicationStopping.Register(() => {
         phase = "ApplicationVM.Closing (INDI client, equipment, image save queue, plugin teardowns)";
         Logger.Info($"Shutdown: {shutdownClock.Elapsed.TotalSeconds:F1} s so far; closing the application");
         try {
-            // Use reflection to call the private Closing method
-            var closingMethod = applicationVM.GetType().GetMethod("Closing",
-                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            closingMethod?.Invoke(applicationVM, null);
+            // The command NINA's window close runs (generated from ApplicationVM.Closing): bound at compile time, so an
+            // upstream rename fails the build instead of skipping the shutdown
+            applicationVM.ClosingCommand.Execute(null);
         } catch (Exception ex) {
             Logger.Error("Failed to call ApplicationVM.Closing()", ex);
         }
+    } else {
+        Logger.Error("Shutdown: no application view model; the profile, settings, image save queue and plugins were not closed");
     }
 });
 

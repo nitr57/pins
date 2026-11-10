@@ -372,9 +372,59 @@ public class ProtocolDispatcherTests {
 
         Assert.That(body["isError"]!.GetValue<bool>(), Is.True);
         Assert.That(body["content"]![0]!["text"]!.GetValue<string>(), Does.Contain(running.Id).And.Contain("Slew to M31"));
-        Assert.That(logger.Entries, Is.Empty);
+
+        // A refusal is the tool's answer, not a pins failure: logged like any answer of a hardware tool.
+        Assert.That(logger.Entries.Select(entry => entry.Level), Is.All.EqualTo(LogLevel.Information));
+        Assert.That(logger.Entries.Last().Message, Does.StartWith("MCP tool park_mount answered error: ").And.Contain(running.Id));
 
         gate.SetResult(JobOutcome.Ok());
+    }
+
+    [Test]
+    public async Task ToolsCall_ToolThatIsNotReadOnly_LogsCallAndAnswer() {
+        var tool = new ProtocolFakeTool(
+            "slew_mount",
+            ToolAnnotations.Hardware,
+            (_, _, _) => Task.FromResult(ToolCallResult.Success("Slewing.\nJob job-123456 started.")));
+        var dispatcher = CreateDispatcher(tools: [tool]);
+
+        await DispatchAsync(dispatcher, """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slew_mount","arguments":{"value":"M42 Orion°"}}}""");
+
+        Assert.That(
+            logger.Entries.Select(entry => (entry.Level, entry.Message)),
+            Is.EqualTo(new[] {
+                (LogLevel.Information, "MCP tool slew_mount called: {\"value\":\"M42 Orion°\"}"),
+                (LogLevel.Information, "MCP tool slew_mount answered ok: Slewing. Job job-123456 started.")
+            }));
+    }
+
+    [Test]
+    public async Task ToolsCall_QueryTool_IsNotLogged() {
+        var tool = new ProtocolFakeTool("get_status", ToolAnnotations.Query);
+        var dispatcher = CreateDispatcher(tools: [tool]);
+
+        await DispatchAsync(dispatcher, """{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_status","arguments":{"value":"x"}}}""");
+
+        Assert.That(logger.Entries, Is.Empty, "clients poll queries; logging them would flood the log");
+    }
+
+    [Test]
+    public void ToolsCall_RequestAbortedDuringAWriteTool_IsLogged() {
+        using var aborted = new CancellationTokenSource();
+        var tool = new ProtocolFakeTool("stop_all", ToolAnnotations.Stop, async (_, _, token) => {
+            await aborted.CancelAsync();
+            token.ThrowIfCancellationRequested();
+
+            return ToolCallResult.Success("unreachable");
+        });
+        var dispatcher = CreateDispatcher(tools: [tool]);
+
+        using var document = JsonDocument.Parse("""{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stop_all"}}""");
+
+        Assert.ThrowsAsync(Is.InstanceOf<OperationCanceledException>(), () => dispatcher.DispatchAsync(document.RootElement, aborted.Token));
+        Assert.That(
+            logger.Entries.Select(entry => entry.Message),
+            Is.EqualTo(new[] { "MCP tool stop_all called: {}", "MCP tool stop_all: the client aborted the request" }));
     }
 
     [Test]

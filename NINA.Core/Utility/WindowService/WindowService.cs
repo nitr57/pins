@@ -212,17 +212,29 @@ namespace NINA.Core.Utility.WindowService {
                 // Compose a ResultCallback that invokes both the external callback (if provided)
                 // and the closeCommand (if provided)
                 Action<bool> composedCallback = (result) => {
-                    try { resultCallback?.Invoke(result); } catch { }
+                    try {
+                        resultCallback?.Invoke(result);
+                    } catch (Exception ex) {
+                        Logger.Error($"Headless dialog '{title}': the result callback failed", ex);
+                    }
+
                     try {
                         if (closeCommand != null && closeCommand.CanExecute(result)) {
                             closeCommand.Execute(result);
                         }
-                    } catch { }
+                    } catch (Exception ex) {
+                        Logger.Error($"Headless dialog '{title}': its close command failed", ex);
+                    }
+
                     // Mirrors the real WPF path's Window.Closed handler (GenerateWindow below): callers that
                     // subscribe to OnClosed to dispose/cancel a dialog VM when dismissed without a recognized
                     // button (e.g. a headless dialog's fallback Cancel, or the DialogService window being
                     // superseded) must still be notified in headless mode, or they hang waiting forever.
-                    try { this.OnClosed?.Invoke(this, EventArgs.Empty); } catch { }
+                    try {
+                        this.OnClosed?.Invoke(this, EventArgs.Empty);
+                    } catch (Exception ex) {
+                        Logger.Error($"Headless dialog '{title}': a closed handler failed", ex);
+                    }
                 };
 
                 var dialog = new DialogService.DialogInfo {
@@ -371,7 +383,15 @@ namespace NINA.Core.Utility.WindowService {
                     foreach (var (name, cmd, isDefault, isCancel) in commandButtons) {
                         var capturedCmd = cmd;
                         DialogService.AddButton(dialogId, name, name, isDefault: isDefault, isCancel: isCancel,
-                            onClick: () => { try { if (capturedCmd.CanExecute(null)) capturedCmd.Execute(null); } catch { } });
+                            onClick: () => {
+                                try {
+                                    if (capturedCmd.CanExecute(null)) {
+                                        capturedCmd.Execute(null);
+                                    }
+                                } catch (Exception ex) {
+                                    Logger.Error($"Headless dialog '{title}': the button '{name}' failed", ex);
+                                }
+                            });
                         availableCommandNames.Add(name);
                     }
                 } else {

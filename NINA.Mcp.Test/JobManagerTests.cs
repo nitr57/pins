@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+using Microsoft.Extensions.Logging;
 using NINA.Mcp.Jobs;
 using NINA.Mcp.Test.Fakes;
 using NUnit.Framework;
@@ -706,6 +707,85 @@ public class JobManagerTests {
         Assert.That(() => jobs.Reserve(["mount"], "set_tracking on"), Throws.InvalidOperationException);
 
         stuck.SetResult(JobOutcome.Ok());
+    }
+
+    // ----- log -----
+
+    [Test]
+    public async Task Log_StartAndEnd_InThisOrder() {
+        var logger = new ProtocolCapturingLogger<JobManager>();
+        using var logged = new JobManager(time, logger);
+
+        var job = logged.Start("slew", "Slew to\nM42", "mount", _ => {
+            time.Advance(TimeSpan.FromSeconds(12.5));
+
+            return Task.FromResult(JobOutcome.Ok("Slewed."));
+        });
+
+        await WaitForEntriesAsync(logger, 2);
+
+        Assert.That(
+            logger.Entries.Select(entry => (entry.Level, entry.Message)),
+            Is.EqualTo(new[] {
+                (LogLevel.Information, $"MCP job {job.Id} (slew) started: Slew to M42"),
+                (LogLevel.Information, $"MCP job {job.Id} (slew) Succeeded after 12.5 s: Slewed.")
+            }));
+    }
+
+    [Test]
+    public async Task Log_FailedJob_IsAWarning() {
+        var logger = new ProtocolCapturingLogger<JobManager>();
+        using var logged = new JobManager(time, logger);
+
+        logged.Start("park", "Park", "mount", _ => Task.FromResult(JobOutcome.Fail("The mount did not park.")));
+
+        await WaitForEntriesAsync(logger, 2);
+
+        var end = logger.Entries.Last();
+
+        Assert.That(end.Level, Is.EqualTo(LogLevel.Warning));
+        Assert.That(end.Message, Does.Contain("Failed after").And.EndWith(": The mount did not park."));
+    }
+
+    [Test]
+    public async Task Log_ThrowingJob_LogsTheException() {
+        var logger = new ProtocolCapturingLogger<JobManager>();
+        using var logged = new JobManager(time, logger);
+
+        logged.Start("capture", "Capture", "camera", _ => throw new InvalidOperationException("driver gone"));
+
+        await WaitForEntriesAsync(logger, 3);
+
+        Assert.That(logger.Entries.Any(entry => entry.Level == LogLevel.Error && entry.Exception is InvalidOperationException), Is.True);
+        Assert.That(logger.Entries.Last().Message, Does.EndWith(": driver gone"));
+    }
+
+    [Test]
+    public async Task Log_CancelledJob_IsInformation() {
+        var logger = new ProtocolCapturingLogger<JobManager>();
+        using var logged = new JobManager(time, logger);
+
+        var job = logged.Start("focus", "Move focuser", "focuser", async token => {
+            await Task.Delay(Timeout.Infinite, token);
+
+            return JobOutcome.Ok();
+        });
+
+        logged.Cancel(job.Id);
+        await WaitForEntriesAsync(logger, 2);
+
+        Assert.That(logger.Entries.Last().Level, Is.EqualTo(LogLevel.Information));
+        Assert.That(logger.Entries.Last().Message, Does.Contain("Cancelled after"));
+    }
+
+    /// <summary>RunAsync writes a job's end line after its state changed, so the log tests wait for the lines.</summary>
+    private static async Task WaitForEntriesAsync(ProtocolCapturingLogger<JobManager> logger, int count) {
+        var deadline = DateTime.UtcNow + TestTimeout;
+
+        while (logger.Entries.Count < count) {
+            Assert.That(DateTime.UtcNow, Is.LessThan(deadline), $"expected {count} log lines, got {logger.Entries.Count}");
+            await Task.Delay(5);
+        }
     }
 
     private async Task<JobInfo> WaitFinishedAsync(string id) {

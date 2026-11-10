@@ -2,6 +2,7 @@
 
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using NINA.Mcp.Logs;
 using System.Security.Cryptography;
 
 namespace NINA.Mcp.Jobs;
@@ -44,7 +45,7 @@ public sealed class JobManager : IJobManager, IDisposable {
 
         var entry = Register(kind, description, resource, requiresIdle);
 
-        _ = Task.Run(() => RunAsync(entry, work));
+        RunInBackground(entry, work);
 
         return entry.Snapshot();
     }
@@ -61,7 +62,7 @@ public sealed class JobManager : IJobManager, IDisposable {
 
         var entry = Register(kind, description, resource, requiresIdle);
 
-        _ = Task.Run(() => RunAsync(entry, work));
+        RunInBackground(entry, work);
 
         return await WaitForEntryAsync(entry, wait, requestCancellation).ConfigureAwait(false);
     }
@@ -160,7 +161,10 @@ public sealed class JobManager : IJobManager, IDisposable {
                 + "may still be busy; check get_status before using it.");
 
             if (entry.Finish(JobState.Abandoned, outcome, timeProvider.GetUtcNow())) {
-                logger.LogWarning("MCP job {Id} ({Description}) abandoned; its work is still running", entry.Id, entry.Description);
+                logger.LogWarning(
+                    "MCP job {Id} ({Description}) abandoned; its work is still running",
+                    entry.Id,
+                    LogText.Compact(entry.Description));
             }
         }
 
@@ -236,7 +240,7 @@ public sealed class JobManager : IJobManager, IDisposable {
             return null;
         }
 
-        logger.LogError(error, "Stopping MCP job {Id} ({Description}) failed", entry.Id, entry.Description);
+        logger.LogError(error, "Stopping MCP job {Id} ({Description}) failed", entry.Id, LogText.Compact(entry.Description));
 
         var messages = error is AggregateException aggregate
             ? aggregate.InnerExceptions.Select(inner => inner.Message)
@@ -311,6 +315,17 @@ public sealed class JobManager : IJobManager, IDisposable {
         }
     }
 
+    /// <summary>Logs the start before the work runs, so that a fast job's end can't be logged before it.</summary>
+    private void RunInBackground(JobEntry entry, Func<CancellationToken, Task<JobOutcome>> work) {
+        logger.LogInformation(
+            "MCP job {Id} ({Kind}) started: {Description}",
+            entry.Id,
+            entry.Kind,
+            LogText.Compact(entry.Description));
+
+        _ = Task.Run(() => RunAsync(entry, work));
+    }
+
     private async Task RunAsync(JobEntry entry, Func<CancellationToken, Task<JobOutcome>> work) {
         JobState state;
         JobOutcome outcome;
@@ -333,17 +348,30 @@ public sealed class JobManager : IJobManager, IDisposable {
             state = JobState.Cancelled;
             outcome = JobOutcome.Fail("The job was cancelled.");
         } catch (Exception ex) {
+            logger.LogError(ex, "MCP job {Id} ({Description}) failed", entry.Id, LogText.Compact(entry.Description));
             state = JobState.Failed;
             outcome = JobOutcome.Fail(ex.Message);
         }
 
-        if (!entry.Finish(state, outcome, timeProvider.GetUtcNow())) {
+        var finishedAt = timeProvider.GetUtcNow();
+
+        if (entry.Finish(state, outcome, finishedAt)) {
+            // Failed as a warning: journalctl -p warning then lists the slews, parks and captures that did not work.
+            logger.Log(
+                state == JobState.Failed ? LogLevel.Warning : LogLevel.Information,
+                "MCP job {Id} ({Kind}) {State} after {Seconds:F1} s: {Message}",
+                entry.Id,
+                entry.Kind,
+                state,
+                (finishedAt - entry.StartedAt).TotalSeconds,
+                LogText.Compact(outcome.Message));
+        } else {
             logger.LogInformation(
                 "Abandoned MCP job {Id} ({Description}) ended late: {State}, {Message}",
                 entry.Id,
-                entry.Description,
+                LogText.Compact(entry.Description),
                 state,
-                outcome.Message);
+                LogText.Compact(outcome.Message));
         }
 
         entry.DisposeCancellation();

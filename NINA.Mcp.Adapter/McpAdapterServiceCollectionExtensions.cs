@@ -24,6 +24,10 @@ public static class McpAdapterServiceCollectionExtensions {
 
         services.AddPinsMcp(options);
         services.AddSingleton<ILoggerProvider, NinaLoggerProvider>();
+
+        // A rule for this provider and category beats the host's minimum level (Warning) and a configured default.
+        services.AddLogging(logging => logging.AddFilter<NinaLoggerProvider>(NinaLoggerProvider.CategoryPrefix, LogLevel.Information));
+
         services.AddSingleton<NinaSequenceService>();
         services.AddSingleton<IPinsObservatory, NinaObservatory>();
 

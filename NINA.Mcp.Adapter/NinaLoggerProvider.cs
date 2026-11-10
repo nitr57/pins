@@ -6,12 +6,14 @@ using NINA.Core.Utility;
 namespace NINA.Mcp.Adapter;
 
 /// <summary>
-/// Forwards warnings and errors that <c>NINA.Mcp</c> writes to <see cref="ILogger"/> into the pins log. pins clears the
-/// ASP.NET Core logging providers, so without this, protocol and tool errors would not be logged anywhere.
+/// Forwards what <c>NINA.Mcp</c> writes to <see cref="ILogger"/> from Information on into the pins log: job starts and
+/// ends, the calls of tools that are not read-only, warnings and errors. pins clears the ASP.NET Core logging providers
+/// and sets their minimum to Warning, so <see cref="McpAdapterServiceCollectionExtensions.AddPinsMcpForNina"/> adds a
+/// filter rule that lets Information of these categories through to this provider.
 /// </summary>
 internal sealed class NinaLoggerProvider : ILoggerProvider {
 
-    private const string CategoryPrefix = "NINA.Mcp";
+    public const string CategoryPrefix = "NINA.Mcp";
 
     public ILogger CreateLogger(string categoryName) {
         return categoryName.StartsWith(CategoryPrefix, StringComparison.Ordinal)
@@ -35,7 +37,7 @@ internal sealed class NinaLoggerProvider : ILoggerProvider {
         }
 
         public bool IsEnabled(LogLevel logLevel) {
-            return logLevel >= LogLevel.Warning && logLevel != LogLevel.None;
+            return logLevel >= LogLevel.Information && logLevel != LogLevel.None;
         }
 
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) {
@@ -44,6 +46,11 @@ internal sealed class NinaLoggerProvider : ILoggerProvider {
             }
 
             var message = $"{category}: {formatter(state, exception)}";
+
+            if (logLevel == LogLevel.Information) {
+                Logger.Info(exception == null ? message : $"{message} ({exception.Message})");
+                return;
+            }
 
             if (logLevel == LogLevel.Warning) {
                 Logger.Warning(exception == null ? message : $"{message} ({exception.Message})");

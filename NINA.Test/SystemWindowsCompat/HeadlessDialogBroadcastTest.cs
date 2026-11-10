@@ -18,7 +18,13 @@ using NINA.Core.Model;
 using NINA.Core.SignalR;
 using NINA.Core.Utility;
 using NINA.Core.Utility.WindowService;
+using NINA.Equipment.Interfaces;
+using NINA.Equipment.Interfaces.Mediator;
 using NINA.PlateSolving;
+using NINA.Profile.Interfaces;
+using NINA.WPF.Base.Interfaces;
+using NINA.WPF.Base.Interfaces.Mediator;
+using NINA.WPF.Base.Interfaces.ViewModel;
 using NINA.WPF.Base.ViewModel;
 using NUnit.Framework;
 using System;
@@ -112,6 +118,59 @@ namespace NINA.Test.SystemWindowsCompat {
             await Task.Delay(500);
 
             Assert.That(Sent().Count - before, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task ThePlateSolveStatus_SendsTheMeasurements() {
+            // WindowService recognises the status VM by its type name and reads the history entries by property name
+            var status = new PlateSolvingStatusVM();
+            _ = new WindowService().ShowDialog(status, "Center");
+            await WaitUntilAsync(() => Sent().Count >= 1, "the dialog is broadcast");
+
+            var solveTime = new DateTime(2026, 11, 10, 22, 15, 30);
+
+            status.PlateSolveHistory.Add(new PlateSolveResult(solveTime) { Success = false, PositionAngle = 12.346 });
+            await WaitUntilAsync(() => Sent().Any(data => data.SlewAndCenter?.Measurements?.Count == 1), "the measurement is broadcast");
+
+            var measurement = Sent().Last(data => data.SlewAndCenter?.Measurements?.Count == 1).SlewAndCenter.Measurements.Single();
+
+            Assert.That(measurement.Time, Is.EqualTo(solveTime.ToString("HH:mm:ss")), "formatted as WindowService does");
+            Assert.That(measurement.Success, Is.False);
+            Assert.That(measurement.Rotation, Is.EqualTo("12.35"));
+            Assert.That(measurement.ErrorDistance, Is.EqualTo("--"), "no separation yet");
+        }
+
+        [Test]
+        public async Task TheMeridianFlip_SendsItsStepsAndACancelButton() {
+            // WindowService recognises the flip VM by its type name and reads Steps, ActiveStep and each step by name
+            var flip = new MeridianFlipVM(
+                Mock.Of<IProfileService>(),
+                Mock.Of<ITelescopeMediator>(),
+                Mock.Of<IGuiderMediator>(),
+                Mock.Of<IImagingMediator>(),
+                Mock.Of<IDomeMediator>(),
+                Mock.Of<IDomeFollower>(),
+                Mock.Of<IApplicationStatusMediator>(),
+                Mock.Of<IFilterWheelMediator>(),
+                Mock.Of<IImageHistoryVM>(),
+                Mock.Of<IAutoFocusVMFactory>());
+            var passMeridian = new WorkflowStep("PassMeridian", "Pass meridian", () => Task.FromResult(true)) { Finished = true };
+            var doFlip = new WorkflowStep("Flip", "Flip", () => Task.FromResult(true));
+
+            flip.Steps = new AutomatedWorkflow { passMeridian, doFlip };
+            flip.Steps.ActiveStep = doFlip;
+
+            // As MeridianFlipVM.MeridianFlip shows it
+            _ = new WindowService().ShowDialog(flip, "Meridian flip", ResizeMode.NoResize, WindowStyle.None, flip.CancelCommand);
+            await WaitUntilAsync(() => Sent().Any(data => data.MeridianFlip?.StepCount == 2), "the flip dialog is broadcast");
+
+            var data = Sent().Last(data => data.MeridianFlip?.StepCount == 2);
+
+            Assert.That(data.MeridianFlip.Steps.Select(step => (step.Id, step.Title, step.Finished, step.IsCurrent)), Is.EqualTo(new[] {
+                ("PassMeridian", "Pass meridian", true, false),
+                ("Flip", "Flip", false, true)
+            }));
+            Assert.That(data.AvailableCommands, Is.EqualTo(new[] { "Cancel" }));
         }
 
         [Test]
