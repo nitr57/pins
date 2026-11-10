@@ -71,6 +71,7 @@ public sealed partial class Guider : IAsyncDisposable
     private MountStateWatcher mountWatch;
     private CameraRetryPolicy cameraRetry;
     private ReacquirePolicy reacquire;
+    private SlowProcessingMonitor slowProcessing;
 
     private Task? loopTask;
     private CancellationTokenSource? loopCts;
@@ -118,7 +119,6 @@ public sealed partial class Guider : IAsyncDisposable
     private (double RaPx, double DecPx)? pendingCorrection;
     private double lastGoodMass;
     private double lastGoodSnr;
-    private DateTimeOffset lastSlowAlert = DateTimeOffset.MinValue;
 
     // a driver that rejects pulses may do so at every Dec reversal: alert once per interval, with the count
     private DateTimeOffset lastPulseRejectedAlert = DateTimeOffset.MinValue;
@@ -148,6 +148,7 @@ public sealed partial class Guider : IAsyncDisposable
         mountWatch = new MountStateWatcher(this.settings.Safety);
         cameraRetry = new CameraRetryPolicy(this.settings.Safety);
         reacquire = new ReacquirePolicy(this.settings.Safety);
+        slowProcessing = new SlowProcessingMonitor(this.settings.Safety);
         ApplySettings(this.settings, initial: true);
     }
 
@@ -892,10 +893,14 @@ public sealed partial class Guider : IAsyncDisposable
         cycleTimer.Processed(clock.UtcNow);
 
         double processingMs = sw.Elapsed.TotalMilliseconds;
-        if (processingMs > settings.Safety.SlowProcessingMs && (now - lastSlowAlert).TotalMinutes >= 5)
+        switch (slowProcessing.Record(now, processingMs, out double medianMs))
         {
-            lastSlowAlert = now;
-            Alert(GuideErrorCode.FrameProcessingSlow, $"{processingMs:F0} ms");
+            case SlowProcessingVerdict.SlowMedian:
+                Alert(GuideErrorCode.FrameProcessingSlow, $"median {medianMs:F0} ms over the last minute, limit {settings.Safety.SlowProcessingMs:F0} ms");
+                break;
+            case SlowProcessingVerdict.SlowFrame:
+                Alert(GuideErrorCode.SlowGuideFrame, $"{processingMs:F0} ms");
+                break;
         }
 
         if (settings.FrameEventInterval > 0 && frame.FrameNumber % settings.FrameEventInterval == 0)
@@ -2253,6 +2258,7 @@ public sealed partial class Guider : IAsyncDisposable
             mountWatch = new MountStateWatcher(s.Safety);
             cameraRetry = new CameraRetryPolicy(s.Safety);
             reacquire = new ReacquirePolicy(s.Safety);
+            slowProcessing = new SlowProcessingMonitor(s.Safety);
         }
 
         if (!initial)

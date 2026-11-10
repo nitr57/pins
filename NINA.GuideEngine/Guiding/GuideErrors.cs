@@ -65,6 +65,7 @@ public enum GuideErrorCode
     CameraFailed = 402,
     CameraDisconnected = 403,
     FrameProcessingSlow = 404,
+    SlowGuideFrame = 405,
 
     // Settle / dither 500-599
     SettleTimeout = 500,
@@ -195,8 +196,11 @@ public static class GuideErrorCatalog
         E(GuideErrorCode.CameraDisconnected, GuideErrorSeverity.Critical, "Guide camera disconnected",
             "The guide camera is not connected.", "Connect the guide camera."),
         E(GuideErrorCode.FrameProcessingSlow, GuideErrorSeverity.Warning, "Frame processing slow",
-            "Processing a guide frame took longer than expected, which delays corrections.",
-            "Reduce the max number of guide stars, use binning or a subframe, or check CPU load."),
+            "Over the last minute, at least half of the guide frames took too long to process, so the corrections reached the mount late. A single slow frame now and then is normal and is only noted in the log.",
+            "Check what else keeps the computer busy, such as live stacking or other programs. Otherwise lower \"Max guide stars\", use binning or a subframe, or turn off noise reduction."),
+        E(GuideErrorCode.SlowGuideFrame, GuideErrorSeverity.Info, "Slow guide frame",
+            "One guide frame took longer than usual to process, so its correction came a little late. This happens now and then when the computer is busy with other work, such as saving, plate solving or stacking an image of the main camera, and does no harm.",
+            "No action needed. The guider warns when frames stay slow for a minute."),
         E(GuideErrorCode.SettleTimeout, GuideErrorSeverity.Warning, "Settling timed out",
             "Guiding did not settle within the timeout.", "Increase settle tolerance/timeout, or check guiding performance."),
         E(GuideErrorCode.DitherFailed, GuideErrorSeverity.Warning, "Dither failed",

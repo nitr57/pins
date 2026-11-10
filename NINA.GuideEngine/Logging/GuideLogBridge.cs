@@ -149,6 +149,9 @@ public sealed class GuideLogBridge : IDisposable
             case AlertEvent { Code: GuideErrorCode.SecondaryStarsRefreshed } a when guiding:
                 log.Info($"Secondary stars found again: {a.Detail}");
                 break;
+            case AlertEvent { Code: GuideErrorCode.SlowGuideFrame } a when guiding || calibrating:
+                log.Info($"Slow guide frame: {a.Detail}");
+                break;
             case AlertEvent a when (guiding || calibrating) && a.Severity != GuideErrorSeverity.Info:
                 log.ServerCommand($"ALERT {(int)a.Code} {a.Code}: {a.Message}{(a.Detail is null ? "" : " - " + a.Detail)}");
                 break;

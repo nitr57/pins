@@ -225,6 +225,7 @@ PHD2-compatible guide log format so PHD2LogViewer and similar tools can analyse 
 | Pier side changed | Auto flip per rules + Dec self-check (see Calibration); option to force recalibration |
 | Mount slewing / parked / homing / tracking off | Auto-pause; resume after reacquire + settle; after large move only on sequencer request |
 | Camera stall / BLOB timeout | Retry exposure ×2 → reconnect camera ×1 → `Failed` |
+| Slow frame processing (`SlowProcessingMonitor`) | Median of the last minute's frames above 500 ms → warning `FrameProcessingSlow`; a single slow frame only gets the info alert `SlowGuideFrame`. Each at most every 5 minutes |
 
 Every error has a stable code, a human explanation and a suggested fix, used identically in logs,
 API and TNS. Guiding-stopping errors additionally trigger a push notification.
