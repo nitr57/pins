@@ -25,7 +25,7 @@ internal static class PinsInstructions {
         - Temperatures °C, exposures seconds, focuser positions steps, guiding RMS arcsec, HFR pixels.
 
         Jobs
-        Long operations (connect, slew, park, capture, cool, focus, filter change, guiding, switches, plate solving, centering, rotator, flat panel, dome) run as background jobs. The tool waits up to wait_seconds (default 30, max 55) and returns { job: { id, state, outcome } }. If state is "running", poll get_job (with wait_seconds to long-poll) or check get_status. A device busy with another job refuses new jobs; cancel_job stops one job.
+        Long operations (connect, slew, park, capture, cool, focus, filter change, guiding, switches, plate solving, centering, rotator, flat panel, dome, starting the sequence) run as background jobs. The tool waits up to wait_seconds (default 30, max 55) and returns { job: { id, state, outcome } }. If state is "running", poll get_job (with wait_seconds to long-poll) or check get_status. A device busy with another job refuses new jobs; cancel_job stops one job.
 
         Safety guard
         While the advanced sequence runs, hardware and editing tools are refused so they cannot disturb it. Pass force: true only when the user explicitly wants that; load_sequence, clear_targets, reset_sequence and start_sequence need the sequence stopped (stop_sequence). stop_all is the emergency stop: it stops the sequence, cancels all jobs, aborts the exposure, stops slewing and the focuser. It is never refused, not even in read-only mode (cancel_job neither). Use it when the user says stop or something looks wrong; for rain or the end of the night use secure_observatory.

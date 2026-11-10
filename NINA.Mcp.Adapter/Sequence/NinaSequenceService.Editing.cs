@@ -28,7 +28,7 @@ public sealed partial class NinaSequenceService {
                 return OperationResult.Fail(error);
             }
 
-            if (access.ViewModel.IsRunning) {
+            if (access.ViewModel.IsRunning || IsStartPending()) {
                 return OperationResult.Fail(RunningMessage);
             }
 
@@ -77,6 +77,11 @@ public sealed partial class NinaSequenceService {
                 return OperationResult.Fail(error);
             }
 
+            // Also with force: the sequencer materializes the linked templates of the tree meanwhile.
+            if (IsStartPending()) {
+                return OperationResult.Fail(PreparingMessage);
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!string.IsNullOrWhiteSpace(request.TemplateName)) {
@@ -109,7 +114,7 @@ public sealed partial class NinaSequenceService {
                 return OperationResult.Fail(error);
             }
 
-            if (access.ViewModel.IsRunning) {
+            if (access.ViewModel.IsRunning || IsStartPending()) {
                 return OperationResult.Fail(RunningMessage);
             }
 
@@ -158,6 +163,11 @@ public sealed partial class NinaSequenceService {
             SequencerAccess? access = TryGetAccess(out string error);
             if (access == null) {
                 return OperationResult.Fail(error);
+            }
+
+            // The sequencer materializes the linked templates of the tree meanwhile.
+            if (IsStartPending()) {
+                return OperationResult.Fail(PreparingMessage);
             }
 
             string? folder = SequenceFolder();

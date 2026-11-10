@@ -267,10 +267,30 @@ public class ToolsArgumentTests {
     }
 
     [Test]
-    public async Task SetSwitch_PassesIndexAndValue() {
-        await catalog.CallAsync("set_switch", """{"index":2,"value":0.75}""");
+    public async Task SetSwitch_PassesIdentityAndValue() {
+        await catalog.CallAsync("set_switch", """{"device_id":"PINS Powerbox","channel_id":31000,"value":0.75}""");
 
-        Assert.That(catalog.Observatory.LastSwitch, Is.EqualTo((2, 0.75)));
+        Assert.That(catalog.Observatory.LastSwitch, Is.EqualTo((SwitchTarget.ForIdentity("PINS Powerbox", 31000), 0.75)));
+    }
+
+    [Test]
+    public async Task SetSwitch_PassesIndexAndName() {
+        await catalog.CallAsync("set_switch", """{"index":2,"name":"Dew heater","value":1}""");
+
+        Assert.That(catalog.Observatory.LastSwitch, Is.EqualTo((SwitchTarget.ForIndex(2, "Dew heater"), 1.0)));
+    }
+
+    [TestCase("""{"value":1}""", "Name the switch by 'device_id' and 'channel_id'")]
+    [TestCase("""{"device_id":"hub","value":1}""", "required together")]
+    [TestCase("""{"channel_id":3,"value":1}""", "required together")]
+    [TestCase("""{"index":2,"value":1}""", "Name the switch by 'device_id' and 'channel_id'")]
+    [TestCase("""{"name":"Dew heater","value":1}""", "Name the switch by 'device_id' and 'channel_id'")]
+    [TestCase("""{"device_id":"hub","channel_id":3,"index":2,"name":"Dew heater","value":1}""", "not both")]
+    public void SetSwitch_RefusesIncompleteOrMixedTargets(string arguments, string message) {
+        var exception = Assert.ThrowsAsync<ToolArgumentException>(() => catalog.CallAsync("set_switch", arguments));
+
+        Assert.That(exception!.Message, Does.Contain(message));
+        Assert.That(catalog.Observatory.LastSwitch, Is.Null);
     }
 
     [Test]
@@ -347,7 +367,7 @@ public class ToolsArgumentTests {
         catalog.Observatory.Block("Slew");
 
         await catalog.CallAsync("slew_mount", """{"ra":1,"dec":2,"wait_seconds":0}""");
-        await catalog.CallAsync("set_switch", """{"index":0,"value":1}""");
+        await catalog.CallAsync("set_switch", """{"device_id":"hub","channel_id":0,"value":1}""");
 
         var result = await catalog.CallAsync("get_status");
         var running = result.Structured!["runningJobs"]!.AsArray();

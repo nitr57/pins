@@ -31,7 +31,7 @@ public class ToolsGuardAndJobTests {
         new object[] { "change_filter", """{"name":"L"}""" },
         new object[] { "start_guiding", "{}" },
         new object[] { "stop_guiding", "{}" },
-        new object[] { "set_switch", """{"index":0,"value":1}""" },
+        new object[] { "set_switch", """{"device_id":"hub","channel_id":0,"value":1}""" },
         new object[] { "plate_solve", "{}" },
         new object[] { "center_target", """{"ra":5,"dec":5}""" },
         new object[] { "move_rotator", """{"position":90}""" },
@@ -298,7 +298,7 @@ public class ToolsGuardAndJobTests {
         catalog.Observatory.Block("SetSwitch");
         catalog.Observatory.Block("CoolCamera");
 
-        await catalog.CallAsync("set_switch", """{"index":0,"value":1,"wait_seconds":0}""");
+        await catalog.CallAsync("set_switch", """{"device_id":"hub","channel_id":0,"value":1,"wait_seconds":0}""");
         await catalog.CallAsync("cool_camera", """{"target_celsius":-10,"wait_seconds":0}""");
 
         var capture = await catalog.CallAsync("capture_image", """{"exposure_seconds":1}""");

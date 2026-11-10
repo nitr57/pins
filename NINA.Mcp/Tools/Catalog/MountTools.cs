@@ -25,9 +25,11 @@ internal sealed class SlewMountTool : ObservatoryTool {
     public override string Description =>
         "Slews the mount to J2000 coordinates (plain goto: no plate solving or centering; add_target with slew_and_center "
         + "does that in a sequence). The mount must be connected and unparked (unpark_mount). Moves the telescope: make sure "
-        + "the user expects it. If guiding is active, stop_guiding first (the guide star is lost during the slew). Runs as a "
-        + "background job holding the mount; refused while a capture, autofocus or guiding start job runs. Stop it with "
-        + "cancel_job or stop_all. Afterwards check the position with get_status.";
+        + "the user expects it. Guiding (also a guider that only loops) is stopped for the slew, because the guide star is "
+        + "lost, and started again after the slew (also a refused one, as NINA's Slew instruction does), unless stop_guiding "
+        + "was called meanwhile; the result says whether that worked (the slew stands either way). Runs as a background job "
+        + "holding the mount until guiding runs again (up to five more minutes); refused while a capture, autofocus or "
+        + "guiding start job runs. Stop it with cancel_job or stop_all. Afterwards check the position with get_status.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 

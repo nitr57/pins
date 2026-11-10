@@ -91,28 +91,63 @@ internal sealed class SetSwitchTool : ObservatoryTool {
 
     public override string Description =>
         "Sets one writable switch of the connected switch device (power outlets, dew heaters, USB ports). get_status lists "
-        + "the switches with index, name, current value, min, max and writable flag; on/off switches use 0 and 1. Switching "
-        + "power can cut off devices (camera, mount): confirm with the user first. Runs as a background job holding the "
-        + "switch device.";
+        + "the switches with deviceId, channelId, index, name, current value, min, max and writable flag; on/off switches use "
+        + "0 and 1. Name the switch by device_id and channel_id from get_status (they stay the same when the switch list is "
+        + "rebuilt); only a switch listed without a deviceId is named by index together with its name, and a name that no "
+        + "longer matches the index is refused. Switching power can cut off devices (camera, mount): confirm with the user "
+        + "first. Runs as a background job holding the switch device.";
 
     public override ToolAnnotations Annotations => ToolAnnotations.Hardware;
 
     protected override bool StartsJob => true;
 
     protected override void DefineArguments(ToolSchema arguments) {
-        arguments.Integer("index", "Zero-based switch index as listed in get_status.", minimum: 0, maximum: 1000, required: true);
+        arguments.String("device_id", "The switch's deviceId as listed in get_status.", maxLength: 500);
+        arguments.Integer("channel_id", "The switch's channelId as listed in get_status.", minimum: 0, maximum: short.MaxValue);
+        arguments.Integer("index", "Only for a switch listed without a deviceId: its zero-based index in get_status.", minimum: 0, maximum: 1000);
+        arguments.String("name", "With index: the switch's name as listed in get_status.", maxLength: 500);
         arguments.Number("value", "New value within the switch's min..max (0/1 for on/off switches).", required: true);
     }
 
     protected override Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
-        var index = arguments.GetInt("index", required: true)!.Value;
+        var target = ReadTarget(arguments);
         var value = arguments.GetDouble("value", required: true)!.Value;
 
         return RunJobAsync(
             arguments,
             context,
-            new JobRequest("switch", string.Create(CultureInfo.InvariantCulture, $"Set switch {index} to {value:0.###}"), "switch"),
-            async token => JobPayload.ToOutcome(await Observatory.SetSwitchAsync(index, value, token).ConfigureAwait(false)),
+            new JobRequest("switch", string.Create(CultureInfo.InvariantCulture, $"Set switch {target} to {value:0.###}"), "switch"),
+            async token => JobPayload.ToOutcome(await Observatory.SetSwitchAsync(target, value, token).ConfigureAwait(false)),
             cancellationToken);
+    }
+
+    private static SwitchTarget ReadTarget(ToolArguments arguments) {
+        var deviceId = arguments.GetString("device_id");
+        var channelId = arguments.GetInt("channel_id");
+        var index = arguments.GetInt("index");
+        var name = arguments.GetString("name");
+
+        var byIdentity = deviceId is not null || channelId is not null;
+        var byIndex = index is not null || name is not null;
+
+        if (byIdentity && byIndex) {
+            throw new ToolArgumentException("Name the switch either by device_id and channel_id or by index and name, not both.");
+        }
+
+        if (byIdentity) {
+            if (string.IsNullOrWhiteSpace(deviceId) || channelId is null) {
+                throw new ToolArgumentException("Arguments 'device_id' and 'channel_id' are required together (see get_status).");
+            }
+
+            return SwitchTarget.ForIdentity(deviceId, channelId.Value);
+        }
+
+        if (index is null || string.IsNullOrWhiteSpace(name)) {
+            throw new ToolArgumentException(
+                "Name the switch by 'device_id' and 'channel_id' from get_status, or, for a switch listed without a deviceId, by "
+                + "'index' and 'name'.");
+        }
+
+        return SwitchTarget.ForIndex(index.Value, name);
     }
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+using NINA.Mcp.Jobs;
 using NINA.Mcp.Observatory;
 using NINA.Mcp.Test.Fakes;
 using NINA.Mcp.Tools.Catalog;
@@ -247,13 +248,83 @@ public class ToolsSequenceTests {
     }
 
     [Test]
-    public async Task StartSequence_ValidationFailure_IsError() {
+    public async Task StartSequence_ValidationFailure_FailsTheJob() {
         catalog.Observatory.SetResult("StartSequence", OperationResult.Fail("Validation failed: camera not connected."));
 
         var result = await catalog.CallAsync("start_sequence");
+        var job = ToolsTestCatalog.Job(result);
 
-        Assert.That(result.IsError, Is.True);
-        Assert.That(result.Text, Does.Contain("camera not connected"));
+        Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("failed"));
+        Assert.That(job["outcome"]!["message"]!.GetValue<string>(), Does.Contain("camera not connected"));
+    }
+
+    [Test]
+    public async Task StartSequence_HoldsTheDevicesUntilTheStartEnds_AlsoAfterTheClientGaveUp() {
+        catalog.Observatory.Block("StartSequence");
+
+        var result = await catalog.CallAsync("start_sequence", """{"wait_seconds":0}""");
+        var job = ToolsTestCatalog.Job(result);
+
+        Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("running"));
+        Assert.Throws<JobConflictException>(() => catalog.Jobs.Reserve(["mount"], "test"), "the start still holds the mount");
+
+        catalog.Observatory.Release("StartSequence");
+        await catalog.Jobs.WaitAsync(job["id"]!.GetValue<string>(), TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        using (catalog.Jobs.Reserve(["mount"], "test")) {
+            Assert.Pass("released once the start ended");
+        }
+    }
+
+    [Test]
+    public async Task StartSequence_AbandonedStart_ReleasesTheDevices() {
+        catalog.Observatory.Block("StartSequence", ignoreCancellation: true);
+
+        var result = await catalog.CallAsync("start_sequence", """{"wait_seconds":0}""");
+        var id = ToolsTestCatalog.Job(result)["id"]!.GetValue<string>();
+
+        try {
+            // The job's work has registered the release by then.
+            await catalog.Observatory.WaitForCallAsync("StartSequence");
+
+            Assert.That(() => catalog.Jobs.Reserve(["mount"], "test"), Throws.TypeOf<JobConflictException>());
+
+            catalog.Jobs.Abandon(id);
+
+            Assert.That(() => catalog.Jobs.Reserve(["mount"], "test").Dispose(), Throws.Nothing, "released on the cancel request");
+        } finally {
+            catalog.Observatory.Release("StartSequence");
+        }
+    }
+
+    [Test]
+    public async Task StartSequence_PassesTheStopCountFromBeforeTheJob() {
+        await catalog.CallAsync("start_sequence");
+
+        Assert.That(catalog.Observatory.LastStopCountAtStart, Is.EqualTo(0));
+
+        await catalog.CallAsync("stop_sequence");
+        await catalog.CallAsync("start_sequence");
+
+        Assert.That(catalog.Observatory.LastStopCountAtStart, Is.EqualTo(1));
+    }
+
+    [Test]
+    public async Task StartSequence_CancelJob_CancelsThePendingStart() {
+        catalog.Observatory.Block("StartSequence");
+
+        var result = await catalog.CallAsync("start_sequence", """{"wait_seconds":0}""");
+        var id = ToolsTestCatalog.Job(result)["id"]!.GetValue<string>();
+
+        catalog.Jobs.Cancel(id);
+
+        var job = await catalog.Jobs.WaitAsync(id, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        Assert.That(job!.State, Is.EqualTo(JobState.Cancelled));
+
+        using (catalog.Jobs.Reserve(["mount"], "test")) {
+            Assert.Pass("released after the cancel");
+        }
     }
 
     [TestCase("clear_targets", "ClearTargets")]

@@ -178,10 +178,24 @@ public sealed class JobManager : IJobManager, IDisposable {
                 ThrowIfHeld(resource);
             }
 
-            var reservation = new Reservation(this, resources.ToList(), description);
+            var reservation = new Reservation(this, resources.ToList(), description, fenced: false);
             reservations.Add(reservation);
 
             return reservation;
+        }
+    }
+
+    public IDisposable Fence(IReadOnlyCollection<string> resources, string operation) {
+        ArgumentNullException.ThrowIfNull(resources);
+
+        lock (gate) {
+            ThrowIfShutDown();
+
+            // No conflict check: the holders keep their resources, only new claims are refused.
+            var fence = new Reservation(this, resources.ToList(), operation, fenced: true);
+            reservations.Add(fence);
+
+            return fence;
         }
     }
 
@@ -258,8 +272,18 @@ public sealed class JobManager : IJobManager, IDisposable {
         }
     }
 
-    /// <summary>Throws when a running job or a reservation holds <paramref name="resource"/>. Caller holds the lock.</summary>
+    /// <summary>
+    /// Throws when a fence, a running job or a reservation holds <paramref name="resource"/>. Caller holds the lock. A
+    /// fence is named first: the jobs it overlaps are being cancelled, and only its message says not to retry.
+    /// </summary>
     private void ThrowIfHeld(string resource) {
+        var fence = reservations.FirstOrDefault(candidate =>
+            candidate.Fenced && candidate.Resources.Contains(resource, StringComparer.OrdinalIgnoreCase));
+
+        if (fence is not null) {
+            throw new JobConflictException(resource, fence.Description, fenced: true);
+        }
+
         var holder = jobs.Values.FirstOrDefault(entry =>
             entry.State == JobState.Running
             && string.Equals(entry.Resource, resource, StringComparison.OrdinalIgnoreCase));
@@ -271,7 +295,7 @@ public sealed class JobManager : IJobManager, IDisposable {
         var reservation = reservations.FirstOrDefault(candidate => candidate.Resources.Contains(resource, StringComparer.OrdinalIgnoreCase));
 
         if (reservation is not null) {
-            throw new JobConflictException(resource, reservation.Description);
+            throw new JobConflictException(resource, reservation.Description, reservation.Fenced);
         }
     }
 
@@ -373,15 +397,18 @@ public sealed class JobManager : IJobManager, IDisposable {
         private readonly JobManager owner;
         private int disposed;
 
-        public Reservation(JobManager owner, IReadOnlyList<string> resources, string description) {
+        public Reservation(JobManager owner, IReadOnlyList<string> resources, string description, bool fenced) {
             this.owner = owner;
             Resources = resources;
             Description = description;
+            Fenced = fenced;
         }
 
         public IReadOnlyList<string> Resources { get; }
 
         public string Description { get; }
+
+        public bool Fenced { get; }
 
         public void Dispose() {
             if (Interlocked.Exchange(ref disposed, 1) == 0) {

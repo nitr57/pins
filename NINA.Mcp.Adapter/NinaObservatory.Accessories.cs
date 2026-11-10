@@ -271,7 +271,16 @@ public sealed partial class NinaObservatory {
             task => {
                 timeout.Dispose();
 
-                if (cancellationToken.IsCancellationRequested) {
+                // Read in any case, so that a failure the waiting job no longer sees is observed.
+                var failure = task.Exception;
+
+                if (!cancellationToken.IsCancellationRequested) {
+                    return;
+                }
+
+                if (failure is not null) {
+                    Logger.Error("MCP: the dome close that a cancelled job started failed", failure.GetBaseException());
+                } else {
                     Logger.Info($"MCP: the dome close that a cancelled job started has ended ({(task.IsCompletedSuccessfully ? task.Result.ToString() : task.Status.ToString())})");
                 }
             },

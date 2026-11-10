@@ -90,6 +90,7 @@ public class ToolsCatalogTests {
     private static readonly string[] DestructiveChangeTools = ["load_sequence", "clear_targets", "reset_sequence", "save_sequence"];
 
     private static readonly string[] JobTools = [
+        "start_sequence",
         "connect_device",
         "disconnect_device",
         "slew_mount",

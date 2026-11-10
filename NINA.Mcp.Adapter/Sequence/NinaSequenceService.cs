@@ -39,7 +39,12 @@ public sealed partial class NinaSequenceService {
     private const string RunningMessage =
         "The advanced sequence is running. Stop it first with stop_sequence.";
 
-    private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(60);
+    private const string PreparingMessage =
+        "A start of the advanced sequence is being prepared. Try again in a moment, or stop it with stop_sequence.";
+
+    // How long a start job waits for the sequencer to prepare (linked templates after a restart) before it reports the
+    // start as still pending. The job, not the request, waits: a client that gives up must not stop a start.
+    private static readonly TimeSpan StartTimeout = TimeSpan.FromMinutes(10);
 
     private static readonly TimeSpan StartPollInterval = TimeSpan.FromMilliseconds(100);
 
@@ -54,6 +59,18 @@ public sealed partial class NinaSequenceService {
     // Serializes the editing operations of MCP clients. Stop never waits for it.
     private readonly SemaphoreSlim editLock = new(1, 1);
 
+    // The run of the last start requested over MCP until the start saw it running (it completes when the run ends).
+    // Meanwhile the sequencer prepares (IsRunning is set only after the linked templates loaded), and the start counts as
+    // running: no second start, no edits, the sequence guard applies.
+    private Task? pendingRun;
+
+    // Counts stop requests, so that a start learns of a stop that came while it was asked for, validated, or before the
+    // run's own cancellation existed, which the stop could not reach.
+    private int stopGeneration;
+
+    // Starts past their first check; only for the answer of a stop.
+    private int startsInProgress;
+
     public NinaSequenceService(
             ISequenceMediator sequenceMediator,
             ISequenceNavigationVM sequenceNavigation,
@@ -66,6 +83,32 @@ public sealed partial class NinaSequenceService {
         this.cameraMediator = cameraMediator ?? throw new ArgumentNullException(nameof(cameraMediator));
         this.rotatorMediator = rotatorMediator ?? throw new ArgumentNullException(nameof(rotatorMediator));
     }
+
+    /// <summary>True while the advanced sequence runs or a start over MCP still prepares it. Never throws.</summary>
+    public bool IsRunningOrStarting() {
+        return IsStartPending() || IsRunning();
+    }
+
+    // Clears the pending start once the view model reports the run: from then on it reports it itself, and a hung end of
+    // the run (SequenceFinished handlers) must not keep MCP reporting a running sequence, whichever way the start ended.
+    private bool IsStartPending() {
+        var run = Volatile.Read(ref pendingRun);
+
+        if (run is not { IsCompleted: false }) {
+            return false;
+        }
+
+        if (IsRunning()) {
+            _ = Interlocked.CompareExchange(ref pendingRun, null, run);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>The number of stop requests so far; a start compares it with the count when it was asked for.</summary>
+    public int StopCount => Volatile.Read(ref stopGeneration);
 
     /// <summary>True while the advanced sequence runs. Never throws.</summary>
     public bool IsRunning() {
@@ -115,12 +158,29 @@ public sealed partial class NinaSequenceService {
         }
     }
 
-    public async Task<OperationResult> StartSequenceAsync(bool skipValidation, CancellationToken cancellationToken) {
+    public async Task<OperationResult> StartSequenceAsync(bool skipValidation, int stopCountAtRequest, CancellationToken cancellationToken) {
+        Interlocked.Increment(ref startsInProgress);
+
+        try {
+            return await StartAsync(skipValidation, stopCountAtRequest, cancellationToken).ConfigureAwait(false);
+        } finally {
+            Interlocked.Decrement(ref startsInProgress);
+        }
+    }
+
+    private async Task<OperationResult> StartAsync(bool skipValidation, int stopsAtEntry, CancellationToken cancellationToken) {
+        if (Volatile.Read(ref stopGeneration) != stopsAtEntry) {
+            return OperationResult.Fail("A stop was requested while the start was being asked for; the sequence was not started.");
+        }
+
         try {
             await editLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         } catch (OperationCanceledException) {
             return OperationResult.Fail("Start cancelled before it was requested.");
         }
+
+        ISequence2VM viewModel;
+        Task runTask;
 
         try {
             SequencerAccess? access = TryGetAccess(out string error);
@@ -130,6 +190,10 @@ public sealed partial class NinaSequenceService {
 
             if (access.ViewModel.IsRunning) {
                 return OperationResult.Fail("The advanced sequence is already running.");
+            }
+
+            if (IsStartPending()) {
+                return OperationResult.Fail("A start of the advanced sequence is still being prepared. Check get_status in a moment.");
             }
 
             if (!cameraMediator.IsFreeToCapture(access.ViewModel)) {
@@ -152,13 +216,17 @@ public sealed partial class NinaSequenceService {
 
             cancellationToken.ThrowIfCancellationRequested();
 
+            if (Volatile.Read(ref stopGeneration) != stopsAtEntry) {
+                return OperationResult.Fail("A stop was requested while the start was being prepared; the sequence was not started.");
+            }
+
             // The issue prompt of NINA (a message box) is always skipped: the check above replaces it. Task.Run keeps
             // the synchronous part of Sequence2VM.StartSequence (SequenceStarting handlers) off the request thread.
-            Task runTask = Task.Run(() => RunOnDispatcher(() => sequenceMediator.StartAdvancedSequence(true)));
+            viewModel = access.ViewModel;
+            runTask = Task.Run(() => RunOnDispatcher(() => sequenceMediator.StartAdvancedSequence(true)));
+            Volatile.Write(ref pendingRun, runTask);
             ObserveRun(runTask);
             Logger.Info("MCP: advanced sequence start requested");
-
-            return await WaitUntilRunning(access.ViewModel, runTask, cancellationToken).ConfigureAwait(false);
         } catch (OperationCanceledException) {
             return OperationResult.Fail("Start cancelled before it was requested.");
         } catch (Exception ex) {
@@ -167,15 +235,22 @@ public sealed partial class NinaSequenceService {
         } finally {
             editLock.Release();
         }
+
+        // Outside the edit lock: the start counts as running from here (pendingRun), which refuses edits and a second
+        // start without making them wait for the sequencer to prepare.
+        return await WaitUntilRunning(viewModel, runTask, stopsAtEntry, cancellationToken).ConfigureAwait(false);
     }
 
     public OperationResult StopSequence() {
+        // First: a start that is still asked for or validated, or whose run has no cancellation of its own yet, sees it.
+        Interlocked.Increment(ref stopGeneration);
+
         try {
             if (!sequenceNavigation.Initialized) {
                 return OperationResult.Ok("The advanced sequencer is not initialized yet, so nothing is running.");
             }
 
-            bool running = IsRunning();
+            bool running = IsRunningOrStarting() || Volatile.Read(ref startsInProgress) > 0;
 
             // Also cancels a start that is still preparing (IsRunning not yet set). When idle this only cancels the
             // token of the last, finished run, which Sequence2VM.CancelSequence tolerates.
@@ -207,7 +282,7 @@ public sealed partial class NinaSequenceService {
                 return OperationResult.Fail(error);
             }
 
-            if (access.ViewModel.IsRunning) {
+            if (access.ViewModel.IsRunning || IsStartPending()) {
                 return OperationResult.Fail(RunningMessage);
             }
 
@@ -224,55 +299,106 @@ public sealed partial class NinaSequenceService {
         }
     }
 
+    /// <summary>
+    /// Waits for the requested run to report running. A stop requested meanwhile, or the cancellation of
+    /// <paramref name="cancellationToken"/> (the start job's), cancels the run, repeatedly until it ended, because the
+    /// first cancel can come before the run has a cancellation of its own.
+    /// </summary>
+    /// <remarks>
+    /// A start from another client (Touch-N-Stars, the Advanced API) while this one still prepares is a double start NINA
+    /// itself does not guard against: it replaces this run's cancellation, and its running state can clear
+    /// <see cref="pendingRun"/>, so this answer can then report this run as ended or stopped. Accepted; telling the two
+    /// runs apart would need an owner for each start.
+    /// </remarks>
     private async Task<OperationResult> WaitUntilRunning(
             ISequence2VM viewModel,
             Task runTask,
+            int stopsAtEntry,
             CancellationToken cancellationToken) {
         DateTime deadline = DateTime.UtcNow + StartTimeout;
+        bool cancelled = false;
+        bool sawRunning = false;
 
         while (true) {
-            if (viewModel.IsRunning) {
-                return OperationResult.Ok(
-                    "The advanced sequence is running. Monitor it with get_status, get_sequence and get_recent_images.");
-            }
+            cancelled |= cancellationToken.IsCancellationRequested;
+            bool stopping = cancelled || Volatile.Read(ref stopGeneration) != stopsAtEntry;
 
-            if (runTask.IsFaulted) {
-                Exception? cause = runTask.Exception?.GetBaseException();
-                return OperationResult.Fail($"The sequence failed to start: {cause?.Message ?? "unknown error"}");
-            }
+            // Read before IsRunning: a pending start cleared to null then means that IsStartPending saw the sequencer running
+            // before this poll's read, so a run not running now has ended.
+            var current = Volatile.Read(ref pendingRun);
+            bool running = viewModel.IsRunning;
 
-            if (runTask.IsCompleted) {
+            sawRunning |= running;
+
+            if (stopping) {
+                // Another start owns the sequencer: this run ended (IsStartPending cleared it), cancelling would hit the new one.
+                if (current is not null && !ReferenceEquals(current, runTask)) {
+                    return OperationResult.Fail("The start was stopped; another start of the sequence followed it.");
+                }
+
+                // A run that ran and no longer does has ended, also while its end handlers still run.
+                if (runTask.IsCompleted || ((sawRunning || current is null) && !running)) {
+                    _ = Interlocked.CompareExchange(ref pendingRun, null, runTask);
+                    Logger.Info("MCP: advanced sequence start stopped");
+
+                    return OperationResult.Fail(cancelled
+                        ? "Start cancelled; the sequence was stopped."
+                        : "A stop was requested while the sequence was starting; it was stopped.");
+                }
+
+                CancelRun();
+
+                if (DateTime.UtcNow >= deadline) {
+                    // Cancelled over and over, it can no longer begin running; from here the view model reports it.
+                    _ = Interlocked.CompareExchange(ref pendingRun, null, runTask);
+
+                    return OperationResult.Fail(
+                        "The start was stopped, but the sequence has not ended yet. Check get_status and use stop_sequence.");
+                }
+            } else {
+                if (running) {
+                    // From here the view model reports the run (see IsStartPending).
+                    _ = Interlocked.CompareExchange(ref pendingRun, null, runTask);
+
+                    return OperationResult.Ok(
+                        "The advanced sequence is running. Monitor it with get_status, get_sequence and get_recent_images.");
+                }
+
+                if (runTask.IsFaulted) {
+                    Exception? cause = runTask.Exception?.GetBaseException();
+                    return OperationResult.Fail($"The sequence failed to start: {cause?.Message ?? "unknown error"}");
+                }
+
+                // Ended, or seen running by someone between two polls and ended since (its end handlers may still run).
+                // Both get one answer: which of them a short run lands in depends only on the timing of status polls.
                 // NINA's async command catches and logs start failures, so a crashed start also lands here.
-                return OperationResult.Fail(
-                    "The sequence did not keep running: it ended immediately. Either nothing was left to run (all "
-                    + "instructions finished or skipped; use reset_sequence to run it again) or it failed to start (see "
-                    + "the pins log and get_sequence for failed items).");
-            }
+                if (runTask.IsCompleted || current is null || !ReferenceEquals(current, runTask)) {
+                    return OperationResult.Fail(
+                        "The advanced sequence has already ended (it may have run only briefly). Either nothing was left "
+                        + "to run (all instructions finished or skipped; use reset_sequence to run it again) or it failed "
+                        + "(see get_sequence for failed items, get_recent_images and the pins log).");
+                }
 
-            if (DateTime.UtcNow >= deadline) {
-                return OperationResult.Ok(
-                    "Start requested; the sequencer is still preparing (e.g. loading linked templates). "
-                    + "Check get_status in a moment.");
+                if (DateTime.UtcNow >= deadline) {
+                    return OperationResult.Ok(
+                        "Start requested; the sequencer is still preparing (e.g. loading linked templates). "
+                        + "Check get_status in a moment.");
+                }
             }
 
             try {
-                await Task.Delay(StartPollInterval, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(StartPollInterval, cancelled ? CancellationToken.None : cancellationToken).ConfigureAwait(false);
             } catch (OperationCanceledException) {
-                return CancelPendingStart();
+                cancelled = true;
             }
         }
     }
 
-    /// <summary>The start job was cancelled while the sequencer was still preparing: cancel the run as well.</summary>
-    private OperationResult CancelPendingStart() {
+    private void CancelRun() {
         try {
             RunOnDispatcher(() => sequenceMediator.CancelAdvancedSequence());
-            Logger.Info("MCP: advanced sequence start cancelled while preparing");
-            return OperationResult.Fail("Start cancelled; the sequence was stopped before it began running.");
         } catch (Exception ex) {
             Logger.Error("MCP: cancelling the pending sequence start failed", ex);
-            return OperationResult.Fail(
-                $"Start cancelled, but stopping the pending run failed ({ex.Message}). Check get_status and use stop_sequence.");
         }
     }
 

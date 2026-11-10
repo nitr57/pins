@@ -15,6 +15,17 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
     /// <summary>How long cancelled jobs get to end before the shutdown moves hardware.</summary>
     internal static readonly TimeSpan CancelGrace = TimeSpan.FromSeconds(10);
 
+    /// <summary>
+    /// How long, from the start of the shutdown job, it waits for the stopped sequence to end before it moves hardware
+    /// (settable for tests).
+    /// </summary>
+    internal static TimeSpan SequenceStopGrace { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>What the fence holds: every device a job or the sequence could move, and the cooler the warm step uses.</summary>
+    internal static readonly string[] FencedResources = [.. StartSequenceTool.HardwareResources, "camera_cooler"];
+
+    private const string FenceOperation = "secure_observatory secures the observatory";
+
     private const string JobKind = "secure";
 
     private readonly object startGate = new();
@@ -33,9 +44,10 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         + "devices that are not connected are skipped. The dome is only closed when the mount is parked (closing a roof on an "
         + "unparked telescope can damage it); a disconnected mount counts as not parked, because its position is unknown, "
         + "unless close_dome_without_mount is set. The dome step only succeeds when the dome then reports its shutter closed. "
-        + "Not refused while a sequence runs and not blocked by other jobs; until the camera "
-        + "warming starts it holds all devices, so no other MCP tool can unpark or open in between (Touch-N-Stars and NINA "
-        + "itself are not blocked). Runs as a background job (parking and closing take "
+        + "Not refused while a sequence runs and not blocked by other jobs. From the call until the camera warming starts no "
+        + "other MCP tool can start a job on a device (unpark, open, start the sequence); Touch-N-Stars and NINA itself are "
+        + "not blocked. It waits up to 30 s for the stopped sequence to end before it moves hardware. "
+        + "Runs as a background job (parking and closing take "
         + "minutes): poll get_job; outcome.data lists every step. While a shutdown runs, calling it again returns that job "
         + "(its arguments are ignored) instead of starting a second one. Moves the telescope and the dome.";
 
@@ -77,6 +89,17 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
             } else {
                 var steps = new List<SecureStep>();
 
+                // Before anything is cancelled, so that no other client's new job can take a device in between; the jobs
+                // running now keep theirs and are cancelled below. Null only when pins is shutting down: the stops below
+                // still run, and Start then refuses the job.
+                IDisposable? fence = null;
+
+                try {
+                    fence = context.Jobs.Fence(FencedResources, FenceOperation);
+                } catch (InvalidOperationException) {
+                    // pins is shutting down; Start refuses the job below.
+                }
+
                 // Before the job starts, so that it does not cancel itself.
                 Step(steps, "stop_sequence", () => Observatory.StopSequence());
                 Step(steps, "cancel_jobs", () => {
@@ -92,11 +115,26 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
                     return OperationResult.Ok("Exposure abort requested.");
                 });
 
-                job = context.Jobs.Start(
-                    JobKind,
-                    "Secure the observatory",
-                    null,
-                    token => ShutDownAsync(context.Jobs, steps, park, closeDome, closeDomeWithoutMount, closeCover, warmCamera, token));
+                try {
+                    job = context.Jobs.Start(
+                        JobKind,
+                        "Secure the observatory",
+                        null,
+                        token => ShutDownAsync(
+                            context.Jobs,
+                            steps,
+                            fence,
+                            park,
+                            closeDome,
+                            closeDomeWithoutMount,
+                            closeCover,
+                            warmCamera,
+                            token));
+                } catch {
+                    fence?.Dispose();
+
+                    throw;
+                }
             }
         }
 
@@ -108,37 +146,36 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
     private async Task<JobOutcome> ShutDownAsync(
         IJobManager jobs,
         List<SecureStep> steps,
+        IDisposable? fence,
         bool park,
         bool closeDome,
         bool closeDomeWithoutMount,
         bool closeCover,
         bool warmCamera,
         CancellationToken cancellationToken) {
-        // In the job, not the request: a client that gives up during the grace period must not stop the shutdown.
-        await WaitForJobsToEndAsync(jobs, cancellationToken).ConfigureAwait(false);
+        var started = DateTime.UtcNow;
 
-        // Best effort: nothing may unpark, slew, open or start the sequence while the shutdown runs. A job that ignored
-        // its cancellation keeps its device; the shutdown continues without the hold.
-        IDisposable? hold = null;
+        // Released on the cancel request already: an abandoned shutdown (a hung park or close) must not keep every
+        // device, which would refuse all MCP hardware jobs and start_sequence until pins restarts. Registered first, so
+        // that a cancel during the waits releases it too; the finally covers every other way out.
+        using var releaseOnCancel = cancellationToken.Register(() => fence?.Dispose());
+
+        ObservatoryStatus status;
 
         try {
-            hold = jobs.Reserve(StartSequenceTool.HardwareResources, "secure_observatory");
-        } catch (JobConflictException ex) {
-            // A warning, not a failure: the shutdown itself can still succeed.
-            steps.Add(new SecureStep("hold_devices", true, $"Warning: could not hold every device ({ex.Message}); continuing."));
-        }
+            // In the job, not the request: a client that gives up during the grace period must not stop the shutdown.
+            await WaitForJobsToEndAsync(jobs, steps, cancellationToken).ConfigureAwait(false);
+            await WaitForSequenceToEndAsync(steps, started, cancellationToken).ConfigureAwait(false);
 
-        var status = Observatory.GetStatus();
-
-        using (hold) {
-            // Released on the cancel request already: an abandoned shutdown (a hung park or close) must not keep every
-            // device, which would refuse all MCP hardware jobs and start_sequence until pins restarts.
-            using var releaseOnCancel = cancellationToken.Register(() => hold?.Dispose());
+            // After the waits: the sequence or a job may have moved the mount meanwhile.
+            status = Observatory.GetStatus();
 
             await ShutDownDevicesAsync(status, steps, park, closeDome, closeDomeWithoutMount, closeCover, cancellationToken).ConfigureAwait(false);
+        } finally {
+            fence?.Dispose();
         }
 
-        // After the hold: warming takes ten minutes and only needs the cooler, while the user may have to park or close by hand.
+        // After the fence: warming takes ten minutes and only needs the cooler, while the user may have to park or close by hand.
         if (warmCamera && Connected(status, DeviceKind.Camera)) {
             await StepAsync(steps, "warm_camera", () => Observatory.WarmCameraAsync(TimeSpan.FromMinutes(10), cancellationToken)).ConfigureAwait(false);
         }
@@ -148,6 +185,35 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
         return failed.Count == 0
             ? JobOutcome.Ok("Observatory secured.", steps)
             : JobOutcome.Fail($"Not every step succeeded ({string.Join(", ", failed)}); see outcome.data and check get_status.", steps);
+    }
+
+    /// <summary>
+    /// The stop was requested before the job started. A start that was still being prepared can begin running after it,
+    /// so the stop is repeated while the sequence runs (StopSequence is idempotent).
+    /// </summary>
+    private async Task WaitForSequenceToEndAsync(List<SecureStep> steps, DateTime started, CancellationToken cancellationToken) {
+        var deadline = started + SequenceStopGrace;
+
+        // The stop step ran just before the job started.
+        var nextStop = started + TimeSpan.FromSeconds(2);
+
+        while (Observatory.IsSequenceRunning()) {
+            if (DateTime.UtcNow >= deadline) {
+                steps.Add(new SecureStep(
+                    "sequence_stop",
+                    true,
+                    "Warning: the sequence is still stopping (it may still move the mount or expose); continuing with the shutdown."));
+
+                return;
+            }
+
+            if (DateTime.UtcNow >= nextStop) {
+                Observatory.StopSequence();
+                nextStop = DateTime.UtcNow + TimeSpan.FromSeconds(2);
+            }
+
+            await Task.Delay(200, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private async Task ShutDownDevicesAsync(
@@ -217,13 +283,29 @@ internal sealed class SecureObservatoryTool : ObservatoryTool {
                 + "still be moving or be stuck. Check the dome (get_status, a camera or a person) before relying on it.");
     }
 
-    private static async Task WaitForJobsToEndAsync(IJobManager jobs, CancellationToken cancellationToken) {
+    private static async Task WaitForJobsToEndAsync(IJobManager jobs, List<SecureStep> steps, CancellationToken cancellationToken) {
         var deadline = DateTime.UtcNow + CancelGrace;
 
         // The shutdown job itself is running too.
-        while (jobs.List().Any(job => job.State == JobState.Running && job.Kind != JobKind) && DateTime.UtcNow < deadline) {
+        while (OtherRunningJobs(jobs).Count > 0 && DateTime.UtcNow < deadline) {
             await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         }
+
+        // A warning, not a failure: the shutdown can still succeed alongside a job that ignored its cancel.
+        var stillRunning = OtherRunningJobs(jobs);
+
+        if (stillRunning.Count > 0) {
+            var names = string.Join(", ", stillRunning.Select(job => $"{job.Id} ({job.Description})"));
+
+            steps.Add(new SecureStep(
+                "cancel_jobs_wait",
+                true,
+                $"Warning: {names} did not stop after the cancel request and keep their devices; continuing."));
+        }
+    }
+
+    private static List<JobInfo> OtherRunningJobs(IJobManager jobs) {
+        return jobs.List().Where(job => job.State == JobState.Running && job.Kind != JobKind).ToList();
     }
 
     private static bool Connected(ObservatoryStatus status, DeviceKind kind) {

@@ -350,6 +350,106 @@ public class ToolsDiagnosticsTests {
         Assert.That(result.ScannedBytes, Is.LessThanOrEqualTo(64 * 1024));
     }
 
+    [Test]
+    public void LogReader_FilteredOutEntryTakesItsContinuationLinesAlong() {
+        var log = new StringBuilder()
+            .Append("2026-10-13T21:00:00.0000|ERROR|A.cs|M|1|first error\n")
+            .Append("System.Exception: first\n")
+            .Append("2026-10-13T21:01:00.0000|INFO|A.cs|M|2|info with a trace\n")
+            .Append("System.Exception: belongs to the info entry\n")
+            .Append("   at Info.Frame()\n")
+            .Append("2026-10-13T21:02:00.0000|ERROR|A.cs|M|3|second error\n")
+            .ToString();
+
+        var errors = Read(log, new PinsLogQuery(10, PinsLogLevel.Error));
+        var text = Read(log, new PinsLogQuery(10, PinsLogLevel.Trace, Contains: "first"));
+
+        Assert.That(errors.Entries.Select(entry => entry.Message), Is.EqualTo(new[] { "first error", "second error" }));
+        Assert.That(errors.Entries[0].Detail, Is.EqualTo("System.Exception: first"));
+        Assert.That(errors.Entries[1].Detail, Is.Null);
+        Assert.That(text.Entries.Single().Detail, Is.EqualTo("System.Exception: first"));
+    }
+
+    [Test]
+    public void LogReader_TextOnlyInTheContinuation_CRLF_AndMultibyteText() {
+        var log = new StringBuilder()
+            .Append("2026-10-13T21:00:00.0000|INFO|A.cs|M|1|plain entry\r\n")
+            .Append("2026-10-13T21:01:00.0000|ERROR|Center.cs|DoCenter|2|Platesolve failed\r\n")
+            .Append("System.Exception: no stars in the field\r\n")
+            .Append("2026-10-13T21:02:00.0000|INFO|Cam.cs|Cool|3|Cooling to -10 °C\r\n")
+            .Append("2026-10-13T21:03:00.0000|DEBUG|Cam.cs|Cool|4|Cooler at -9 °C\r\n")
+            .Append("2026-10-13T21:04:00.0000|INFO|A.cs|M|5|another plain entry\r\n")
+            .ToString();
+
+        var detailOnly = Read(log, new PinsLogQuery(10, PinsLogLevel.Info, Contains: "NO STARS"));
+        var multibyte = Read(log, new PinsLogQuery(10, PinsLogLevel.Info, Contains: "°c"));
+        var none = Read(log, new PinsLogQuery(10, PinsLogLevel.Info, Contains: "nothing"));
+
+        Assert.That(detailOnly.Entries.Single().Message, Is.EqualTo("Platesolve failed"));
+        Assert.That(detailOnly.Entries.Single().Detail, Is.EqualTo("System.Exception: no stars in the field"));
+        Assert.That(multibyte.Entries.Single().Message, Is.EqualTo("Cooling to -10 °C"), "the debug entry is below the level");
+        Assert.That(none.Entries, Is.Empty);
+        Assert.That(none.ReachedStart, Is.True);
+        Assert.That(none.OldestScannedTime, Is.EqualTo("2026-10-13T21:00:00.0000"));
+    }
+
+    [Test]
+    public void LogReader_SinceStopsOnAFilteredOutEntry() {
+        var log = new StringBuilder();
+
+        for (var minute = 0; minute < 60; minute++) {
+            log.Append(CultureInfo.InvariantCulture, $"2026-10-13T21:{minute:00}:00.0000|INFO|A.cs|M|1|entry {minute}\n");
+        }
+
+        var text = log.ToString();
+        var result = Read(text, new PinsLogQuery(100, PinsLogLevel.Warning, Since: new DateTime(2026, 10, 13, 21, 50, 0)));
+
+        Assert.That(result.Entries, Is.Empty);
+        Assert.That(result.ReachedSince, Is.True);
+        Assert.That(result.OldestScannedTime, Is.EqualTo("2026-10-13T21:49:00.0000"));
+    }
+
+    [Test]
+    public void LogReader_OtherLevelSpellingsAndBrokenHeaders_ReadAsBefore() {
+        var log = new StringBuilder()
+            .Append("2026-10-13T21:00:00.0000|ERROR|A.cs|M|1|base\n")
+            .Append("2026-10-13T21:00:01.0000|NOISE|A.cs|M|1|unknown level: a continuation line\n")
+            .Append("2026-02-30T21:00:02.0000|ERROR|A.cs|M|1|no such date: a continuation line\n")
+            .Append("2026-10-13T21:00:03|INFO\n")
+            .Append("2026-10-13T21:00:04.0000|warn|A.cs|M|1|lower-case alias\n")
+            .Append("2026-10-13T21:00:05.0000| WARNING |A.cs|M|1|padded\n")
+            .Append("2026-10-13T21:00:06.12|information|A.cs|M|1|info alias, short fraction\n")
+            .Append("2026-10-13T21:00:07|Error|A.cs|M|1|no fraction, mixed case\n")
+            .ToString();
+
+        var warnings = Read(log, new PinsLogQuery(10, PinsLogLevel.Warning));
+        var info = Read(log, new PinsLogQuery(10, PinsLogLevel.Info, Contains: "alias"));
+
+        Assert.That(warnings.Entries.Select(entry => entry.Message), Is.EqualTo(new[] { "base", "lower-case alias", "padded", "no fraction, mixed case" }));
+        Assert.That(
+            warnings.Entries[0].Detail,
+            Is.EqualTo("2026-10-13T21:00:01.0000|NOISE|A.cs|M|1|unknown level: a continuation line\n"
+                + "2026-02-30T21:00:02.0000|ERROR|A.cs|M|1|no such date: a continuation line\n"
+                + "2026-10-13T21:00:03|INFO"));
+        Assert.That(info.Entries.Select(entry => entry.Message), Is.EqualTo(new[] { "lower-case alias", "info alias, short fraction" }));
+        Assert.That(info.Entries[1].ParsedTime, Is.EqualTo(new DateTime(2026, 10, 13, 21, 0, 6, 120)));
+    }
+
+    [Test]
+    public void LogReader_LineLongerThanTheCarryOver_KeepsTheEntriesAroundIt() {
+        var log = new StringBuilder()
+            .Append("2026-10-13T21:00:00.0000|ERROR|A.cs|M|1|before\n")
+            .Append("2026-10-13T21:00:01.0000|INFO|A.cs|M|1|huge ").Append('z', 200 * 1024).Append('\n')
+            .Append("2026-10-13T21:00:02.0000|ERROR|A.cs|M|1|after\n")
+            .ToString();
+
+        var errors = Read(log, new PinsLogQuery(10, PinsLogLevel.Error));
+        var all = Read(log, new PinsLogQuery(10, PinsLogLevel.Info, Contains: "huge"));
+
+        Assert.That(errors.Entries.Select(entry => entry.Message), Is.EqualTo(new[] { "before", "after" }));
+        Assert.That(all.Entries.Single().Message, Does.StartWith("huge zzz").And.EndWith(" …"));
+    }
+
     // ----- read_log -----
 
     [Test]

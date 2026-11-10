@@ -351,6 +351,112 @@ public class ToolsSessionAndSafetyTests {
         catalog.Observatory.Release("Park");
     }
 
+    [Test]
+    public async Task Secure_RefusesNewDeviceJobsWhileItRuns() {
+        ConnectAll(atPark: false);
+        catalog.Observatory.Block("Park");
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"wait_seconds":0}"""));
+
+        await catalog.Observatory.WaitForCallAsync("Park");
+
+        var conflict = Assert.Throws<JobConflictException>(() => catalog.Jobs.Start("focuser_move", "Move", "focuser", _ => Task.FromResult(JobOutcome.Ok())));
+        Assert.That(conflict!.Message, Does.Contain("secure_observatory"));
+        Assert.That(() => catalog.Jobs.Reserve(["camera_cooler"], "cool"), Throws.TypeOf<JobConflictException>());
+
+        catalog.Observatory.Release("Park");
+
+        var done = await catalog.Jobs.WaitAsync(job["id"]!.GetValue<string>(), TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        Assert.That(done!.State, Is.EqualTo(JobState.Succeeded), done.Outcome?.Message);
+        Assert.That(() => catalog.Jobs.Reserve(StartSequenceTool.HardwareResources, "test").Dispose(), Throws.Nothing);
+    }
+
+    [Test]
+    public async Task Secure_StartSequenceGetsTheFenceMessage_AlsoWhenACancelledJobStillRuns() {
+        ConnectAll(atPark: false);
+        catalog.Observatory.Block("Slew", ignoreCancellation: true);
+        await catalog.CallAsync("slew_mount", """{"ra":1,"dec":1,"wait_seconds":0}""");
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"wait_seconds":0}"""));
+        var start = await catalog.CallAsync("start_sequence");
+
+        Assert.That(start.IsError, Is.True);
+        Assert.That(start.Text, Does.Contain("secure_observatory").And.Contain("Do not retry"));
+
+        catalog.Jobs.Cancel(job["id"]!.GetValue<string>());
+        catalog.Observatory.Release("Slew");
+    }
+
+    [Test]
+    public async Task Secure_CancelledDuringTheGrace_ReleasesTheFence() {
+        ConnectAll(atPark: false);
+
+        // A slew that ignores its cancel keeps the shutdown in its grace period.
+        catalog.Observatory.Block("Slew", ignoreCancellation: true);
+        await catalog.CallAsync("slew_mount", """{"ra":1,"dec":1,"wait_seconds":0}""");
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"wait_seconds":0}"""));
+        var id = job["id"]!.GetValue<string>();
+
+        Assert.That(() => catalog.Jobs.Reserve(["focuser"], "test"), Throws.TypeOf<JobConflictException>(), "fenced during the grace");
+
+        catalog.Jobs.Cancel(id);
+
+        var done = await catalog.Jobs.WaitAsync(id, TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        Assert.That(done!.State, Is.EqualTo(JobState.Cancelled));
+        Assert.That(() => catalog.Jobs.Reserve(["focuser"], "test").Dispose(), Throws.Nothing);
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("Park"));
+
+        catalog.Observatory.Release("Slew");
+    }
+
+    [Test]
+    public async Task Secure_WaitsForTheSequenceToEnd_BeforeItParks() {
+        ConnectAll(atPark: false);
+        catalog.Observatory.SequenceRunning = true;
+        catalog.Observatory.StopEndsSequence = false;
+
+        var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory", """{"wait_seconds":0}"""));
+
+        await Task.Delay(500);
+
+        Assert.That(catalog.Observatory.Calls, Does.Not.Contain("Park"), "no park while the sequence still runs");
+
+        catalog.Observatory.SequenceRunning = false;
+
+        var done = await catalog.Jobs.WaitAsync(job["id"]!.GetValue<string>(), TimeSpan.FromSeconds(10), CancellationToken.None);
+        var steps = ((IEnumerable<object>)done!.Outcome!.Data!).Cast<SecureObservatoryTool.SecureStep>().Select(step => step.Step);
+
+        Assert.That(done.State, Is.EqualTo(JobState.Succeeded), done.Outcome.Message);
+        Assert.That(steps, Does.Not.Contain("sequence_stop"));
+        Assert.That(catalog.Observatory.Calls, Does.Contain("Park"));
+    }
+
+    [Test]
+    public async Task Secure_RepeatsTheStop_AndGoesOnAfterTheBound_WhenTheSequenceKeepsRunning() {
+        ConnectAll(atPark: false);
+        catalog.Observatory.SequenceRunning = true;
+        catalog.Observatory.StopEndsSequence = false;
+
+        var previous = SecureObservatoryTool.SequenceStopGrace;
+        // The stop is repeated after 2 s.
+        SecureObservatoryTool.SequenceStopGrace = TimeSpan.FromSeconds(3);
+
+        try {
+            var job = ToolsTestCatalog.Job(await catalog.CallAsync("secure_observatory"));
+            var sequenceStop = job["outcome"]!["data"]!.AsArray().Single(step => step!["step"]!.GetValue<string>() == "sequence_stop")!;
+
+            Assert.That(job["state"]!.GetValue<string>(), Is.EqualTo("succeeded"), job.ToJsonString());
+            Assert.That(sequenceStop["message"]!.GetValue<string>(), Does.StartWith("Warning"));
+            Assert.That(catalog.Observatory.Calls.Count(call => call == "StopSequence"), Is.GreaterThanOrEqualTo(2), "stopped again in the wait");
+            Assert.That(catalog.Observatory.Calls, Does.Contain("Park"));
+        } finally {
+            SecureObservatoryTool.SequenceStopGrace = previous;
+        }
+    }
+
     // ----- Helpers -----
 
     private void AddLight(int id, string target, string filter, double hfr, int stars) {

@@ -60,6 +60,10 @@ public sealed partial class NinaObservatory : IPinsObservatory {
 
     private int mountMotionsInFlight;
 
+    // Changes with every stop_guiding (and secure_observatory's guiding stop), before and after the guider stopped; a slew
+    // or centering that stopped guiding only starts it again when it did not change meanwhile.
+    private int guidingStops;
+
     public NinaObservatory(
             ICameraMediator cameraMediator,
             ITelescopeMediator telescopeMediator,
@@ -256,12 +260,20 @@ public sealed partial class NinaObservatory : IPinsObservatory {
         return sequence.SaveSequenceAsync(name, overwrite, cancellationToken);
     }
 
-    public Task<OperationResult> StartSequenceAsync(bool skipValidation, CancellationToken cancellationToken) {
-        return sequence.StartSequenceAsync(skipValidation, cancellationToken);
+    public Task<OperationResult> StartSequenceAsync(bool skipValidation, int stopCountAtRequest, CancellationToken cancellationToken) {
+        return sequence.StartSequenceAsync(skipValidation, stopCountAtRequest, cancellationToken);
+    }
+
+    public int GetSequenceStopCount() {
+        return sequence.StopCount;
     }
 
     public OperationResult StopSequence() {
         return sequence.StopSequence();
+    }
+
+    public bool IsSequenceRunning() {
+        return sequence.IsRunningOrStarting();
     }
 
     public OperationResult ResetSequence() {

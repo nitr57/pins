@@ -88,7 +88,7 @@ public interface IPinsObservatory {
 
     // ----- Switches (power outputs, dew heaters) -----
 
-    Task<OperationResult> SetSwitchAsync(int index, double value, CancellationToken cancellationToken);
+    Task<OperationResult> SetSwitchAsync(SwitchTarget target, double value, CancellationToken cancellationToken);
 
     // ----- Advanced sequence -----
 
@@ -113,10 +113,22 @@ public interface IPinsObservatory {
     /// <summary>Saves the current advanced sequence under <paramref name="name"/> in the sequence folder.</summary>
     Task<OperationResult> SaveSequenceAsync(string name, bool overwrite, CancellationToken cancellationToken);
 
-    /// <summary>Starts the advanced sequence and returns once it runs (does not wait for it to end).</summary>
-    Task<OperationResult> StartSequenceAsync(bool skipValidation, CancellationToken cancellationToken);
+    /// <summary>
+    /// Starts the advanced sequence and returns once it runs (does not wait for it to end). Cancelling
+    /// <paramref name="cancellationToken"/> while the sequencer still prepares stops the run. A stop since
+    /// <paramref name="stopCountAtRequest"/> (<see cref="GetSequenceStopCount"/> read when the start was asked for) refuses
+    /// or stops the start.
+    /// </summary>
+    Task<OperationResult> StartSequenceAsync(bool skipValidation, int stopCountAtRequest, CancellationToken cancellationToken);
 
+    /// <summary>Counts the stop requests of the advanced sequence (StopSequence).</summary>
+    int GetSequenceStopCount();
+
+    /// <summary>Also cancels a start that is still being prepared or validated.</summary>
     OperationResult StopSequence();
+
+    /// <summary>True while the advanced sequence runs or an MCP start of it is still preparing (cheap, unlike GetStatus).</summary>
+    bool IsSequenceRunning();
 
     /// <summary>Resets the progress of all items so that the sequence can run again.</summary>
     OperationResult ResetSequence();
@@ -205,6 +217,26 @@ public enum DeviceKind {
     Switch,
     Weather,
     SafetyMonitor
+}
+
+/// <summary>
+/// A writable switch: by its stable identity from get_status (<see cref="DeviceId"/> and <see cref="ChannelId"/>), or, for
+/// a switch without a device id, by its <see cref="Index"/> among the writable switches together with its
+/// <see cref="Name"/>, which must still match.
+/// </summary>
+public sealed record SwitchTarget(string? DeviceId, int? ChannelId, int? Index, string? Name) {
+
+    public bool ByIdentity => DeviceId is not null;
+
+    public static SwitchTarget ForIdentity(string deviceId, int channelId) => new(deviceId, channelId, null, null);
+
+    public static SwitchTarget ForIndex(int index, string name) => new(null, null, index, name);
+
+    public override string ToString() {
+        return ByIdentity
+            ? string.Create(System.Globalization.CultureInfo.InvariantCulture, $"{DeviceId} channel {ChannelId}")
+            : $"\"{Name}\"";
+    }
 }
 
 public sealed record OperationResult(bool Success, string Message) {

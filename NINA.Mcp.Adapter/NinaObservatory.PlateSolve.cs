@@ -130,10 +130,12 @@ public sealed partial class NinaObservatory {
 
         var stoppedGuiding = false;
         var restartGuiding = false;
+        var guidingStopsBefore = 0;
 
         try {
             var target = new Coordinates(Angle.ByHours(raHours), Angle.ByDegree(decDegrees), Epoch.J2000);
 
+            guidingStopsBefore = Volatile.Read(ref guidingStops);
             stoppedGuiding = await guiderMediator.StopGuiding(cancellationToken);
 
             var slewed = await RunMountMotionAsync(
@@ -203,7 +205,7 @@ public sealed partial class NinaObservatory {
             }
 
             if (restartGuiding && !cancellationToken.IsCancellationRequested) {
-                await RestartGuidingAfterCenterAsync(cancellationToken);
+                await RestartGuidingAfterMountMotionAsync(guidingStopsBefore, cancellationToken);
             }
         }
     }
@@ -252,25 +254,6 @@ public sealed partial class NinaObservatory {
             }
         } catch (Exception ex) {
             Logger.Error("MCP: synchronizing the dome to the scope failed", ex);
-        }
-    }
-
-    /// <summary>
-    /// Restarts guiding that centering stopped, still inside the job: cancel_job and stop_all stop it too, and a guider
-    /// that does not come up within five minutes is given up on (the result of the centering stands either way).
-    /// </summary>
-    private async Task RestartGuidingAfterCenterAsync(CancellationToken cancellationToken) {
-        try {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromMinutes(5));
-
-            if (!await guiderMediator.StartGuiding(false, CreateProgress(), timeout.Token)) {
-                Logger.Warning("MCP: guiding could not be restarted after centering");
-            }
-        } catch (OperationCanceledException) {
-            Logger.Warning("MCP: restarting guiding after centering was cancelled or timed out");
-        } catch (Exception ex) {
-            Logger.Error("MCP: restarting guiding after centering failed", ex);
         }
     }
 

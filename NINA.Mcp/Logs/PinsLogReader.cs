@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+using System.Buffers;
 using System.Globalization;
 using System.Text;
 
@@ -101,10 +102,22 @@ public static class PinsLogReader {
 
         var collector = new Collector(query);
         var length = stream.Length;
-        var position = length;
         var budget = Math.Max(ChunkSize, query.MaxScanBytes);
-        var pending = Array.Empty<byte>();
-        var buffer = new byte[ChunkSize];
+
+        // One buffer for the whole scan: each chunk is read in front of the part of a line carried over from the chunk
+        // after it, which stays at the start of the buffer and is moved behind the chunk (at most MaxLineBytes of it).
+        var data = ArrayPool<byte>.Shared.Rent(ChunkSize + MaxLineBytes);
+
+        try {
+            return Scan(stream, collector, data, length, budget, cancellationToken);
+        } finally {
+            ArrayPool<byte>.Shared.Return(data);
+        }
+    }
+
+    private static PinsLogReadResult Scan(Stream stream, Collector collector, byte[] data, long length, long budget, CancellationToken cancellationToken) {
+        var position = length;
+        var pending = 0;
 
         while (position > 0 && !collector.Done && length - position < budget) {
             cancellationToken.ThrowIfCancellationRequested();
@@ -113,33 +126,35 @@ public static class PinsLogReader {
             var count = (int)Math.Min(ChunkSize, Math.Min(position, remaining));
             position -= count;
 
+            // Overlapping when the carried-over part is longer than the chunk; BlockCopy handles that.
+            Buffer.BlockCopy(data, 0, data, count, pending);
+
             stream.Seek(position, SeekOrigin.Begin);
-            stream.ReadExactly(buffer, 0, count);
+            stream.ReadExactly(data, 0, count);
 
-            var data = new byte[count + pending.Length];
-            Buffer.BlockCopy(buffer, 0, data, 0, count);
-            Buffer.BlockCopy(pending, 0, data, count, pending.Length);
+            var filled = count + pending;
+            var end = filled;
 
-            var end = data.Length;
+            while (!collector.Done) {
+                var newline = data.AsSpan(0, end).LastIndexOf((byte)'\n');
 
-            for (var i = data.Length - 1; i >= 0 && !collector.Done; i--) {
-                if (data[i] != (byte)'\n') {
-                    continue;
+                if (newline < 0) {
+                    break;
                 }
 
-                collector.AddLine(Decode(data, i + 1, end - i - 1));
-                end = i;
+                collector.AddLine(data, newline + 1, end - newline - 1);
+                end = newline;
             }
 
             // The bytes before the first newline belong to a line that starts in an earlier chunk.
-            pending = data[..Math.Min(end, MaxLineBytes)];
+            pending = Math.Min(end, MaxLineBytes);
         }
 
         // The first line of the file has no newline before it.
         var reachedStart = position == 0 && !collector.Done;
 
-        if (reachedStart && pending.Length > 0) {
-            collector.AddLine(Decode(pending, 0, pending.Length));
+        if (reachedStart && pending > 0) {
+            collector.AddLine(data, 0, pending);
         }
 
         return new PinsLogReadResult(
@@ -232,6 +247,122 @@ public static class PinsLogReader {
         }
     }
 
+    /// <summary>
+    /// Reads time and level of a header line as <see cref="TryParseLine"/> would accept them (first character a digit, at
+    /// least three '|' fields, a time in one of <see cref="TimeFormats"/>, a known level), without decoding the line.
+    /// False when that is not certain; such a line is left to the full parse.
+    /// </summary>
+    private static bool TryReadHeaderFields(ReadOnlySpan<byte> line, out int timeLength, out DateTime time, out PinsLogLevel level) {
+        timeLength = 0;
+        time = default;
+        level = PinsLogLevel.Info;
+
+        if (line.Length < 20 || line[0] < (byte)'0' || line[0] > (byte)'9') {
+            return false;
+        }
+
+        var first = line.IndexOf((byte)'|');
+
+        if (first < 0 || first > 27) {
+            return false;
+        }
+
+        var second = line[(first + 1)..].IndexOf((byte)'|');
+
+        if (second < 0) {
+            return false;
+        }
+
+        timeLength = first;
+
+        return TryParseTime(line[..first], out time) && TryParseLevel(line.Slice(first + 1, second), out level);
+    }
+
+    /// <summary>
+    /// "yyyy-MM-ddTHH:mm:ss" with an optional fraction of 1-7 digits, with the calendar checks DateTime.TryParseExact makes;
+    /// anything else is left to TryParseExact.
+    /// </summary>
+    private static bool TryParseTime(ReadOnlySpan<byte> text, out DateTime time) {
+        time = default;
+
+        if (text.Length != 19 && (text.Length < 21 || text.Length > 27 || text[19] != (byte)'.')) {
+            return false;
+        }
+
+        if (text[4] != (byte)'-' || text[7] != (byte)'-' || text[10] != (byte)'T' || text[13] != (byte)':' || text[16] != (byte)':') {
+            return false;
+        }
+
+        if (!TryDigits(text, 0, 4, out var year) || !TryDigits(text, 5, 2, out var month) || !TryDigits(text, 8, 2, out var day)
+            || !TryDigits(text, 11, 2, out var hour) || !TryDigits(text, 14, 2, out var minute) || !TryDigits(text, 17, 2, out var second)) {
+            return false;
+        }
+
+        if (year < 1 || month < 1 || month > 12 || day < 1 || day > DateTime.DaysInMonth(year, month) || hour > 23 || minute > 59 || second > 59) {
+            return false;
+        }
+
+        long ticks = 0;
+
+        if (text.Length > 19) {
+            var digits = text.Length - 20;
+
+            if (!TryDigits(text, 20, digits, out var fraction)) {
+                return false;
+            }
+
+            ticks = fraction;
+
+            for (var i = digits; i < 7; i++) {
+                ticks *= 10;
+            }
+        }
+
+        time = new DateTime(year, month, day, hour, minute, second).AddTicks(ticks);
+
+        return true;
+    }
+
+    private static bool TryDigits(ReadOnlySpan<byte> text, int start, int length, out int value) {
+        value = 0;
+
+        for (var i = start; i < start + length; i++) {
+            var digit = text[i] - (byte)'0';
+
+            if (digit < 0 || digit > 9) {
+                return false;
+            }
+
+            value = value * 10 + digit;
+        }
+
+        return true;
+    }
+
+    /// <summary>The levels <see cref="TryParseLevel(string?, out PinsLogLevel)"/> accepts, as written by the logger (upper case, no blanks).</summary>
+    private static bool TryParseLevel(ReadOnlySpan<byte> text, out PinsLogLevel level) {
+        level = PinsLogLevel.Info;
+
+        if (text.SequenceEqual("INFO"u8)) {
+            level = PinsLogLevel.Info;
+        } else if (text.SequenceEqual("DEBUG"u8)) {
+            level = PinsLogLevel.Debug;
+        } else if (text.SequenceEqual("WARNING"u8)) {
+            level = PinsLogLevel.Warning;
+        } else if (text.SequenceEqual("ERROR"u8)) {
+            level = PinsLogLevel.Error;
+        } else if (text.SequenceEqual("TRACE"u8)) {
+            level = PinsLogLevel.Trace;
+        } else if (text.SequenceEqual("FATAL"u8)) {
+            level = PinsLogLevel.Fatal;
+        } else {
+            // Other spellings and aliases go to the full parse.
+            return false;
+        }
+
+        return true;
+    }
+
     private static string Decode(byte[] data, int offset, int count) {
         var text = Encoding.UTF8.GetString(data, offset, count);
 
@@ -248,16 +379,95 @@ public static class PinsLogReader {
         private readonly PinsLogQuery query;
         private readonly List<PinsLogEntry> results = [];
         private readonly List<string> continuation = [];
+        private readonly char[] oldestTimeBuffer = new char[32];
+
+        // The trimmed contains text when it can be checked line by line; null without one, and for a text that only the
+        // joined detail (newlines) or a truncated message (" …") could match.
+        private readonly string? containsText;
+
+        private char[] decoded = new char[1024];
+        private string? oldestTime;
+        private int oldestTimeLength = -1;
 
         public Collector(PinsLogQuery query) {
             this.query = query;
+
+            var text = string.IsNullOrWhiteSpace(query.Contains) ? null : query.Contains.Trim();
+
+            containsText = text is null || text.Contains('\n') || text.Contains('…') ? null : text;
         }
 
         public bool Done { get; private set; }
 
         public bool ReachedSince { get; private set; }
 
-        public string? OldestTime { get; private set; }
+        public string? OldestTime => oldestTimeLength >= 0 ? new string(oldestTimeBuffer, 0, oldestTimeLength) : oldestTime;
+
+        /// <summary>
+        /// A line as read. A header line whose entry can't match (level below the minimum, or the text neither in the line
+        /// nor in its continuation lines) is dropped without being decoded, split and parsed in full; its time is still
+        /// read for <see cref="PinsLogQuery.Since"/> and <see cref="OldestTime"/>. Every other line goes through
+        /// <see cref="AddLine(string)"/>, so the result is the same as parsing every line.
+        /// </summary>
+        public void AddLine(byte[] data, int offset, int count) {
+            if (Done) {
+                return;
+            }
+
+            var line = data.AsSpan(offset, count);
+
+            if (!TryReadHeaderFields(line, out var timeLength, out var time, out var level)) {
+                AddLine(Decode(data, offset, count));
+
+                return;
+            }
+
+            // No contains text that can be checked line by line: only the level decides here.
+            if (level >= query.MinLevel && (containsText is null || MayContain(line, containsText))) {
+                AddLine(Decode(data, offset, count));
+
+                return;
+            }
+
+            // As AddLine(string) does for an entry that doesn't match: its continuation lines go with it.
+            continuation.Clear();
+            SetOldestTime(line[..timeLength]);
+
+            if (query.Since is not null && time < query.Since) {
+                ReachedSince = true;
+                Done = true;
+            }
+        }
+
+        // The decoded line contains the text, or one of the continuation lines collected for it does (Matches looks at
+        // the message, source, member and detail, which are all parts of these). Decoded into a reused buffer.
+        private bool MayContain(ReadOnlySpan<byte> line, string text) {
+            var needed = Encoding.UTF8.GetMaxCharCount(line.Length);
+
+            if (decoded.Length < needed) {
+                decoded = new char[Math.Max(needed, decoded.Length * 2)];
+            }
+
+            var chars = Encoding.UTF8.GetChars(line, decoded);
+
+            if (decoded.AsSpan(0, chars).Contains(text, StringComparison.OrdinalIgnoreCase)) {
+                return true;
+            }
+
+            foreach (var part in continuation) {
+                if (part.Contains(text, StringComparison.OrdinalIgnoreCase)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private void SetOldestTime(ReadOnlySpan<byte> timeBytes) {
+            // ASCII (checked by TryReadHeaderFields), at most 27 characters.
+            oldestTimeLength = Encoding.ASCII.GetChars(timeBytes, oldestTimeBuffer);
+            oldestTime = null;
+        }
 
         public void AddLine(string line) {
             if (Done) {
@@ -279,7 +489,8 @@ public static class PinsLogReader {
 
             var detail = TakeDetail();
 
-            OldestTime = entry.Time;
+            oldestTime = entry.Time;
+            oldestTimeLength = -1;
 
             if (query.Since is not null && entry.ParsedTime is not null && entry.ParsedTime < query.Since) {
                 ReachedSince = true;

@@ -569,6 +569,59 @@ public class JobManagerTests {
         gate.SetResult(JobOutcome.Ok());
     }
 
+    [Test]
+    public void Fence_LetsTheHoldersKeepTheirResources_AndRefusesNewClaimsUntilDisposed() {
+        var gate = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var slew = jobs.Start("slew", "Slew", "mount", _ => gate.Task);
+        var reservation = jobs.Reserve(["camera"], "start_sequence");
+
+        var fence = jobs.Fence(["mount", "camera", "focuser"], "secure_observatory secures the observatory");
+
+        Assert.That(jobs.Get(slew.Id)!.State, Is.EqualTo(JobState.Running), "the running job keeps the mount");
+
+        var claim = Assert.Throws<JobConflictException>(() => jobs.Start("focuser_move", "Move", "Focuser", _ => Task.FromResult(JobOutcome.Ok())));
+        var requires = Assert.Throws<JobConflictException>(() =>
+            jobs.Start("filter", "Filter", "filter_wheel", _ => Task.FromResult(JobOutcome.Ok()), ["focuser"]));
+
+        Assert.That(claim!.Message, Does.Contain("secure_observatory secures the observatory").And.Contain("Do not retry"));
+        Assert.That(requires!.Resource, Is.EqualTo("focuser"));
+        Assert.That(() => jobs.Reserve(["focuser"], "other"), Throws.TypeOf<JobConflictException>());
+
+        gate.SetResult(JobOutcome.Ok());
+        reservation.Dispose();
+
+        Assert.That(() => jobs.Reserve(["mount"], "other"), Throws.TypeOf<JobConflictException>(), "the fence outlives the holders");
+
+        fence.Dispose();
+        fence.Dispose();
+
+        Assert.That(() => jobs.Start("focuser_move", "Move", "focuser", _ => Task.FromResult(JobOutcome.Ok())), Throws.Nothing);
+    }
+
+    [Test]
+    public void Fence_IsNamedBeforeTheJobsItOverlaps() {
+        var gate = new TaskCompletionSource<JobOutcome>(TaskCreationOptions.RunContinuationsAsynchronously);
+        jobs.Start("slew", "Slew", "mount", _ => gate.Task);
+        using var reservation = jobs.Reserve(["camera"], "start_sequence");
+        using var fence = jobs.Fence(["mount", "camera"], "secure_observatory secures the observatory");
+
+        var mount = Assert.Throws<JobConflictException>(() => jobs.Reserve(["mount"], "test"));
+        var camera = Assert.Throws<JobConflictException>(() => jobs.Reserve(["camera"], "test"));
+
+        Assert.That(mount!.Fenced, Is.True);
+        Assert.That(mount.Message, Does.Contain("Do not retry"));
+        Assert.That(camera!.Fenced, Is.True);
+
+        gate.SetResult(JobOutcome.Ok());
+    }
+
+    [Test]
+    public void Fence_RefusedAfterShutdown() {
+        jobs.Shutdown(TimeSpan.Zero);
+
+        Assert.That(() => jobs.Fence(["mount"], "secure"), Throws.TypeOf<InvalidOperationException>());
+    }
+
     // ----- abandon -----
 
     [Test]

@@ -3,6 +3,7 @@
 using NINA.Astrometry;
 using NINA.Core.Model.Equipment;
 using NINA.Core.Utility;
+using NINA.Equipment.Equipment.MySwitch;
 using NINA.Equipment.Interfaces;
 using NINA.Equipment.Model;
 using NINA.Mcp.Observatory;
@@ -29,8 +30,15 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail("Mount is parked. Unpark it first (unpark_mount).");
         }
 
+        var stoppedGuiding = false;
+
         try {
             var target = new Coordinates(Angle.ByHours(raHours), Angle.ByDegree(decDegrees), Epoch.J2000);
+
+            // Like NINA's Slew instruction: the guide star is lost during the slew, so guiding stops first and starts
+            // again afterwards when it ran (also when it was only looping, and also after a refused slew, as there).
+            var guidingStopsBefore = Volatile.Read(ref guidingStops);
+            stoppedGuiding = await StopGuidingBeforeMountMotionAsync(cancellationToken);
 
             var success = await RunMountMotionAsync(
                 () => telescopeMediator.SlewToCoordinatesAsync(target, cancellationToken),
@@ -38,17 +46,41 @@ public sealed partial class NinaObservatory {
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!success) {
-                return OperationResult.Fail("The mount did not complete the slew (rejected by the driver, below the horizon limit or parked); the pins log has details.");
+            var slewText = success
+                ? Invariant($"Slewed to RA {raHours:0.0000} h, Dec {decDegrees:+0.0000;-0.0000}° (J2000).")
+                : "The mount did not complete the slew (rejected by the driver, below the horizon limit or parked); the pins log has details.";
+            var guiding = string.Empty;
+
+            if (stoppedGuiding) {
+                var restart = await RestartGuidingAfterMountMotionAsync(guidingStopsBefore, cancellationToken);
+
+                if (restart == GuidingRestart.Cancelled) {
+                    // A failure after the cancel request ends the job as cancelled with this message.
+                    return OperationResult.Fail($"{slewText} Guiding was stopped for the slew; starting it again was cancelled.");
+                }
+
+                guiding = restart switch {
+                    GuidingRestart.Started => " Guiding was stopped for the slew and started again.",
+                    GuidingRestart.LeftStopped => " Guiding was stopped for the slew and stays stopped, because stop_guiding was called meanwhile.",
+                    _ => " Guiding was stopped for the slew and could not be started again (see the pins log); start it with start_guiding."
+                };
             }
 
-            return OperationResult.Ok(Invariant($"Slewed to RA {raHours:0.0000} h, Dec {decDegrees:+0.0000;-0.0000}° (J2000)."));
-        } catch (OperationCanceledException) {
-            throw;
+            // The slew's result stands either way; only the guiding restart can fail.
+            return success
+                ? OperationResult.Ok($"{slewText}{guiding}")
+                : OperationResult.Fail($"{slewText}{guiding}");
+        } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+            // A failure after the cancel request ends the job as cancelled with this message.
+            return OperationResult.Fail($"Slew cancelled.{GuidingNotRestarted(stoppedGuiding)}");
         } catch (Exception ex) {
             Logger.Error("MCP: slew failed", ex);
-            return OperationResult.Fail($"Slew failed: {ex.Message}");
+            return OperationResult.Fail($"Slew failed: {ex.Message}{GuidingNotRestarted(stoppedGuiding)}");
         }
+    }
+
+    private static string GuidingNotRestarted(bool stoppedGuiding) {
+        return stoppedGuiding ? " Guiding was stopped for the slew and was not restarted; start it with start_guiding." : string.Empty;
     }
 
     public async Task<OperationResult> ParkAsync(CancellationToken cancellationToken) {
@@ -193,17 +225,92 @@ public sealed partial class NinaObservatory {
     }
 
     /// <summary>
-    /// Like the ParkScope and FindHome instructions: no guide corrections to a mount on its way to park or home. A guider
-    /// error must not keep the mount from parking, so it is only logged.
+    /// Like the ParkScope, FindHome and SlewScopeToRaDec instructions: no guide corrections to a mount on its way. A guider
+    /// error must not keep the mount from moving, so it is only logged.
     /// </summary>
-    private async Task StopGuidingBeforeMountMotionAsync(CancellationToken cancellationToken) {
+    /// <returns>Whether the guider was stopped (it was guiding or looping).</returns>
+    private async Task<bool> StopGuidingBeforeMountMotionAsync(CancellationToken cancellationToken) {
         try {
-            await guiderMediator.StopGuiding(cancellationToken);
+            return await guiderMediator.StopGuiding(cancellationToken);
         } catch (OperationCanceledException) {
             throw;
         } catch (Exception ex) {
             Logger.Error("MCP: stopping guiding before a mount motion failed", ex);
+
+            return false;
         }
+    }
+
+    /// <summary>
+    /// Restarts guiding that a slew or centering stopped, still inside the job: cancel_job and stop_all stop it too, and a
+    /// guider that does not come up within five minutes is given up on (the result of the motion stands either way). Not
+    /// when stop_guiding was called since <paramref name="guidingStopsBefore"/> (read before the motion stopped guiding),
+    /// also while guiding started.
+    /// </summary>
+    private async Task<GuidingRestart> RestartGuidingAfterMountMotionAsync(int guidingStopsBefore, CancellationToken cancellationToken) {
+        if (Volatile.Read(ref guidingStops) != guidingStopsBefore) {
+            Logger.Info("MCP: guiding stays stopped after a mount motion: stop_guiding was called meanwhile");
+
+            return GuidingRestart.LeftStopped;
+        }
+
+        var outcome = GuidingRestart.Failed;
+
+        try {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromMinutes(5));
+
+            try {
+                if (await guiderMediator.StartGuiding(false, CreateProgress(), timeout.Token)) {
+                    outcome = GuidingRestart.Started;
+                } else {
+                    Logger.Warning("MCP: guiding could not be restarted after a mount motion");
+                }
+            } catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
+                Logger.Warning("MCP: restarting guiding after a mount motion was cancelled");
+                outcome = GuidingRestart.Cancelled;
+            } catch (OperationCanceledException) when (timeout.IsCancellationRequested) {
+                Logger.Warning("MCP: restarting guiding after a mount motion timed out");
+            }
+        } catch (OperationCanceledException ex) {
+            Logger.Warning($"MCP: the guider cancelled restarting guiding after a mount motion: {ex.Message}");
+        } catch (Exception ex) {
+            Logger.Error("MCP: restarting guiding after a mount motion failed", ex);
+        }
+
+        if (outcome != GuidingRestart.Started && cancellationToken.IsCancellationRequested) {
+            outcome = GuidingRestart.Cancelled;
+        }
+
+        // A stop_guiding while guiding started (calibration can take minutes) wins: guiding is stopped again, also when
+        // the start did not report success (PHD2 can be guiding after a retry that then timed out).
+        if (Volatile.Read(ref guidingStops) != guidingStopsBefore) {
+            await StopGuidingAgainAsync();
+            Logger.Info("MCP: guiding stays stopped after a mount motion: stop_guiding was called during the restart");
+
+            return outcome == GuidingRestart.Cancelled ? GuidingRestart.Cancelled : GuidingRestart.LeftStopped;
+        }
+
+        return outcome;
+    }
+
+    private async Task StopGuidingAgainAsync() {
+        try {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            await guiderMediator.StopGuiding(timeout.Token);
+        } catch (Exception ex) {
+            Logger.Error("MCP: stopping guiding again after a stop_guiding during its restart failed", ex);
+        }
+    }
+
+    private enum GuidingRestart {
+        Started,
+        Failed,
+        Cancelled,
+
+        /// <summary>stop_guiding was called during the motion or the restart.</summary>
+        LeftStopped
     }
 
     /// <summary>
@@ -632,6 +739,11 @@ public sealed partial class NinaObservatory {
             return OperationResult.Ok("Guider is not connected; nothing to stop.");
         }
 
+        // Also when it fails: whoever asked wants guiding stopped, so a running slew or centering must not restart it.
+        // Counted before and after the stop, which can take seconds: a motion that read the count meanwhile, while the
+        // guider still reported guiding, sees the second one.
+        Interlocked.Increment(ref guidingStops);
+
         try {
             var success = await guiderMediator.StopGuiding(cancellationToken);
 
@@ -644,12 +756,14 @@ public sealed partial class NinaObservatory {
         } catch (Exception ex) {
             Logger.Error("MCP: stop guiding failed", ex);
             return OperationResult.Fail($"Stopping guiding failed: {ex.Message}");
+        } finally {
+            Interlocked.Increment(ref guidingStops);
         }
     }
 
     // ----- Switches -----
 
-    public async Task<OperationResult> SetSwitchAsync(int index, double value, CancellationToken cancellationToken) {
+    public async Task<OperationResult> SetSwitchAsync(SwitchTarget switchTarget, double value, CancellationToken cancellationToken) {
         var info = switchMediator.GetInfo();
 
         if (info?.Connected != true) {
@@ -657,12 +771,35 @@ public sealed partial class NinaObservatory {
         }
 
         List<IWritableSwitch> writable = info.WritableSwitches?.ToList() ?? [];
+        IWritableSwitch target;
 
-        if (index < 0 || index >= writable.Count) {
-            return OperationResult.Fail($"No writable switch with index {index}; there are {writable.Count} (see get_status).");
+        if (switchTarget.ByIdentity) {
+            // As SwitchVM.SetSwitchValueByIdentity matches: over all switches, exactly one, and it must be writable.
+            var matches = writable.Cast<ISwitch>()
+                .Concat(info.ReadonlySwitches ?? Enumerable.Empty<ISwitch>())
+                .Where(candidate => SwitchIdentity(candidate, info) is { } identity
+                    && string.Equals(identity.DeviceId, switchTarget.DeviceId, StringComparison.Ordinal)
+                    && identity.ChannelId == switchTarget.ChannelId)
+                .ToList();
+
+            if (matches.Count != 1 || matches[0] is not IWritableSwitch match || !writable.Contains(match)) {
+                return OperationResult.Fail($"No single writable switch {switchTarget}; read get_status again (the switch list may have changed).");
+            }
+
+            target = match;
+        } else {
+            var index = switchTarget.Index!.Value;
+
+            if (index < 0 || index >= writable.Count) {
+                return OperationResult.Fail($"No writable switch with index {index}; there are {writable.Count} (see get_status).");
+            }
+
+            target = writable[index];
+
+            if (!string.Equals(target.Name, switchTarget.Name, StringComparison.Ordinal)) {
+                return OperationResult.Fail($"Switch {index} is now \"{target.Name}\", not {switchTarget}: the switch list changed. Read get_status again.");
+            }
         }
-
-        var target = writable[index];
 
         if (value < target.Minimum || value > target.Maximum) {
             return OperationResult.Fail(Invariant($"Value {value} is outside {target.Name}'s range {target.Minimum}..{target.Maximum}."));
@@ -677,36 +814,76 @@ public sealed partial class NinaObservatory {
         }
 
         try {
-            // SwitchVM swallows its own timeout; read the value back.
-            await switchMediator.SetSwitchValue((short)index, value, CreateProgress(), cancellationToken);
+            // SwitchVM waits for the value itself and throws when it is not reached or the switch can't be read. Written by
+            // identity also when the index form found the switch: a list rebuilt meanwhile then refuses instead of
+            // writing whatever switch is at that index now.
+            var identity = SwitchIdentity(target, info);
 
-            var reached = ReadWritableSwitchValue(index);
-
-            for (var attempt = 0; (reached is null || Math.Abs(reached.Value - value) > 1e-5) && attempt < 10; attempt++) {
-                await Task.Delay(200, cancellationToken);
-                reached = ReadWritableSwitchValue(index);
+            if (identity is { } stable) {
+                await switchMediator.SetSwitchValueByIdentity(stable.DeviceId, stable.ChannelId, value, CreateProgress(), cancellationToken);
+            } else {
+#pragma warning disable CS0618 // No device id, so no identity to write by (as the sequencer's Set Switch Value falls back).
+                await switchMediator.SetSwitchValue((short)writable.IndexOf(target), value, CreateProgress(), cancellationToken);
+#pragma warning restore CS0618
             }
 
-            if (reached is null || Math.Abs(reached.Value - value) > 1e-5) {
-                return OperationResult.Fail(Invariant($"Switch {index} ({target.Name}) did not reach {value}; it reports {reached?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "no value"}."));
+            // From the live list: SwitchVM wrote the switch it resolved there, which is another object when the list was
+            // rebuilt since the snapshot above.
+            var reached = ReadSwitchValue(identity, writable.IndexOf(target), target.Name);
+
+            if (reached is null) {
+                return OperationResult.Fail($"Switch {target.Name} is no longer listed: the switch list changed, so the write may have gone to another switch. Read get_status again.");
             }
 
-            return OperationResult.Ok(Invariant($"Switch {index} ({target.Name}) set to {value}."));
+            if (Math.Abs(reached.Value - value) > 1e-5) {
+                return OperationResult.Fail(Invariant($"Switch {target.Name} did not reach {value}; it reports {reached}."));
+            }
+
+            return OperationResult.Ok(Invariant($"Switch {target.Name} set to {value}."));
         } catch (OperationCanceledException) {
             throw;
         } catch (Exception ex) {
             Logger.Error("MCP: setting a switch failed", ex);
-            return OperationResult.Fail($"Setting switch {index} failed: {ex.Message}");
+            return OperationResult.Fail($"Setting switch {target.Name} failed: {ex.Message}");
         }
     }
 
-    private double? ReadWritableSwitchValue(int index) {
-        var switches = switchMediator.GetInfo()?.WritableSwitches;
+    /// <summary>
+    /// The value of the switch with <paramref name="identity"/>, or without one at <paramref name="index"/> when it still has
+    /// <paramref name="name"/>, now.
+    /// </summary>
+    private double? ReadSwitchValue((string DeviceId, short ChannelId)? identity, int index, string name) {
+        var info = switchMediator.GetInfo();
 
-        if (switches == null || index >= switches.Count) {
+        if (info?.Connected != true) {
             return null;
         }
 
-        return switches[index].Value;
+        var writable = info.WritableSwitches?.ToList() ?? [];
+
+        if (identity is not { } stable) {
+            return index >= 0 && index < writable.Count && string.Equals(writable[index].Name, name, StringComparison.Ordinal)
+                ? writable[index].Value
+                : null;
+        }
+
+        var matches = writable.Cast<ISwitch>()
+            .Concat(info.ReadonlySwitches ?? Enumerable.Empty<ISwitch>())
+            .Where(candidate => SwitchIdentity(candidate, info) == stable)
+            .ToList();
+
+        return matches.Count == 1 ? matches[0].Value : null;
+    }
+
+    /// <summary>
+    /// The stable identity of a switch, as the sequencer's Set Switch Value records it: a hub channel's own device and
+    /// channel id, otherwise the switch device's id and the switch id; null without a device id.
+    /// </summary>
+    internal static (string DeviceId, short ChannelId)? SwitchIdentity(ISwitch candidate, SwitchInfo info) {
+        if (candidate is ICompositeSwitchIdentity composite) {
+            return string.IsNullOrEmpty(composite.DeviceId) ? null : (composite.DeviceId, composite.ChannelId);
+        }
+
+        return string.IsNullOrEmpty(info.DeviceId) ? null : (info.DeviceId, candidate.Id);
     }
 }

@@ -22,7 +22,7 @@ public sealed partial class NinaObservatory {
         IReadOnlyList<string> runningItems;
 
         try {
-            running = sequence.IsRunning();
+            running = sequence.IsRunningOrStarting();
             runningItems = sequence.GetRunningItemNames();
         } catch (Exception ex) {
             Logger.Debug($"MCP: reading the sequence state failed: {ex.Message}");
@@ -318,7 +318,11 @@ public sealed partial class NinaObservatory {
             var index = 0;
 
             foreach (var item in info.WritableSwitches.ToList()) {
+                var identity = SwitchIdentity(item, info);
+
                 switches.Add(new Dictionary<string, object?> {
+                    ["deviceId"] = identity?.DeviceId,
+                    ["channelId"] = identity?.ChannelId,
                     ["index"] = index,
                     ["name"] = item.Name,
                     ["description"] = item.Description,
@@ -335,7 +339,11 @@ public sealed partial class NinaObservatory {
 
         if (info.ReadonlySwitches != null) {
             foreach (var item in info.ReadonlySwitches.ToList()) {
+                var identity = SwitchIdentity(item, info);
+
                 switches.Add(new Dictionary<string, object?> {
+                    ["deviceId"] = identity?.DeviceId,
+                    ["channelId"] = identity?.ChannelId,
                     ["name"] = item.Name,
                     ["description"] = item.Description,
                     ["value"] = Number(item.Value),

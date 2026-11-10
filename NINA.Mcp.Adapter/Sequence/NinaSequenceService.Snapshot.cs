@@ -39,10 +39,10 @@ public sealed partial class NinaSequenceService {
 
             int depth = Math.Clamp(maxDepth, 1, MaxSnapshotDepth);
             SequenceNode root = BuildNode(access.Root, string.Empty, depth);
-            return new SequenceSnapshot(true, access.ViewModel.IsRunning, SafeTitle(access.Root), new[] { root });
+            return new SequenceSnapshot(true, access.ViewModel.IsRunning || IsStartPending(), SafeTitle(access.Root), new[] { root });
         } catch (Exception ex) {
             Logger.Error("MCP: building the sequence snapshot failed", ex);
-            return new SequenceSnapshot(false, IsRunning(), null, Array.Empty<SequenceNode>());
+            return new SequenceSnapshot(false, IsRunningOrStarting(), null, Array.Empty<SequenceNode>());
         }
     }
 

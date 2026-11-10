@@ -397,8 +397,10 @@ internal sealed class StartSequenceTool : ObservatoryTool {
         + "with get_status, get_sequence and get_recent_images; stop with stop_sequence (or stop_all). Finished items are "
         + "skipped on a new start: reset_sequence first to run everything again. Refused while a job started over MCP "
         + "(slew, capture, autofocus, focuser move, filter change, guiding start, switch, device connection) still runs: "
-        + "wait for it with get_job or stop it with cancel_job. A running camera cooling job does not block the start. The "
-        + "result notes targets that no meridian flip trigger covers.";
+        + "wait for it with get_job or stop it with cancel_job. A running camera cooling job does not block the start. Runs "
+        + "as a background job until the sequence runs (after a restart the sequencer can prepare for a while): a client that "
+        + "gives up waiting does not stop the start; cancel_job, stop_sequence or stop_all do. Until then every device stays "
+        + "held for it. The result notes targets that no meridian flip trigger covers.";
 
     /// <summary>
     /// Job resources the sequence would fight over: every device slot. Cooling (camera_cooler) is deliberately not listed.
@@ -409,21 +411,30 @@ internal sealed class StartSequenceTool : ObservatoryTool {
 
     public override SequenceGuard Guard => SequenceGuard.Strict;
 
+    protected override bool StartsJob => true;
+
+    protected override double DefaultWaitSeconds => JobPayload.MaxWaitSeconds;
+
     protected override void DefineArguments(ToolSchema arguments) {
         arguments.Boolean("skip_validation", "Start even when NINA's sequence validation reports issues. Default false.", defaultValue: false);
     }
 
     protected override async Task<ToolCallResult> ExecuteAsync(ToolArguments arguments, ToolContext context, CancellationToken cancellationToken) {
         var skipValidation = arguments.GetBool("skip_validation") ?? false;
+
+        // Before anything else: a stop_sequence or stop_all from now on, also one that comes before the start job exists
+        // (and so is not cancelled by stop_all), stops this start.
+        var stopCount = Observatory.GetSequenceStopCount();
         IDisposable reservation;
 
-        // Held until the sequence runs (the sequence guard takes over from there), so no job can start in between.
+        // Held by the start job until the sequence runs (the sequence guard takes over from there) or the start ended, so
+        // that no job can start in between, also after the client stopped waiting; released on the job's cancel request.
         try {
-            reservation = context.Jobs.Reserve(HardwareResources, "start_sequence");
+            reservation = context.Jobs.Reserve(HardwareResources, "start_sequence (the sequence is being prepared; see list_jobs)");
         } catch (JobConflictException ex) {
             var busy = RunningJobsHolding(context.Jobs, HardwareResources);
 
-            if (busy.Count == 0) {
+            if (ex.Fenced || busy.Count == 0) {
                 return ToolCallResult.Error($"Refused: {ex.Message}");
             }
 
@@ -433,15 +444,34 @@ internal sealed class StartSequenceTool : ObservatoryTool {
                 $"Refused: MCP jobs still use the hardware the sequence needs: {jobs}. Wait for them with get_job or stop them with cancel_job, then retry.");
         }
 
-        // A target without a flip trigger passes NINA's validation; the model hears about it with the start.
-        var note = SequenceChecks.MeridianFlipNote(Observatory.GetSequence(SequenceChecks.Depth));
-        OperationResult result;
+        try {
+            // A target without a flip trigger passes NINA's validation; the model hears about it with the start.
+            var note = SequenceChecks.MeridianFlipNote(Observatory.GetSequence(SequenceChecks.Depth));
 
-        using (reservation) {
-            result = await Observatory.StartSequenceAsync(skipValidation, cancellationToken).ConfigureAwait(false);
+            return await RunJobAsync(
+                arguments,
+                context,
+                new JobRequest("sequence_start", "Start the advanced sequence", null),
+                async token => {
+                    // An abandoned or slowly stopping start must not keep every device; the start, still pending, keeps
+                    // the sequence guard on until its run ended.
+                    using var releaseOnCancel = token.Register(reservation.Dispose);
+
+                    try {
+                        var result = await Observatory.StartSequenceAsync(skipValidation, stopCount, token).ConfigureAwait(false);
+
+                        return JobPayload.ToOutcome(result.Success && note is not null ? OperationResult.Ok($"{result.Message} {note}") : result);
+                    } finally {
+                        reservation.Dispose();
+                    }
+                },
+                cancellationToken).ConfigureAwait(false);
+        } catch {
+            // The job did not start (pins shutting down) or the flip check failed; a second Dispose is harmless.
+            reservation.Dispose();
+
+            throw;
         }
-
-        return FromOperation(result.Success && note is not null ? OperationResult.Ok($"{result.Message} {note}") : result);
     }
 }
 

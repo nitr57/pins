@@ -20,6 +20,9 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
 
     public bool SequenceRunning { get; set; }
 
+    /// <summary>Whether StopSequence ends a running sequence at once (a real stop ends it within a few seconds).</summary>
+    public bool StopEndsSequence { get; set; } = true;
+
     public List<DeviceStatus> Devices { get; } = [
         new DeviceStatus(DeviceKind.Camera, true, "Fake Camera", new Dictionary<string, object?> { ["temperature"] = -10.0 }),
         new DeviceStatus(DeviceKind.FilterWheel, false, null, new Dictionary<string, object?>())
@@ -98,7 +101,7 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
 
     public bool? LastForceCalibration { get; private set; }
 
-    public (int Index, double Value)? LastSwitch { get; private set; }
+    public (SwitchTarget Target, double Value)? LastSwitch { get; private set; }
 
     public bool? LastTracking { get; private set; }
 
@@ -113,6 +116,10 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
     public (string Name, bool Overwrite)? LastSave { get; private set; }
 
     public bool? LastSkipValidation { get; private set; }
+
+    public int? LastStopCountAtStart { get; private set; }
+
+    private int stopCount;
 
     public bool? LastPlateSolveSync { get; private set; }
 
@@ -327,8 +334,8 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         return OperateAsync("StopGuiding", cancellationToken);
     }
 
-    public Task<OperationResult> SetSwitchAsync(int index, double value, CancellationToken cancellationToken) {
-        LastSwitch = (index, value);
+    public Task<OperationResult> SetSwitchAsync(SwitchTarget target, double value, CancellationToken cancellationToken) {
+        LastSwitch = (target, value);
 
         return OperateAsync("SetSwitch", cancellationToken);
     }
@@ -374,14 +381,31 @@ internal sealed class ToolsFakeObservatory : IPinsObservatory {
         return OperateAsync("SaveSequence", cancellationToken);
     }
 
-    public Task<OperationResult> StartSequenceAsync(bool skipValidation, CancellationToken cancellationToken) {
+    public Task<OperationResult> StartSequenceAsync(bool skipValidation, int stopCountAtRequest, CancellationToken cancellationToken) {
         LastSkipValidation = skipValidation;
+        LastStopCountAtStart = stopCountAtRequest;
 
         return OperateAsync("StartSequence", cancellationToken);
     }
 
     public OperationResult StopSequence() {
-        return Operate("StopSequence");
+        Interlocked.Increment(ref stopCount);
+
+        var result = Operate("StopSequence");
+
+        if (StopEndsSequence) {
+            SequenceRunning = false;
+        }
+
+        return result;
+    }
+
+    public bool IsSequenceRunning() {
+        return SequenceRunning;
+    }
+
+    public int GetSequenceStopCount() {
+        return Volatile.Read(ref stopCount);
     }
 
     public OperationResult ResetSequence() {

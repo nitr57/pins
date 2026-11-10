@@ -68,11 +68,21 @@ public interface IJobManager {
     JobInfo? Abandon(string id);
 
     /// <summary>
-    /// Claims <paramref name="resources"/> for a short operation that is not a job (starting the sequence, switching
+    /// Claims <paramref name="resources"/> for an operation that is not a job itself (starting the sequence, switching
     /// tracking) until the returned handle is disposed. Jobs claiming or requiring one of them conflict meanwhile.
     /// </summary>
     /// <exception cref="JobConflictException">A running job or another reservation holds one of the resources.</exception>
     IDisposable Reserve(IReadOnlyCollection<string> resources, string description);
+
+    /// <summary>
+    /// Like <see cref="Reserve"/>, but taken even while running jobs or reservations hold some of
+    /// <paramref name="resources"/>: they keep theirs, and from now on every new job or reservation claiming or requiring
+    /// one of them conflicts, until the handle is disposed. For a shutdown that cancels the running jobs afterwards and must
+    /// not let a new one in meanwhile. <paramref name="operation"/> names it in the conflict message ("secure_observatory is
+    /// securing the observatory").
+    /// </summary>
+    /// <exception cref="InvalidOperationException">pins is shutting down.</exception>
+    IDisposable Fence(IReadOnlyCollection<string> resources, string operation);
 
     /// <summary>
     /// Refuses new jobs and reservations, cancels every running job and waits up to <paramref name="wait"/> for them to
@@ -130,12 +140,23 @@ public sealed class JobConflictException : Exception {
     }
 
     public JobConflictException(string resource, string operation)
-        : base($"The {resource} is in use by a short operation ({operation}). Retry in a moment.") {
+        : this(resource, operation, fenced: false) {
+    }
+
+    /// <summary>A <see cref="IJobManager.Fence"/> holds the resource: it can last minutes, so the message asks for no retry.</summary>
+    public JobConflictException(string resource, string operation, bool fenced)
+        : base(fenced
+            ? $"The {resource} is held while {operation}: MCP hardware tools are refused until that has ended (see list_jobs). Do not retry unless the user asks."
+            : $"The {resource} is in use by {operation}. Retry when it has ended.") {
         Resource = resource;
+        Fenced = fenced;
     }
 
     public string Resource { get; }
 
     /// <summary>The job holding the resource; null when a reservation holds it.</summary>
     public JobInfo? RunningJob { get; }
+
+    /// <summary>True when a <see cref="IJobManager.Fence"/> holds the resource.</summary>
+    public bool Fenced { get; }
 }

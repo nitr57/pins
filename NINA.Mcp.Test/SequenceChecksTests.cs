@@ -50,7 +50,7 @@ public class SequenceChecksTests {
         Assert.That(sequence.Structured!["name"]!.GetValue<string>(), Is.EqualTo("Fake sequence"));
         Assert.That(sequence.Structured!["notes"]![0]!.GetValue<string>(), Does.Contain("NGC 7000"));
         Assert.That(start.IsError, Is.False, start.Text);
-        Assert.That(start.Structured!["message"]!.GetValue<string>(), Does.StartWith("StartSequence done").And.Contain("NGC 7000"));
+        Assert.That(ToolsTestCatalog.Job(start)["outcome"]!["message"]!.GetValue<string>(), Does.StartWith("StartSequence done").And.Contain("NGC 7000"));
     }
 
     [Test]
@@ -62,7 +62,7 @@ public class SequenceChecksTests {
         var start = await catalog.CallAsync("start_sequence");
 
         Assert.That(sequence.Structured!["notes"], Is.Null);
-        Assert.That(start.Structured!["message"]!.GetValue<string>(), Is.EqualTo("StartSequence done"));
+        Assert.That(ToolsTestCatalog.Job(start)["outcome"]!["message"]!.GetValue<string>(), Is.EqualTo("StartSequence done"));
     }
 
     private static SequenceSnapshot Snapshot(SequenceNode root) {
