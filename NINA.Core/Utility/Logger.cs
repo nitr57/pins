@@ -61,12 +61,21 @@ namespace NINA.Core.Utility {
                 CoreUtil.DirectoryCleanup(logDir, TimeSpan.FromDays(-90));
             }
 
+            // pins: under pins.service the console goes to journald, which also writes it to the SD card
+            var consoleTarget = ConsoleLogStyle.Choose(
+                Environment.GetEnvironmentVariable("JOURNAL_STREAM"),
+                Console.IsOutputRedirected,
+                StdoutLink());
+
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.ControlledBy(levelSwitch)
                 .Enrich.With<LegacyLogLevelMappingEnricher>()
                 .WriteTo.Console(
-                    theme: Serilog.Sinks.SystemConsole.Themes.AnsiConsoleTheme.Literate,
-                    outputTemplate: "{Timestamp:yyyy-MM-ddTHH:mm:ss.ffff}|{LegacyLogLevelConsole}|{Message:lj}{NewLine}{Exception}")
+                    theme: consoleTarget == ConsoleLogTarget.Terminal
+                        ? Serilog.Sinks.SystemConsole.Themes.AnsiConsoleTheme.Literate
+                        : Serilog.Sinks.SystemConsole.Themes.ConsoleTheme.None,
+                    outputTemplate: ConsoleLogStyle.Template(consoleTarget),
+                    restrictedToMinimumLevel: ConsoleLogStyle.MinimumLevel(consoleTarget))
                 .WriteTo.File(logFilePath,
                     rollOnFileSizeLimit: true,
                     rollingInterval: RollingInterval.Month,
@@ -79,6 +88,15 @@ namespace NINA.Core.Utility {
                 .CreateLogger();
 
             clockWatchdog = new Timer(CheckForClockCorrection, null, ClockWatchdogInterval, ClockWatchdogInterval);
+        }
+
+        // where stdout leads, e.g. "socket:[12345]" for the journal; null where /proc is missing
+        private static string StdoutLink() {
+            try {
+                return new FileInfo("/proc/self/fd/1").LinkTarget;
+            } catch {
+                return null;
+            }
         }
 
         private static void CheckForClockCorrection(object state) {
@@ -260,6 +278,7 @@ namespace NINA.Core.Utility {
         private class LegacyLogLevelMappingEnricher : ILogEventEnricher {
             private static readonly string LEGACYLOGLEVELPROPERTY = "LegacyLogLevel";
             private static readonly string COLOREDLEGACYLOGLEVELPROPERTY = "LegacyLogLevelConsole";
+            private static readonly string SDPRIORITYPROPERTY = "SdPriority";
             private static readonly string TRACE = LogLevelEnum.TRACE.ToString();
             private static readonly string DEBUG = LogLevelEnum.DEBUG.ToString();
             private static readonly string INFO = LogLevelEnum.INFO.ToString();
@@ -288,6 +307,7 @@ namespace NINA.Core.Utility {
                     _ => legacyLogLevel
                 };
                 logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty(COLOREDLEGACYLOGLEVELPROPERTY, coloredLevel));
+                logEvent.AddPropertyIfAbsent(propertyFactory.CreateProperty(SDPRIORITYPROPERTY, ConsoleLogStyle.SdPriority(logEvent.Level)));
             }
         }
     }

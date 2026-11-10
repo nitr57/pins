@@ -442,7 +442,7 @@ namespace NINA.Image.ImageData {
                 // Flush to disk so the write truly completes before returning.
                 // Without this, Linux write-back cache on network mounts signals completion
                 // immediately, providing no backpressure and leading to memory exhaustion.
-                fs.Flush(flushToDisk: true);
+                fs.Flush(flushToDisk: SaveDurability.NeedsFlushToDisk(uniquePath));
             }
             return uniquePath;
         }
@@ -490,7 +490,7 @@ namespace NINA.Image.ImageData {
                 var frame = BitmapFrame.Create(RenderBitmapSource(), null, metadata, null);
                 encoder.Frames.Add(frame);
                 encoder.Save(fs);
-                fs.Flush(flushToDisk: true);
+                fs.Flush(flushToDisk: SaveDurability.NeedsFlushToDisk(uniquePath));
             }
 
             return uniquePath;
@@ -526,7 +526,7 @@ namespace NINA.Image.ImageData {
 
                 using (FileStream fs = new FileStream(uniquePath, FileMode.Create)) {
                     f.Write(fs);
-                    fs.Flush(flushToDisk: true);
+                    fs.Flush(flushToDisk: SaveDurability.NeedsFlushToDisk(uniquePath));
                 }
                 return uniquePath;
             } else {
@@ -571,8 +571,10 @@ namespace NINA.Image.ImageData {
                     throw;
                 }
                 // cfitsio manages its own file handle; fsync after close via a short-lived write handle.
-                using (FileStream fsync = new FileStream(uniquePath, FileMode.Open, FileAccess.Write, FileShare.None)) {
-                    fsync.Flush(flushToDisk: true);
+                if (SaveDurability.NeedsFlushToDisk(uniquePath)) {
+                    using (FileStream fsync = new FileStream(uniquePath, FileMode.Open, FileAccess.Write, FileShare.None)) {
+                        fsync.Flush(flushToDisk: true);
+                    }
                 }
                 return uniquePath;
             }
@@ -601,7 +603,7 @@ namespace NINA.Image.ImageData {
 
             using (FileStream fs = new FileStream(uniquePath, FileMode.Create)) {
                 img.Save(fs);
-                fs.Flush(flushToDisk: true);
+                fs.Flush(flushToDisk: SaveDurability.NeedsFlushToDisk(uniquePath));
             }
 
             return uniquePath;
