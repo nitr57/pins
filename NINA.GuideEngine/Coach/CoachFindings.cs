@@ -46,6 +46,7 @@ public static class CoachFindings
         {
             CoachCodes.Busy => "Another Guiding Coach session is running or the guider is busy.",
             CoachCodes.NotConnected => "The guide camera is not connected.",
+            CoachCodes.NearPole => $"The mount points at Dec {V("declinationDeg", "0.#")}°, too close to the pole: RA guide pulses barely move the star there, so calibration and the RA results would fail. Slew to a declination within ±{V("maxDeclinationDeg", "0")}° first, ideally near the celestial equator.",
             CoachCodes.NoStar => "No usable guide star was found.",
             CoachCodes.NoCalibration => "This step needs a calibration; calibrating was not allowed.",
             CoachCodes.CalibrationFailed => "Calibration failed; steps that need a calibration were skipped.",
