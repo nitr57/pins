@@ -36,7 +36,10 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
             port = new SerialPort(portName, baudRate, Parity.None, 8, StopBits.One) {
                 Handshake = Handshake.None,
                 Encoding = Encoding.ASCII,
-                WriteTimeout = 1000,
+                // .NET on Linux hands a write to its own I/O thread and times out when that thread does not run in
+                // time, so a CPU or GC stall of the process (plate solves next to a guide frame on a Pi) failed 1 s
+                // writes of a few characters; a timeout fails the command, not the connection (OnStepXTransport.Write)
+                WriteTimeout = 5000,
                 // Linux raises DTR and RTS together when the port opens. An ESP32 board's auto-reset circuit resets
                 // the controller while RTS is set and DTR is not, which clearing DTR before RTS (the .NET default of
                 // both off) passes through. Keep both set and never touch them again, like INDI's tty_connect.

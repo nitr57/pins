@@ -1268,6 +1268,37 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public async Task WriteTimeout_DoesNotEndTheConnection() {
+            // 2026-11-06: one write timed out while two plate solves stalled the Pi, and the mount was disconnected
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.FailWrites = new TimeoutException();
+
+            await Task.Delay(300);
+            _ = telescope.RightAscension;
+            port.FailWrites = null;
+            await Task.Delay(300);
+
+            Assert.That(telescope.RightAscension, Is.Not.NaN);
+            Assert.That(telescope.Connected, Is.True);
+        }
+
+        [Test]
+        public async Task WriteTimeouts_EndTheConnectionAfterRepeatedFailures() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.FailWrites = new TimeoutException();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+
+            for (int i = 0; i < 20 && telescope.Connected; i++) {
+                await Task.Delay(300);
+                _ = telescope.RightAscension;
+            }
+            await WaitUntil(() => !telescope.Connected);
+
+            Assert.That(telescope.Connected, Is.False);
+            Assert.That(clock.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromSeconds(2)), "a short stall must not end the connection");
+        }
+
+        [Test]
         public async Task SilentController_EndsTheConnectionAfterRepeatedFailures() {
             var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
             port.On(":GU#", (string?)null);
@@ -1306,6 +1337,68 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(telescope.Connected, Is.False);
             Assert.That(port.IsOpen, Is.False);
             Assert.That(telescope.RightAscension, Is.NaN);
+        }
+
+        [Test]
+        public async Task MoveAxisDirection_StopTimedOut_IsSentAgain() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", ManualMove));
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 1);
+            port.FailWritesOf(":Qe#", new TimeoutException());
+
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 0);
+            telescope.Disconnect();
+
+            // the stop went out on its second attempt: the disconnect has no move left to stop
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Me#", ":Qe#" }));
+        }
+
+        [Test]
+        public async Task MoveAxis_StopTimedOut_IsSentAgain() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            telescope.MoveAxis(TelescopeAxes.Primary, 3.5);
+            port.FailWritesOf(":Qw#", new TimeoutException());
+
+            telescope.MoveAxis(TelescopeAxes.Primary, 0);
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":R9#", ":Me#", ":Qe#", ":Qe#", ":Qw#" }));
+            Assert.That(telescope.Connected, Is.True);
+        }
+
+        [Test]
+        public async Task StopSlew_StopTimedOut_IsSentAgain() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", ManualMove));
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 1);
+            port.FailWritesOf(":Q#", new TimeoutException());
+
+            telescope.StopSlew();
+            telescope.Disconnect();
+
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Me#", ":Q#" }));
+        }
+
+        [Test]
+        public async Task StopThatNeverGoesOut_EndsTheConnectionAndTheDisconnectStopsTheMove() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S().On(":GU#", ManualMove));
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 1);
+            port.FailWritesOf(":Qe#", new TimeoutException(), times: 2).FailWritesOf(":Q#", new TimeoutException());
+
+            telescope.MoveAxisDirection(TelescopeAxes.Primary, 0);
+            // Disconnect clears Connected before CloseDevice sends the stop
+            await WaitUntil(() => !telescope.Connected && port.Written.Contains(":Qe#"));
+
+            // :Qe# twice and :Q# timed out; the disconnect sends :Qe# for the move still recorded
+            Assert.That(telescope.Connected, Is.False);
+            Assert.That(port.Written.Where(c => !c.StartsWith(":G")), Is.EqualTo(new[] { ":Me#", ":Qe#" }));
+        }
+
+        [Test]
+        public async Task PulseGuide_WriteTimeout_ThrowsTheReasonAndKeepsTheConnection() {
+            var (telescope, port) = await Connected(FakeOnStepXPort.Umi17S());
+            port.FailWritesOf(":Mgn0100#", new TimeoutException());
+
+            Assert.That(() => telescope.PulseGuide(GuideDirections.guideNorth, 100),
+                Throws.InvalidOperationException.With.Message.Contains("guide pulse could not be sent: writing :Mgn0100# timed out"));
+            Assert.That(telescope.Connected, Is.True);
         }
 
         [Test]

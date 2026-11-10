@@ -40,8 +40,23 @@ namespace NINA.Test.Equipment.OnStepX {
         /// <summary>The reply to a command not scripted; the firmware answers an unknown command with a bare "0".</summary>
         public string? DefaultReply { get; set; } = "0";
 
-        /// <summary>Thrown by every write while set, like a port whose device was unplugged.</summary>
+        private readonly Dictionary<string, Queue<Exception>> writeFailures = new();
+
+        /// <summary>
+        /// Thrown by every write while set: an <see cref="System.IO.IOException"/> like a port whose device was
+        /// unplugged, a <see cref="TimeoutException"/> like a write the stalled process did not get out in time.
+        /// </summary>
         public Exception? FailWrites { get; set; }
+
+        /// <summary>The next <paramref name="times"/> writes of <paramref name="command"/> throw <paramref name="failure"/>.</summary>
+        public FakeOnStepXPort FailWritesOf(string command, Exception failure, int times = 1) {
+            var failures = new Queue<Exception>();
+            for (int i = 0; i < times; i++) {
+                failures.Enqueue(failure);
+            }
+            writeFailures[command] = failures;
+            return this;
+        }
 
         /// <summary>The replies to <paramref name="command"/> in order, the last one repeating; null is no reply.</summary>
         public FakeOnStepXPort On(string command, params string?[] replySequence) {
@@ -101,6 +116,9 @@ namespace NINA.Test.Equipment.OnStepX {
             }
             if (FailWrites is { } failure) {
                 throw failure;
+            }
+            if (writeFailures.TryGetValue(text, out var failures) && failures.TryDequeue(out var commandFailure)) {
+                throw commandFailure;
             }
 
             Written.Add(text);

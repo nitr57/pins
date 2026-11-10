@@ -59,6 +59,12 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
         /// </summary>
         public static readonly TimeSpan DrainQuietTime = TimeSpan.FromMilliseconds(20);
 
+        /// <summary>
+        /// A write that takes longer than this is logged. The port's write returns once the bytes are queued, within a
+        /// few ms; longer means the process was stalled (CPU load, garbage collection), not the line.
+        /// </summary>
+        public static readonly TimeSpan SlowWriteWarning = TimeSpan.FromMilliseconds(250);
+
         private readonly IOnStepXPort port;
         private readonly TimeSpan firstByteTimeout;
         private readonly TimeSpan interByteTimeout;
@@ -205,26 +211,65 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
 
         /// <summary>
         /// Writes one command and returns when its last character is on the line: the port's write returns once the
-        /// bytes are queued, and characters queued before them go first.
+        /// bytes are queued, and characters queued before them go first. A write that times out fails like a command
+        /// without a reply (<see cref="OnStepXWriteTimeoutException"/>), not like a lost port: it is a stalled process.
+        /// A port whose device is gone fails with a port error instead (an <see cref="System.IO.IOException"/>, or an
+        /// <see cref="InvalidOperationException"/> once .NET has closed it).
         /// </summary>
         private DateTime Write(string command) {
             if (string.IsNullOrEmpty(command)) {
                 throw new ArgumentException("empty command", nameof(command));
             }
 
+            TimeSpan took;
+            DateTime onLine;
             lock (writeLock) {
-                port.Write(command);
+                var writeStartedAt = utcNow();
+                try {
+                    port.Write(command);
+                } catch (TimeoutException ex) {
+                    throw new OnStepXWriteTimeoutException($"writing {Printable(command)} timed out after {(utcNow() - writeStartedAt).TotalMilliseconds:0} ms", ex);
+                }
+
                 var now = utcNow();
+                took = now - writeStartedAt;
                 var start = lineFreeAt > now ? lineFreeAt : now;
                 lineFreeAt = start + command.Length * characterTime;
-                return lineFreeAt;
+                onLine = lineFreeAt;
             }
+
+            if (took > SlowWriteWarning) {
+                Logger.Warning($"OnStepX: writing {Printable(command)} took {took.TotalMilliseconds:0} ms");
+            }
+            return onLine;
+        }
+
+        /// <summary>A command for a message: the LX200 ACK (0x06) and other control characters spelled out.</summary>
+        internal static string Printable(string command) {
+            var text = new StringBuilder(command.Length);
+            foreach (char c in command) {
+                if (c == '\u0006') {
+                    text.Append("<ACK>");
+                } else if (char.IsControl(c)) {
+                    text.Append(System.Globalization.CultureInfo.InvariantCulture, $"<0x{(int)c:X2}>");
+                } else {
+                    text.Append(c);
+                }
+            }
+            return text.ToString();
         }
 
         // Caller holds gate. :GE# without clearing the input first: nothing else can be waiting, and the reply to the
-        // command before is already read.
+        // command before is already read. A :GE# that cannot be written leaves the reason unknown, like one that is not
+        // answered: the command before it already went out.
         private int? ReadLastError() {
-            Write(":GE#");
+            try {
+                Write(":GE#");
+            } catch (OnStepXWriteTimeoutException ex) {
+                Logger.Warning($"OnStepX: the reason for the last command could not be asked: {ex.Message}");
+                return null;
+            }
+
             var reply = ReadUntilTerminator();
             return reply.Terminated && int.TryParse(reply.Text, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out int error)
                 ? error

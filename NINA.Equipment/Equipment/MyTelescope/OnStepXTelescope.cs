@@ -49,7 +49,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private static readonly TimeSpan StateMaxAge = TimeSpan.FromMilliseconds(250);
 
         /// <summary>
-        /// Consecutive unreadable states (the controller silent or garbled), spread over at least
+        /// Consecutive unreadable states (the controller silent or garbled, or a write timed out), spread over at least
         /// <see cref="StateFailureSpan"/>, before the connection counts as lost.
         /// </summary>
         private const int MaxStateFailures = 3;
@@ -608,8 +608,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             }
         }
 
+        /// <summary>The port is gone or closed. A write timeout is not one: the transport fails it as an <see cref="OnStepXWriteTimeoutException"/>.</summary>
         private static bool IsPortFailure(Exception ex) =>
-            ex is IOException or InvalidOperationException or UnauthorizedAccessException or TimeoutException;
+            ex is IOException or InvalidOperationException or UnauthorizedAccessException;
 
         private void ConnectionLost(Exception ex) {
             // once per connection: the reads still in flight fail the same way until the disconnect has run
@@ -664,6 +665,42 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 ConnectionLost(ex);
                 return fallback;
             }
+        }
+
+        /// <summary>
+        /// Runs a stop, which must not get lost: one whose write timed out (a stalled process, so it most likely never
+        /// went out) is sent once more, then :Q# stops everything. When that times out too the connection ends, and the
+        /// disconnect sends the stops for the moves still recorded once more. True when a stop went out.
+        /// </summary>
+        private bool RunStop(Action<OnStepXDevice> stop) {
+            if (!Connected || device is not { } d) {
+                return false;
+            }
+
+            Action<OnStepXDevice>[] attempts = [stop, stop, x => x.Abort()];
+            OnStepXWriteTimeoutException? timeout = null;
+            foreach (var attempt in attempts) {
+                try {
+                    attempt(d);
+                    if (timeout is not null) {
+                        Logger.Info("OnStepX: the stop went out on another attempt");
+                    }
+                    return true;
+                } catch (OnStepXWriteTimeoutException ex) {
+                    Logger.Warning($"OnStepX: stop not sent, trying again: {ex.Message}");
+                    timeout = ex;
+                } catch (OnStepXException ex) {
+                    Logger.Error($"OnStepX: {ex.Message}");
+                    Notification.ShowError($"OnStepX: {ex.Message}");
+                    return false;
+                } catch (Exception ex) when (IsPortFailure(ex)) {
+                    ConnectionLost(ex);
+                    return false;
+                }
+            }
+
+            ConnectionLost(timeout!);
+            return false;
         }
 
         /// <summary>
@@ -1506,12 +1543,11 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         public Task<bool> SlewToAltAz(TopocentricCoordinates coordinates, CancellationToken token) => Task.FromResult(false);
 
         public void StopSlew() {
-            Run(d => {
-                d.Abort();
-                return true;
-            }, false);
-            lock (moveLock) {
-                primaryMove = secondaryMove = null;
+            // a :Q# that did not go out leaves the moves recorded, for the disconnect to stop
+            if (RunStop(d => d.Abort())) {
+                lock (moveLock) {
+                    primaryMove = secondaryMove = null;
+                }
             }
             InvalidateState();
         }
@@ -1742,20 +1778,24 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     return;
                 }
 
-                if (Run(d => {
-                    if (wanted is { } direction) {
+                bool sent = wanted is { } direction
+                    ? Run(d => {
                         if (moving is { } previous) {
                             d.StopMove(previous);
                         }
                         d.StartMove(direction);
-                    } else if (moving is { } current) {
-                        d.StopMove(current);
-                    } else {
-                        d.StopMove(positive);
-                        d.StopMove(negative);
-                    }
-                    return true;
-                }, false)) {
+                        return true;
+                    }, false)
+                    : RunStop(d => {
+                        if (moving is { } current) {
+                            d.StopMove(current);
+                        } else {
+                            d.StopMove(positive);
+                            d.StopMove(negative);
+                        }
+                    });
+
+                if (sent) {
                     SetMoving(axis, wanted);
                 }
             }
@@ -1794,20 +1834,23 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             int? pulseRateBefore = LatestStatus(PulseRefusalStatusMaxAge)?.PulseGuideRateIndex;
             int index = NearestMoveRate(rate);
             lock (moveLock) {
-                Run(d => {
-                    if (rate == 0) {
+                if (rate == 0) {
+                    if (RunStop(d => {
                         d.StopMove(positive);
                         d.StopMove(negative);
+                    })) {
                         SetMoving(axis, null);
-                    } else {
+                    }
+                } else {
+                    Run(d => {
                         Logger.Info($"OnStepX: moving {axis} at {MoveRates[index]:F4}°/s (:R{index}#)");
                         d.SetMoveRate(index);
                         selectedMoveRate = index;
                         d.StartMove(rate > 0 ? positive : negative);
                         SetMoving(axis, rate > 0 ? positive : negative);
-                    }
-                    return true;
-                }, false);
+                        return true;
+                    }, false);
+                }
             }
             InvalidateState();
             if (rate != 0) {
@@ -1937,7 +1980,20 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                 _ => OnStepXDirection.West,
             };
             int ms = Math.Min(duration, OnStepXDevice.MaxPulseMs);
-            var onLine = Run(d => d.PulseGuide(dir, ms), null);
+            // no notification: the guider that sent the pulse reports the failure itself
+            if (device is not { } d) {
+                throw new InvalidOperationException("OnStepX: the guide pulse could not be sent: not connected");
+            }
+            DateTime? onLine;
+            try {
+                onLine = d.PulseGuide(dir, ms);
+            } catch (OnStepXException ex) {
+                Logger.Warning($"OnStepX: guide pulse not sent: {ex.Message}");
+                throw new InvalidOperationException($"OnStepX: the guide pulse could not be sent: {ex.Message}", ex);
+            } catch (Exception ex) when (IsPortFailure(ex)) {
+                ConnectionLost(ex);
+                throw new InvalidOperationException("OnStepX: the guide pulse could not be sent: the connection was lost", ex);
+            }
             if (onLine is not { } start) {
                 throw new InvalidOperationException("OnStepX: the guide pulse could not be sent");
             }

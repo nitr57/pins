@@ -43,6 +43,18 @@ namespace NINA.Equipment.SDK.TelescopeSDKs.OnStepXSDK {
     public class OnStepXException : Exception {
         public OnStepXException(string message) : base(message) {
         }
+
+        public OnStepXException(string message, Exception innerException) : base(message, innerException) {
+        }
+    }
+
+    /// <summary>
+    /// A command could not be written in time: the process was stalled (CPU load, garbage collection), not the line or
+    /// the port, and the command most likely never went out.
+    /// </summary>
+    public sealed class OnStepXWriteTimeoutException : OnStepXException {
+        public OnStepXWriteTimeoutException(string message, TimeoutException innerException) : base(message, innerException) {
+        }
     }
 
     /// <summary>

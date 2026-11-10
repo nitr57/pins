@@ -143,6 +143,26 @@ namespace NINA.Test.Equipment.OnStepX {
         }
 
         [Test]
+        public void SendBlindThenError_UnwritableGE_LeavesTheReasonUnknown() {
+            // :hC# already went out; failing the command would report a home search that runs as failed
+            var port = FakeOnStepXPort.Umi17S().On(":hC#", (string?)null).FailWritesOf(":GE#", new TimeoutException());
+
+            int? error = Open(port).SendBlindThenError(":hC#");
+
+            Assert.That(error, Is.Null);
+            Assert.That(port.Written, Is.EqualTo(new[] { ":hC#" }));
+        }
+
+        [Test]
+        public void SendForCharWithError_UnwritableGE_IsARefusalWithoutReason() {
+            var port = FakeOnStepXPort.Umi17S().On(":hP#", "0").FailWritesOf(":GE#", new TimeoutException());
+
+            var result = Open(port).SendForCharWithError(":hP#");
+
+            Assert.That(result, Is.EqualTo(((char?)'0', (int?)null)));
+        }
+
+        [Test]
         public void SendBlindNow_GoesOutWhileAReplyIsAwaited() {
             var port = new BlockingPort();
             var transport = new OnStepXTransport(port, firstByteTimeout: TimeSpan.FromSeconds(5));
@@ -182,6 +202,44 @@ namespace NINA.Test.Equipment.OnStepX {
             var transport = new OnStepXTransport(FakeOnStepXPort.Umi17S());
 
             Assert.That(() => transport.SendForString(":GU#"), Throws.InvalidOperationException);
+        }
+
+        [Test]
+        public void Send_WriteTimeout_FailsTheCommandNotThePort() {
+            var port = FakeOnStepXPort.Umi17S();
+            var transport = Open(port);
+            port.FailWrites = new TimeoutException();
+
+            Assert.That(() => transport.SendForString(":GU#"),
+                Throws.InstanceOf<OnStepXWriteTimeoutException>().With.Message.Contains("writing :GU# timed out").And.InnerException.InstanceOf<TimeoutException>());
+            Assert.That(() => transport.SendBlindNow(":Mgn0100#"), Throws.InstanceOf<OnStepXWriteTimeoutException>());
+
+            port.FailWrites = null;
+            Assert.That(transport.SendForString(":GVN#").Text, Is.EqualTo("10.20a"), "the port stays usable");
+        }
+
+        [Test]
+        public void Send_WriteTimeout_SpellsOutTheAck() {
+            var port = FakeOnStepXPort.Umi17S();
+            var transport = Open(port);
+            port.FailWrites = new TimeoutException();
+
+            Assert.That(() => transport.SendForChar(FakeOnStepXPort.Ack),
+                Throws.InstanceOf<OnStepXWriteTimeoutException>().With.Message.StartsWith("writing <ACK> timed out"));
+        }
+
+        [Test]
+        public void SendBlindNow_AfterAFailedWrite_IsOnTheLineAfterItsOwnCharactersOnly() {
+            // the command that did not go out does not hold up the next one
+            var now = new DateTime(2026, 11, 10, 12, 0, 0, DateTimeKind.Utc);
+            var port = FakeOnStepXPort.Umi17S().FailWritesOf(":GU#", new TimeoutException());
+            var transport = new OnStepXTransport(port, characterTime: TimeSpan.FromMilliseconds(1), utcNow: () => now);
+            transport.Open();
+
+            Assert.That(() => transport.SendForString(":GU#"), Throws.InstanceOf<OnStepXWriteTimeoutException>());
+            var onLine = transport.SendBlindNow(":Mgn0100#");
+
+            Assert.That(onLine, Is.EqualTo(now + TimeSpan.FromMilliseconds(9)));
         }
 
         /// <summary>A port whose reply arrives only when the test sends it.</summary>
