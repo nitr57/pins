@@ -144,6 +144,18 @@ namespace NINA.Test.Sequencer.SequenceItem.Telescope {
             guiderMediatorMock.Verify(x => x.StartGuiding(It.IsAny<bool>(), It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
+        [TestCase("idle")]
+        [TestCase("looping")]
+        public async Task Execute_SkyGuardNotGuiding_DoesNotStartGuiding(string state) {
+            // SkyGuard's StopGuiding succeeds also when it was not guiding
+            guiderMock.Setup(x => x.State).Returns(state);
+            var sut = CreateSut();
+
+            await sut.Execute(new Progress<ApplicationStatus>(), CancellationToken.None);
+
+            guiderMediatorMock.Verify(x => x.StartGuiding(It.IsAny<bool>(), It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
         [Test]
         public async Task Execute_GuiderWithOtherStateNames_ResumesGuiding() {
             // MetaGuide's state while guiding

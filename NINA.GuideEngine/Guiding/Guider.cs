@@ -1852,7 +1852,6 @@ public sealed partial class Guider : IAsyncDisposable
     private DecGuideMode DecModeInUse(DecGuideMode configured) =>
         decBothWaysForSettle && configured is (DecGuideMode.North or DecGuideMode.South) ? DecGuideMode.Auto : configured;
 
-    // the dither's settle is over (finished, cut short, or guiding stopped): back to the configured Dec mode
     // PHD2 PhdController: temporarily allow both Dec directions while settling after a dither
     private void BeginDecBothWays()
     {
@@ -1863,6 +1862,7 @@ public sealed partial class Guider : IAsyncDisposable
         }
     }
 
+    // the dither's settle is over (finished, cut short, or guiding stopped): back to the configured Dec mode
     private void EndDecBothWays()
     {
         if (!decBothWaysForSettle)

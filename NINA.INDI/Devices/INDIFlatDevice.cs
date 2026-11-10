@@ -66,7 +66,9 @@ namespace NINA.INDI.Devices {
                         running.Ended = true;
                         move = null;
                     } else {
-                        // Busy, in transit with neither switch on, or the old end once more: still moving
+                        // Busy, in transit with neither switch on, or the old end once more: still moving. Kept for a
+                        // move that ends without the driver's answer (some drivers only send changes).
+                        running.LastDriverState = CoverStateOf(p.State, park, unpark);
                         coverState = CoverState.NeitherOpenNorClosed;
                         return;
                     }
@@ -119,8 +121,8 @@ namespace NINA.INDI.Devices {
         // The commanded move until a driver update ends it. Stock drivers publish CAP_PARK with neither switch on while
         // the cover travels (Wanderer V4 EC: Idle) and may send the old end with Ok after their Busy, so only an Alert
         // or the target switch without Busy ends it (indidustcapinterface.cpp: "Unknown: PARK and UNPARK are either not
-        // toggled or state is IPS_ALERT"). Each Open/Close has its own: FlatDeviceVM lets an Open and a Close overlap
-        // (a client's request during a sequence's), and the newer one supersedes the older.
+        // toggled or state is IPS_ALERT"). FlatDeviceVM lets an Open and a Close overlap (a client's request during a
+        // sequence's): a request for the other end supersedes the running move, one for the same end joins it.
         private sealed class CoverMove(string target) {
             public string Target { get; } = target;
 
@@ -130,6 +132,9 @@ namespace NINA.INDI.Devices {
             public bool Ended { get; set; }
 
             public bool Superseded { get; set; }
+
+            // what the driver's last update since the command said, while the move went on
+            public CoverState? LastDriverState { get; set; }
         }
 
         private readonly object moveLock = new();
@@ -193,20 +198,33 @@ namespace NINA.INDI.Devices {
                 return false;
             }
 
-            var mine = new CoverMove(target);
-            lock (moveLock) {
-                if (move is { } older) {
-                    older.Superseded = true;
-                    older.Ended = true;
-                }
+            CoverMove mine;
+            bool joined;
 
-                move = mine;
-                coverState = CoverState.NeitherOpenNorClosed;
+            lock (moveLock) {
+                if (move is { } running && running.Target == target) {
+                    mine = running;
+                    joined = true;
+                } else {
+                    if (move is { } older) {
+                        older.Superseded = true;
+                        older.Ended = true;
+                    }
+
+                    mine = new CoverMove(target);
+                    move = mine;
+                    coverState = CoverState.NeitherOpenNorClosed;
+                    joined = false;
+                }
             }
 
             try {
-                SetSwitchValue("CAP_PARK", target, true);
-                Logger.Info($"[{DeviceName}] Commanded the flat device to {target.ToLowerInvariant()}");
+                if (joined) {
+                    Logger.Info($"[{DeviceName}] {char.ToUpperInvariant(verb[0])}{verb[1..]} the cover is already running; waiting for it");
+                } else {
+                    SetSwitchValue("CAP_PARK", target, true);
+                    Logger.Info($"[{DeviceName}] Commanded the flat device to {target.ToLowerInvariant()}");
+                }
 
                 var started = DateTime.UtcNow;
                 while (true) {
@@ -231,11 +249,11 @@ namespace NINA.INDI.Devices {
             } finally {
                 lock (moveLock) {
                     if (ReferenceEquals(move, mine)) {
-                        // timeout, cancellation, lost connection or a failed send: where the cover is, only the
-                        // driver's next update tells
+                        // timeout, cancellation, lost connection or a failed send: what the driver said last since
+                        // the command, never the switch written locally; without an update, only the next one tells
                         mine.Ended = true;
                         move = null;
-                        coverState = CoverState.Unknown;
+                        coverState = mine.LastDriverState ?? CoverState.Unknown;
                     }
                 }
             }

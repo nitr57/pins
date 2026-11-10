@@ -19,6 +19,7 @@ using NINA.Astrometry;
 using NINA.Equipment.Interfaces.Mediator;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.ComponentModel.Composition;
 using System.Threading;
 using System.Threading.Tasks;
@@ -202,10 +203,14 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
             slewError?.Throw();
         }
 
-        // PHD2 app states for a guider that is not guiding (the internal guider reports the same names); other guiders
-        // (MetaGuide, SkyGuard) name their states differently and are resumed whenever StopGuiding stopped them
+        // States of a guider that is not guiding: PHD2's app states (the internal guider reports the same names) and
+        // SkyGuard's "idle" and "looping", whose StopGuiding succeeds also then. Other guiders (MetaGuide) name their
+        // states differently and are resumed whenever StopGuiding stopped them.
+        private static readonly string[] NotGuidingStates = ["Looping", "Selected", "Stopped", "Idle"];
+
         private bool GuiderWasOnlyLooping() {
-            return (guiderMediator.GetDevice() as IGuider)?.State is "Looping" or "Selected" or "Stopped";
+            var state = (guiderMediator.GetDevice() as IGuider)?.State;
+            return state is not null && NotGuidingStates.Any(s => string.Equals(s, state, StringComparison.OrdinalIgnoreCase));
         }
 
         /// <summary>
@@ -272,6 +277,7 @@ namespace NINA.Sequencer.SequenceItem.Telescope {
                     CalibrationPointingSide.West => false,
                     _ => null,
                 };
+
                 if (AltitudeProblem(info.SiteLatitude, side) is { } altitudeProblem) {
                     i.Add(altitudeProblem);
                 }

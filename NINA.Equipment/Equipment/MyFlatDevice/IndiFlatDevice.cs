@@ -154,6 +154,8 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
             try {
                 return await dev.Open(ct, delay);
             } catch (InvalidOperationException ex) {
+                // FlatDeviceVM logs and shows only that the cover is in error
+                Logger.Error(ex.Message);
                 throw new FlatDeviceCoverErrorException(ex.Message, ex);
             }
         }
@@ -166,6 +168,8 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
             try {
                 return await dev.Close(ct, delay);
             } catch (InvalidOperationException ex) {
+                // FlatDeviceVM logs and shows only that the cover is in error
+                Logger.Error(ex.Message);
                 throw new FlatDeviceCoverErrorException(ex.Message, ex);
             }
         }

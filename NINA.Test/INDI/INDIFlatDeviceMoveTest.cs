@@ -183,7 +183,7 @@ namespace NINA.Test.INDI {
         }
 
         [Test]
-        public async Task ACloseSupersededByAnOpen_DoesNotTakeTheOpensAnswerForItsOwn() {
+        public async Task AnOpenSupersededByAClose_DoesNotTakeTheClosesAnswerForItsOwn() {
             var cover = await ConnectCoverAsync(park: true, unpark: false);
             cover.MoveTimeout = TimeSpan.FromSeconds(30);
 
@@ -195,6 +195,37 @@ namespace NINA.Test.INDI {
 
             Assert.That(await open, Is.False, "the cover is closed, the open did not succeed");
             Assert.That(await close, Is.True);
+        }
+
+        [Test]
+        public async Task ASecondCloseDuringAClose_JoinsIt_AndBothReportTheDriversAnswer() {
+            // a client's Close during a sequence's: the sequence's must not fail as superseded
+            var cover = await ConnectCoverAsync(park: false, unpark: true);
+            cover.MoveTimeout = TimeSpan.FromSeconds(30);
+
+            var first = cover.Close(CancellationToken.None, 10);
+            await WaitForMoveCommandsAsync(1);
+            var second = cover.Close(CancellationToken.None, 10);
+            await Task.Delay(200);
+            main.Send(CapPark("Ok", park: true, unpark: false));
+
+            Assert.That(await first, Is.True);
+            Assert.That(await second, Is.True);
+            Assert.That(CountMoveCommands(main.Received), Is.EqualTo(1), "the second close is not sent again");
+        }
+
+        [Test]
+        public async Task ATimeoutAfterTheDriverReportedTheOldEnd_ShowsThatEnd() {
+            // Wanderer V4 EC sends only changes: a cover whose motor never moved keeps showing where the driver said
+            var cover = await ConnectCoverAsync(park: false, unpark: true);
+
+            var close = cover.Close(CancellationToken.None, 10);
+            await WaitForMoveCommandsAsync(1);
+            main.Send(CapPark("Busy", park: true, unpark: false));
+            main.Send(CapPark("Ok", park: false, unpark: true));
+
+            Assert.That(await close, Is.False);
+            Assert.That(cover.CoverState, Is.EqualTo(CoverState.Open));
         }
 
         [Test]

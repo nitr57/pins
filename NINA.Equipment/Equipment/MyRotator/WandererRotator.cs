@@ -557,13 +557,14 @@ namespace NINA.Equipment.Equipment.MyRotator {
 
         public void Halt() {
             try {
-                if (RotatorGetStatus(_uniqueId, out var status) == WR_ERROR_TYPE.WR_SUCCESS && status.moving == 1) {
-                    haltedMove = new HaltedMove(DateTime.UtcNow, status.position);
-                }
+                bool wasMoving = RotatorGetStatus(_uniqueId, out var status) == WR_ERROR_TYPE.WR_SUCCESS && status.moving == 1;
 
                 var err = RotatorStopMove(_uniqueId);
                 if (err != WR_ERROR_TYPE.WR_SUCCESS) {
                     Logger.Error($"WandererRotator failed to stop the rotator: {err}");
+                } else if (wasMoving) {
+                    // timed from after the stop was sent, when the SDK's own wait for the reply starts
+                    haltedMove = new HaltedMove(DateTime.UtcNow, status.position);
                 }
             } catch (Exception ex) {
                 Logger.Error($"WandererRotator Halt crashed: {ex}");
@@ -577,10 +578,11 @@ namespace NINA.Equipment.Equipment.MyRotator {
         // A running move Halt stopped: the SDK reports the rotator stopped at once, but updates its position only when
         // its listener reads the stop reply (WandererRotatorProtocol.cpp, kStopReplyTimeoutMs). A move started right
         // after (ninaAPI cancels the running move and starts the next) would otherwise read the position from before
-        // the stop.
+        // the stop. The SDK waits 3 s for the reply, then stops and queries the rotator again, hence the margin; a halt
+        // before the motor moved leaves the position unchanged and costs the whole wait.
         private sealed record HaltedMove(DateTime At, float Position);
 
-        private static readonly TimeSpan StopReplyTimeout = TimeSpan.FromSeconds(3);
+        private static readonly TimeSpan StopReplyTimeout = TimeSpan.FromSeconds(5);
         private volatile HaltedMove haltedMove;
 
         private async Task WaitForStopPositionAsync(CancellationToken ct) {
@@ -700,6 +702,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
             }
 
             await WaitForStopPositionAsync(ct);
+
             var movement = targetPosition - ReadMechanicalPositionForMove();
             return await Move(movement, ct);
         }
@@ -710,6 +713,7 @@ namespace NINA.Equipment.Equipment.MyRotator {
             }
 
             await WaitForStopPositionAsync(ct);
+
             var position = AstroUtil.EuclidianModulus(ReadMechanicalPositionForMove() + offset, 360);
             return await Move(targetPosition - position, ct);
         }
