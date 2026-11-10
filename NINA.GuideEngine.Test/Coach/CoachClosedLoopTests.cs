@@ -484,12 +484,36 @@ public class CoachClosedLoopTests
     }
 
     [Test]
-    public async Task Start_at_80_degrees_is_still_accepted()
+    public void Start_at_80_degrees_is_still_accepted()
     {
         var h = new Harness(SimulatorScenario.GoodMount);
         h.Sim.Mount.SetDeclination(-80.0);
+
+        h.Coach.Start().Accepted.Should().BeTrue("all steps, and ±80° is still allowed");
+        h.Coach.Cancel();
+    }
+
+    [Test]
+    public async Task A_camera_check_alone_runs_near_the_pole()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.SetDeclination(85.0);
         var status = await h.RunFromLooping(new CoachOptions { Steps = [CoachStepNames.CameraCheck] });
-        status.Phase.Should().Be(CoachPhases.Complete);
+        status.Phase.Should().Be(CoachPhases.Complete, "the camera check neither calibrates nor pulses the mount");
+    }
+
+    [TestCase(CoachStepNames.Drift)]
+    [TestCase(CoachStepNames.MountResponse)]
+    [TestCase(CoachStepNames.Trials)]
+    public void A_step_that_guides_is_refused_near_the_pole(string step)
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.SetDeclination(85.0);
+
+        var rejected = h.Coach.Start(new CoachOptions { Steps = [CoachStepNames.CameraCheck, step] });
+
+        rejected.Accepted.Should().BeFalse();
+        rejected.MessageCode.Should().Be(CoachCodes.NearPole);
     }
 
     [Test]

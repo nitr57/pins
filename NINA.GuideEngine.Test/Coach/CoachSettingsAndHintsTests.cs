@@ -270,6 +270,24 @@ public class CoachSettingsAndHintsTests
         hints.Analyse(Input(T0.AddMinutes(32), stats, settings)).Should().BeEmpty("raised once per guiding session");
     }
 
+    [Test]
+    public void Long_exposure_hint_is_listed_only_while_guiding_with_a_long_exposure()
+    {
+        var hints = new LiveHintAnalyser();
+        var settings = new GuiderSettings { ExposureMs = 2500 };
+        var stats = Stats(oscillation: 0.4, rmsRa: 0.5);
+        for (int i = 0; i < 40; i++)
+        {
+            hints.Analyse(Input(T0.AddSeconds(2.5 * i), stats, settings));
+        }
+
+        var now = T0.AddMinutes(30);
+        hints.GetActive(now, 2.5).Should().ContainSingle(h => h.Id == CoachCodes.HintLongExposure);
+        hints.GetActive(now, 2.5, guiding: false).Should().BeEmpty("guiding stopped, and Analyse no longer runs to remove it");
+        hints.GetActive(now, 1.0).Should().BeEmpty("the exposure was shortened in the settings since the last frame");
+        hints.GetActive(now, 2.5).Should().ContainSingle("it is only hidden, e.g. for a resume after a pause");
+    }
+
     [TestCase(2000, false)]
     [TestCase(2001, true)]
     [TestCase(1000, false)]

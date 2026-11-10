@@ -34,8 +34,12 @@ public sealed partial class Guider
     private bool forcedRestart;
     private CancellationToken forcedRestartToken;
 
-    /// <summary>Active live coaching hints (not expired, not dismissed) of the current guiding session.</summary>
-    public IReadOnlyList<CoachFinding> ActiveHints => liveHints.GetActive(clock.UtcNow);
+    /// <summary>
+    /// Active live coaching hints (not expired, not dismissed) of the current guiding session. One-time hints only while
+    /// guiding and while the current settings still call for them (e.g. the exposure was shortened after a stop).
+    /// </summary>
+    public IReadOnlyList<CoachFinding> ActiveHints => liveHints.GetActive(clock.UtcNow, settings.ExposureMs / 1000.0,
+        state is GuiderState.Guiding or GuiderState.Paused or GuiderState.LostLock or GuiderState.Reacquiring);
 
     /// <summary>Hides a live hint for the rest of the guiding session. Returns false for an unknown id.</summary>
     public bool DismissHint(string id) => liveHints.Dismiss(id);

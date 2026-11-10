@@ -157,7 +157,8 @@ lower RA aggression), `hint.raSluggish` (index < 0.15 with large RMS → raise a
 `hint.seeingBound` (RMS close to the seeing floor: settings are fine, seeing limits).
 
 `hint.longExposure` (guide exposure above 2 s → try 1 s) is a one-time hint: raised once per guiding session, it has
-no expiry and goes when the exposure is 2 s or shorter again. Once dismissed or applied it is never raised again: the
+no expiry and is listed only while guiding (Guiding, Paused, LostLock, Reacquiring) with an exposure above 2 s, so it
+is gone after guiding stops or as soon as the exposure is set to 2 s or shorter, also between frames. Once dismissed or applied it is never raised again: the
 analyser reports it (`PermanentlyDismissed`), the host stores the id in the profile and hands the stored ids back
 (`SetSuppressed`) when it creates the guider.
 
@@ -193,8 +194,8 @@ is half the peak-to-peak of the detrended, smoothed RA motion. `GustPercent` is 
 
 Session rules:
 * Accepted from Stopped/Looping/Selected/Guiding/Paused; rejected while calibrating, building darks, disconnected or
-  when another session runs (`coach.busy`, `coach.notConnected`). Also rejected when the mount points beyond Dec ±80°
-  (`coach.nearPole` {declinationDeg, maxDeclinationDeg}; the host's declination, else the mount's; unknown = allowed): RA
+  when another session runs (`coach.busy`, `coach.notConnected`). A session with more than the camera check is also
+  rejected when the mount points beyond Dec ±80° (`coach.nearPole` {declinationDeg, maxDeclinationDeg}; the host's declination, else the mount's; unknown = allowed): RA
   pulses move the star by cos(Dec) there (under 17 %), so calibration fails or measures mostly noise. The TNS plugin's
   `coach/start?slew=stay|east|west` slews to a calibration position first, and the app offers that from Dec ±60° on.
 * Guiding active at the start → resumed with the original settings when the session ends/cancels/fails.

@@ -110,14 +110,24 @@ public sealed class LiveHintAnalyser
         }
     }
 
-    /// <summary>Active hints: not expired and not dismissed.</summary>
-    public IReadOnlyList<CoachFinding> GetActive(DateTimeOffset now)
+    /// <summary>
+    /// Active hints: not expired and not dismissed. One-time hints have no expiry and are re-checked only while guiding,
+    /// so they are left out when <paramref name="guiding"/> is false (until the next guiding session) or their condition
+    /// no longer holds for <paramref name="exposureSeconds"/> (the current guide exposure; null = not checked).
+    /// </summary>
+    public IReadOnlyList<CoachFinding> GetActive(DateTimeOffset now, double? exposureSeconds = null, bool guiding = true)
     {
         lock (gate)
         {
-            return active.Where(h => h.ExpiresAt is not { } e || e > now.UtcDateTime).ToList();
+            return active
+                .Where(h => h.ExpiresAt is not { } e || e > now.UtcDateTime)
+                .Where(h => !IsOneTime(h.Id) || (guiding && StillHolds(h.Id, exposureSeconds)))
+                .ToList();
         }
     }
+
+    private static bool StillHolds(string id, double? exposureSeconds) =>
+        id != CoachCodes.HintLongExposure || exposureSeconds is not { } e || e > LongExposureSeconds + 1e-6;
 
     /// <summary>
     /// Hides the hint for the rest of the guiding session, a one-time hint for good (<see cref="PermanentlyDismissed"/>).

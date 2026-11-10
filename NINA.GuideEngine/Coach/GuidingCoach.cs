@@ -96,15 +96,16 @@ public sealed class GuidingCoach
     /// <summary>
     /// Starts a session in the background. A rejection — another session runs or the guider is busy/calibrating
     /// (<see cref="CoachCodes.Busy"/>), the camera is not connected (<see cref="CoachCodes.NotConnected"/>), the mount points
-    /// within 10° of a pole (<see cref="CoachCodes.NearPole"/>) — is reported only in the result; the status of a running or
+    /// within 10° of a pole for a session with more than the camera check (<see cref="CoachCodes.NearPole"/>) — is reported only in the result; the status of a running or
     /// the last session is left untouched.
     /// </summary>
     public CoachStartResult Start(CoachOptions? options = null)
     {
-        options ??= new CoachOptions();
+        options = Normalize(options ?? new CoachOptions());
         string code;
         var parameters = new Dictionary<string, object?>();
-        double? dec = CurrentDeclination();
+        // only the steps after the camera check calibrate and pulse the mount
+        double? dec = options.Steps.Any(s => s != CoachStepNames.CameraCheck) ? CurrentDeclination() : null;
         lock (gate)
         {
             if (session is null)
@@ -121,7 +122,7 @@ public sealed class GuidingCoach
 
                 if (reason is null)
                 {
-                    var s = new Session(this, guider, host, Normalize(options));
+                    var s = new Session(this, guider, host, options);
                     if (guider.AttachCoach(s.OnInterrupt))
                     {
                         session = s;
