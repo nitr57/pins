@@ -225,7 +225,7 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     private const int CalmFrames = 10;
 
     private static readonly string[] Names = ["minMove", "pace"];
-    private static readonly string[] PeriodicNames = ["minMove", "pace", "wormTeeth", "periodicError"];
+    private static readonly string[] PeriodicNames = ["minMove", "pace", "wormTeeth", "wormPeriod", "periodicError"];
 
     private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
 
@@ -267,6 +267,8 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     // periodic error
     private bool periodicEnabled = true;
     private int wormTeeth;
+    private double wormPeriod;
+    private bool changingParameters;
     private bool gateOn;
     private double periodicWeight;
     private bool periodicStoreDue;
@@ -414,8 +416,11 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
                 ? string.Format(CultureInfo.InvariantCulture, "Correction pace = {0:F2}, Minimum move = {1:F3}", pace, minMove)
                 : string.Format(CultureInfo.InvariantCulture, "Correction pace = {0:F2}, Minimum move = none", pace);
             return periodic is null ? text
-                : text + string.Format(CultureInfo.InvariantCulture, ", Periodic error prediction = {0}, Worm teeth = {1}",
-                    periodicEnabled ? "on" : "off", wormTeeth > 0 ? wormTeeth.ToString(CultureInfo.InvariantCulture) : "detect");
+                : text + string.Format(CultureInfo.InvariantCulture, ", Periodic error prediction = {0}, Worm {1}",
+                    periodicEnabled ? "on" : "off",
+                    wormTeeth > 0 ? string.Create(CultureInfo.InvariantCulture, $"teeth = {wormTeeth}")
+                    : wormPeriod > 0 ? string.Create(CultureInfo.InvariantCulture, $"period = {wormPeriod:F1} s")
+                    : "teeth = detect");
         }
     }
 
@@ -503,17 +508,26 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
     public void ChangeParameters(IReadOnlyDictionary<string, double>? parameters)
     {
         RestoreDefaults();
-        foreach (var (name, value) in parameters ?? new Dictionary<string, double>())
+        changingParameters = true;
+        try
         {
-            TrySetParam(name, value);
+            foreach (var (name, value) in parameters ?? new Dictionary<string, double>())
+            {
+                TrySetParam(name, value);
+            }
+        }
+        finally
+        {
+            changingParameters = false;
         }
 
-        // a tooth count left out goes back to "detect" (a different one forgets the curve)
-        periodic?.SetTeeth(wormTeeth > 0 ? wormTeeth : null);
+        // the worm once all parameters are in (one at a time, a tooth count and a period would each forget the curve);
+        // one left out goes back to "detect" (a different one forgets the curve)
+        ApplyWorm();
         Note(PredictiveNoteKind.Parameters, string.Create(Inv, $"parameters changed ({SettingsSummary}), keeps what it learned in {learnedFrames} frames"));
     }
 
-    /// <summary>Starts the periodic error from a stored curve (RA axis; ignored for a different tooth count).</summary>
+    /// <summary>Starts the periodic error from a stored curve (RA axis; ignored for a different tooth count or period).</summary>
     public bool RestorePeriodicError(PeriodicErrorModel model)
     {
         bool restored = periodic?.Restore(model) ?? false;
@@ -749,6 +763,9 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
             case "wormTeeth" when periodic is not null:
                 value = wormTeeth;
                 return true;
+            case "wormPeriod" when periodic is not null:
+                value = wormPeriod;
+                return true;
             case "periodicError" when periodic is not null:
                 value = periodicEnabled ? 1 : 0;
                 return true;
@@ -771,8 +788,21 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
                 return valid;
             case "wormTeeth" when periodic is not null:
                 wormTeeth = value >= 1 && value <= PeriodicErrorEstimator.MaxTeeth ? (int)Math.Round(value) : 0;
-                periodic.SetTeeth(wormTeeth > 0 ? wormTeeth : null);
+                if (!changingParameters)
+                {
+                    ApplyWorm();
+                }
+
                 return value >= 0;
+            case "wormPeriod" when periodic is not null:
+                bool inRange = value >= PeriodicErrorEstimator.MinPeriodSeconds && value <= PeriodicErrorEstimator.MaxPeriodSeconds;
+                wormPeriod = inRange ? value : 0;
+                if (!changingParameters)
+                {
+                    ApplyWorm();
+                }
+
+                return inRange || value == 0;
             case "periodicError" when periodic is not null:
                 periodicEnabled = value != 0;
                 if (!periodicEnabled)
@@ -787,15 +817,19 @@ public sealed class PredictiveAlgorithm : GuideAlgorithmBase, IGuideAlgorithm
         }
     }
 
-    // the tooth count only reaches the estimator through TrySetParam or ChangeParameters, so that restoring the
-    // defaults in between does not forget the curve
+    // the tooth count and the period only reach the estimator through TrySetParam or ChangeParameters, so that
+    // restoring the defaults in between does not forget the curve
     protected override void RestoreDefaults()
     {
         minMove = DefaultMinMove;
         pace = DefaultPace;
         wormTeeth = 0;
+        wormPeriod = 0;
         periodicEnabled = true;
     }
+
+    // a tooth count wins over a period in seconds; neither = detect
+    private void ApplyWorm() => periodic?.SetWorm(wormTeeth > 0 ? wormTeeth : null, wormPeriod > 0 ? wormPeriod : null);
 
     // the dead band applies to the whole predicted error, the pace only to what goes out
     private double Output(double predicted, double paced) => Math.Abs(predicted) < minMove ? 0 : paced;

@@ -155,6 +155,121 @@ public class PeriodicErrorTests
     }
 
     [Test]
+    public void Fits_the_curve_with_a_period_set_in_seconds()
+    {
+        // a drive whose period is no whole tooth count (a strain wave gear, a belt): set in seconds, never detected
+        var worm = new Worm(Teeth: 0, PeriodSeconds: 480);
+        var pe = new PeriodicErrorEstimator();
+        pe.SetWorm(null, 480);
+        pe.PeriodSeconds.Should().Be(480, "set, not detected");
+        pe.Teeth.Should().BeNull();
+        var sky = new Sky(worm);
+        sky.Run(pe, minutes: 25);
+        pe.IsSignificant.Should().BeTrue("the curve of a set period needs two cycles, like a set tooth count");
+        pe.PeriodSeconds.Should().Be(480);
+        pe.Teeth.Should().BeNull("a period is no tooth count");
+        pe.State(PeriodicErrorPhase.Ready, 0, null).PeriodSeconds.Should().Be(480);
+        sky.PredictionRms(pe).Should().BeLessThan(0.15 * sky.CurveRms());
+
+        pe.Forget();
+        pe.PeriodSeconds.Should().Be(480, "forgetting the curve keeps the set period");
+    }
+
+    [Test]
+    public void A_flip_with_a_period_set_in_seconds_learns_the_phase_anew()
+    {
+        var sky = new Sky(new Worm(Teeth: 0, PeriodSeconds: 480));
+        var pe = new PeriodicErrorEstimator();
+        pe.SetWorm(null, 480);
+        sky.Run(pe, minutes: 25);
+        pe.IsSignificant.Should().BeTrue();
+
+        sky.Side = PierSide.West;
+        pe.StartSegment();
+        sky.Run(pe, minutes: 1);
+        pe.IsSignificant.Should().BeFalse("without a tooth count the phase is re-learned after the flip");
+        pe.TakeNotes().Should().Contain(n => n.Contains("meridian flip without a known tooth count"));
+        pe.PeriodSeconds.Should().Be(480);
+        sky.Run(pe, minutes: 20);
+        pe.IsSignificant.Should().BeTrue();
+    }
+
+    [Test]
+    public void A_period_set_in_seconds_and_the_tooth_count_change_the_worm()
+    {
+        var pe = new PeriodicErrorEstimator();
+        pe.SetWorm(null, 480);
+        new Sky(new Worm(Teeth: 0, PeriodSeconds: 480)).Run(pe, minutes: 25);
+        pe.IsSignificant.Should().BeTrue();
+
+        pe.SetWorm(null, 480);
+        pe.IsSignificant.Should().BeTrue("the same period keeps it");
+        pe.SetWorm(180, 480);
+        pe.IsSignificant.Should().BeFalse("a tooth count wins over the period");
+        pe.Teeth.Should().Be(180);
+        pe.PeriodSeconds.Should().BeApproximately(Sidereal.DaySeconds / 180, 1e-9);
+        pe.SetWorm(null, 100);
+        pe.PeriodSeconds.Should().BeNull($"shorter than {PeriodicErrorEstimator.MinPeriodSeconds} s: detect");
+        pe.SetWorm(null, 0);
+        pe.PeriodSeconds.Should().BeNull("0 = detect");
+    }
+
+    [Test]
+    public void A_stored_curve_is_restored_with_a_period_set_close_to_its_own()
+    {
+        var learn = new PeriodicErrorEstimator(180);
+        new Sky(new Worm(Teeth: 180)).Run(learn, minutes: 30);
+        var model = learn.ModelForStorage(DateTimeOffset.UnixEpoch)!;
+        model.PeriodSeconds.Should().BeApproximately(478.69, 0.01);
+
+        var close = new PeriodicErrorEstimator();
+        close.SetWorm(null, 478.7);
+        close.Restore(model).Should().BeTrue("the same worm, its period rounded");
+        close.PeriodSeconds.Should().Be(478.7, "the set period stays");
+        close.Teeth.Should().BeNull();
+        close.IsSignificant.Should().BeTrue();
+
+        var off = new PeriodicErrorEstimator();
+        off.SetWorm(null, 478);
+        off.Restore(model).Should().BeFalse("0.26 worm turns per axis turn off: the phase would not hold over the sky");
+        off.PeriodSeconds.Should().Be(478);
+    }
+
+    [Test]
+    public void The_Predictive_algorithm_takes_the_tooth_count_over_the_period()
+    {
+        var algorithm = new PredictiveAlgorithm(periodicError: true);
+        algorithm.TrySetParam("wormPeriod", 600).Should().BeTrue();
+        algorithm.PeriodicError!.PeriodSeconds.Should().Be(600);
+        algorithm.TryGetParam("wormPeriod", out double period).Should().BeTrue();
+        period.Should().Be(600);
+        algorithm.SettingsSummary.Should().Contain("Worm period = 600.0 s");
+        algorithm.TrySetParam("wormPeriod", 50).Should().BeFalse("out of range");
+        algorithm.PeriodicError!.PeriodSeconds.Should().BeNull("an invalid period means detect");
+
+        algorithm.ChangeParameters(new Dictionary<string, double> { ["wormTeeth"] = 0, ["wormPeriod"] = 638.3 });
+        algorithm.PeriodicError!.PeriodSeconds.Should().Be(638.3);
+        algorithm.ChangeParameters(new Dictionary<string, double> { ["wormTeeth"] = 144, ["wormPeriod"] = 638.3 });
+        algorithm.PeriodicError!.Teeth.Should().Be(144);
+        algorithm.SettingsSummary.Should().Contain("Worm teeth = 144");
+        algorithm.ChangeParameters(new Dictionary<string, double>());
+        algorithm.PeriodicError!.PeriodSeconds.Should().BeNull("left out = detect");
+    }
+
+    [Test]
+    public void The_Predictive_algorithm_keeps_the_curve_when_the_same_period_comes_again()
+    {
+        // ChangeParameters gets the tooth count (0) before the period: one at a time that would forget the curve
+        var algorithm = new PredictiveAlgorithm(periodicError: true);
+        algorithm.ChangeParameters(new Dictionary<string, double> { ["wormTeeth"] = 0, ["wormPeriod"] = 480 });
+        new Sky(new Worm(Teeth: 0, PeriodSeconds: 480)).Run(algorithm.PeriodicError!, minutes: 25);
+        algorithm.PeriodicError!.IsSignificant.Should().BeTrue();
+
+        algorithm.ChangeParameters(new Dictionary<string, double> { ["wormTeeth"] = 0, ["wormPeriod"] = 480, ["pace"] = 0.7 });
+        algorithm.PeriodicError!.IsSignificant.Should().BeTrue("the worm did not change");
+    }
+
+    [Test]
     public void The_store_keeps_one_curve_per_profile_and_mount()
     {
         var learn = new PeriodicErrorEstimator(180);
