@@ -38,11 +38,11 @@ namespace NINA.Equipment.Equipment.MyGuider.Internal;
 /// <summary>
 /// The internal guider: the guiding engine (NINA.GuideEngine) as a NINA guider, taking its frames from the guide camera
 /// slot. Implements <see cref="IGuider"/> for the sequencer/ninaAPI, and
-/// <see cref="IAdvancedGuider"/>, <see cref="IGuidingCoach"/> and <see cref="IGuideIncidentRecorder"/> for rich UIs
+/// <see cref="IAdvancedGuider"/>, <see cref="IGuidingCoach"/>, <see cref="IGuideIncidentRecorder"/> and <see cref="IGuideLogArchive"/> for rich UIs
 /// (Touch-N-Stars). Public primitive properties double as settings that ninaAPI's generic guider get-settings/set-setting
 /// endpoints can read and write.
 /// </summary>
-public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, IGuideIncidentRecorder
+public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, IGuideIncidentRecorder, IGuideLogArchive
 {
     public const string DeviceId = "InternalGuider";
 
@@ -119,6 +119,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     private Simulator? simulator;
     private GuidingLog? guideLog;
     private StreamWriter? guideLogWriter;
+    private volatile string? guideLogPath;
     private GuideLogBridge? guideLogBridge;
     private DateTime guideLogNight;
     private IMountState? guideLogMount;
@@ -249,6 +250,9 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
 
     /// <summary>Folder of the flight recorder's incidents.</summary>
     public static string IncidentDirectory => Path.Combine(StorageDirectory, "Incidents");
+
+    /// <summary>Folder of the guide logs (one PHD2-format log per night).</summary>
+    public static string GuideLogDirectory => Path.Combine(StorageDirectory, "Logs");
 
     private static int oldStorageChecked;
 
@@ -1353,6 +1357,11 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         return n;
     }
 
+    public IReadOnlyList<AdvancedGuideLogFile> GetGuideLogs() =>
+        Safe(() => GuideLogFiles.List(GuideLogDirectory, guideLogPath, TimeZoneInfo.Local, DateTime.UtcNow)) ?? [];
+
+    public Stream? OpenGuideLog(string name) => Safe(() => GuideLogFiles.Open(GuideLogDirectory, name));
+
     public string? MarkIncident(string? note, out string error)
     {
         var g = guider;
@@ -2370,7 +2379,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         }
 
         return IncidentArchive.Extras(incident, IncidentArchive.SettingsJson(incident.SettingsJson, options.Describe()),
-            Path.Combine(StorageDirectory, "Logs"), Path.Combine(CoreUtil.APPLICATIONTEMPPATH, "Logs"),
+            GuideLogDirectory, Path.Combine(CoreUtil.APPLICATIONTEMPPATH, "Logs"),
             latitude, longitude, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), TimeZoneInfo.Local);
     }
 
@@ -2391,7 +2400,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     {
         try
         {
-            var dir = Path.Combine(StorageDirectory, "Logs");
+            var dir = GuideLogDirectory;
             Directory.CreateDirectory(dir);
             // one log per night (noon to noon) like PHD2's per-session log; reconnects append to it
             var night = GuideLogNight(DateTime.Now);
@@ -2410,6 +2419,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             });
             guideLogNight = night;
             guideLogMount = mount;
+            guideLogPath = path;
             Logger.Info($"InternalGuider: guide log {path}");
         }
         catch (Exception ex)
@@ -2455,6 +2465,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         guideLog = null;
         guideLogWriter = null;
         guideLogMount = null;
+        guideLogPath = null;
     }
 
     private static AdvancedGuideStar ToDto(StarInfo s) => new()
