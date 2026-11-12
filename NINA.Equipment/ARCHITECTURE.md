@@ -62,9 +62,9 @@ Examples from the code:
   frames from the guide camera slot (`IGuideCameraMediator`). One instance, created through DI and listed by the
   guider chooser; its files keep their author's layout (own `.editorconfig`). See
   [`NINA.GuideEngine/ARCHITECTURE.md`](../NINA.GuideEngine/ARCHITECTURE.md#host-boundary).
-- `Interfaces/IAdvancedGuider.cs`, `IGuidingCoach.cs`, `IGuideIncidentRecorder.cs` and `Equipment/MyGuider/Advanced/`
+- `Interfaces/IAdvancedGuider.cs`, `IGuidingCoach.cs`, `IGuideIncidentRecorder.cs`, `IGuideLogArchive.cs` and `Equipment/MyGuider/Advanced/`
   pins-only: optional extensions of `IGuider` for the internal guider, through which UIs read live frames, guide steps,
-  calibration, statistics, alerts and settings, and run the Guiding Coach and the incident recorder. UIs find them with
+  calibration, statistics, alerts and settings, run the Guiding Coach and the incident recorder, and read the guide logs. UIs find them with
   `guiderMediator.GetDevice() as IAdvancedGuider`. The DTOs in `MyGuider/Advanced` are plain JSON-serializable classes
   and the vocabularies (states, event types, codes) are string constants. The contract has no version: its implementer
   and its consumers (the Touch-N-Stars plugin) are built together with pins.

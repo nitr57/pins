@@ -788,7 +788,7 @@ public class ContractTests
     [Test]
     public void Native_guider_implements_the_optional_interfaces()
     {
-        typeof(InternalGuider).Should().Implement<IGuidingCoach>().And.Implement<IGuideIncidentRecorder>();
+        typeof(InternalGuider).Should().Implement<IGuidingCoach>().And.Implement<IGuideIncidentRecorder>().And.Implement<IGuideLogArchive>();
     }
 }
 
