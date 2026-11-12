@@ -88,24 +88,41 @@ public sealed class GuidingCoach
     }
 
     /// <summary>
+    /// Above this declination (either hemisphere) a session is refused: RA pulses move the star by cos(Dec) of their
+    /// equatorial distance (under 17 % here), so calibration fails or measures mostly noise, and the RA results with it.
+    /// </summary>
+    public const double MaxDeclinationDeg = 80.0;
+
+    /// <summary>
     /// Starts a session in the background. A rejection — another session runs or the guider is busy/calibrating
-    /// (<see cref="CoachCodes.Busy"/>), the camera is not connected (<see cref="CoachCodes.NotConnected"/>) — is reported only
-    /// in the result; the status of a running or the last session is left untouched.
+    /// (<see cref="CoachCodes.Busy"/>), the camera is not connected (<see cref="CoachCodes.NotConnected"/>), the mount points
+    /// within 10° of a pole for a session with more than the camera check (<see cref="CoachCodes.NearPole"/>) — is reported only in the result; the status of a running or
+    /// the last session is left untouched.
     /// </summary>
     public CoachStartResult Start(CoachOptions? options = null)
     {
-        options ??= new CoachOptions();
+        options = Normalize(options ?? new CoachOptions());
         string code;
+        var parameters = new Dictionary<string, object?>();
+        // only the steps after the camera check calibrate and pulse the mount
+        double? dec = options.Steps.Any(s => s != CoachStepNames.CameraCheck) ? CurrentDeclination() : null;
         lock (gate)
         {
             if (session is null)
             {
                 string? reason = host.IsBusy || guider.State == GuiderState.Calibrating ? CoachCodes.Busy
                     : !guider.Camera.IsConnected ? CoachCodes.NotConnected
+                    : dec is { } d && Math.Abs(d) > MaxDeclinationDeg ? CoachCodes.NearPole
                     : null;
+                if (reason == CoachCodes.NearPole)
+                {
+                    parameters["declinationDeg"] = Math.Round(dec!.Value, 1);
+                    parameters["maxDeclinationDeg"] = MaxDeclinationDeg;
+                }
+
                 if (reason is null)
                 {
-                    var s = new Session(this, guider, host, Normalize(options));
+                    var s = new Session(this, guider, host, options);
                     if (guider.AttachCoach(s.OnInterrupt))
                     {
                         session = s;
@@ -128,9 +145,29 @@ public sealed class GuidingCoach
         {
             Accepted = false,
             MessageCode = code,
-            Message = CoachFindings.MessageFor(code, new Dictionary<string, object?>()),
+            Message = CoachFindings.MessageFor(code, parameters),
+            MessageParameters = parameters,
             Status = Status,
         };
+    }
+
+    /// <summary>The host's declination, else the mount's; null when unknown (e.g. guiding through the camera's ST4 port without a mount).</summary>
+    private double? CurrentDeclination()
+    {
+        if (host.DeclinationDeg is { } overridden)
+        {
+            return overridden;
+        }
+
+        try
+        {
+            var m = guider.MountState.GetSnapshot();
+            return m.IsConnected && m.DeclinationDeg is { } d && double.IsFinite(d) ? d : null;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Skips the running step (its partial results are kept when usable). False when no step runs.</summary>
@@ -385,6 +422,22 @@ public sealed class GuidingCoach
     }
 
     private static int Floor10(double ms) => (int)(Math.Floor(ms / 10) * 10);
+
+    /// <summary>
+    /// Exposures of the shorter-exposure trials for the current one: 1 s (trial E) and, when it lies at least 0.5 s below the
+    /// current exposure, the middle between the two rounded down to 0.5 s, at least 1.5 s (E2): 2 s → 1, 1.5 s; 2.5 s → 1,
+    /// 1.5 s; 3 s → 1, 2 s; 4 s → 1, 2.5 s. 1.5 s → 1 s only; empty below 1.5 s. Shortest first.
+    /// </summary>
+    internal static IReadOnlyList<double> ShorterTrialExposures(double currentSeconds)
+    {
+        if (!(currentSeconds >= 1.5 - 1e-6))
+        {
+            return [];
+        }
+
+        double middle = Math.Floor((currentSeconds + 1.0) + 1e-6) / 2;
+        return middle >= 1.5 && middle <= currentSeconds - 0.5 + 1e-6 ? [1.0, middle] : [1.0];
+    }
 
     /// <summary>A step could not run; becomes a problem finding and a failed step.</summary>
     private sealed class StepFailedException(string code, string? detail = null, Dictionary<string, object?>? parameters = null) : Exception(detail ?? code)
@@ -1530,7 +1583,7 @@ public sealed class GuidingCoach
             }
         }
 
-        /// <summary>Settings sets A (current), B (suggestion), C (variant) and A2 (current again).</summary>
+        /// <summary>Settings sets A (current), B (suggestion), C (variant), E and E2 (shorter exposures) and A2 (current again).</summary>
         private List<CoachTrial> TrialSets()
         {
             var s = guider.BaseSettings;
@@ -1546,6 +1599,16 @@ public sealed class GuidingCoach
                 if (c is not null)
                 {
                     list.Add(new CoachTrial { Id = CoachTrialIds.C, Kind = CoachTrialKinds.Variant, Settings = c });
+                }
+            }
+
+            if (options.ExposureTrial)
+            {
+                string[] ids = [CoachTrialIds.E, CoachTrialIds.E2];
+                var shorter = ShorterExposures(s, list);
+                for (int i = 0; i < shorter.Count; i++)
+                {
+                    list.Add(new CoachTrial { Id = ids[i], Kind = CoachTrialKinds.Exposure, Settings = shorter[i] });
                 }
             }
 
@@ -1689,6 +1752,50 @@ public sealed class GuidingCoach
             _ => true,
         };
 
+        /// <summary>
+        /// Trials E and E2: the current settings with only a shorter exposure (<see cref="ShorterTrialExposures"/>). The camera
+        /// check judges exposures by the star's jitter in unguided frames, where a longer exposure averages more seeing out;
+        /// what a shorter one gains, a faster reaction to the mount's own errors (gear noise, wind), only shows while guiding.
+        /// An exposure is left out when another trial already guides with it or the camera check found it infeasible at the
+        /// current gain (e.g. too little SNR). Shortest first; empty when the exposure is already short.
+        /// </summary>
+        private List<List<CoachSettingChange>> ShorterExposures(GuiderSettings s, IReadOnlyList<CoachTrial> planned)
+        {
+            double current = Math.Round(s.ExposureMs / 1000.0, 3);
+            var exposures = ShorterTrialExposures(current);
+            if (exposures.Count == 0)
+            {
+                return [];
+            }
+
+            var (_, _, currentGain) = coach.GainRange();
+            List<CoachCameraResult> results;
+            lock (gate)
+            {
+                results = cameraResults.ToList();
+            }
+
+            var sets = new List<List<CoachSettingChange>>();
+            foreach (double shorter in exposures)
+            {
+                string value = CoachSettingsMap.Format(shorter);
+                if (planned.Any(t => t.Settings.Any(c => c.Name == CoachSettingNames.ExposureSeconds && c.Value == value)))
+                {
+                    continue;
+                }
+
+                var measured = results.FirstOrDefault(r => Math.Abs(r.ExposureSeconds - shorter) < 1e-6 && r.Gain == (currentGain ?? -1));
+                if (measured is { Feasible: false })
+                {
+                    continue;
+                }
+
+                sets.Add([Change(CoachSettingNames.ExposureSeconds, value)]);
+            }
+
+            return sets;
+        }
+
         private List<CoachSettingChange>? Variant(GuiderSettings s, List<CoachSettingChange> b, bool aggressionChanged)
         {
             var c = b.ToDictionary(x => x.Name);
@@ -1763,7 +1870,7 @@ public sealed class GuidingCoach
                     new() { ["changePercent"] = Math.Round(verdict.ConditionsChangePercent ?? 0, 1) }));
             }
 
-            if (!list.Any(t => t.Kind is CoachTrialKinds.Suggestion or CoachTrialKinds.Variant))
+            if (!list.Any(t => t.Kind is CoachTrialKinds.Suggestion or CoachTrialKinds.Variant or CoachTrialKinds.Exposure))
             {
                 // only the current settings were guided (e.g. Predictive axes and nothing from the camera check): no winner
                 var s = guider.BaseSettings;
@@ -2168,7 +2275,8 @@ public sealed class GuidingCoach
                     + 3 * 3 * options.FramesPerCombination * 0.5,
                 CoachStepNames.Drift => options.DriftSeconds + 15,
                 CoachStepNames.MountResponse => (32 * MountResponseProcedure.AverageFrames + 20) * (exposure + 0.7),
-                CoachStepNames.Trials => (options.RepeatBaseline ? 4 : 3) * (options.TrialSeconds + 20),
+                CoachStepNames.Trials => ((options.RepeatBaseline ? 4 : 3) + (options.ExposureTrial ? ShorterTrialExposures(exposure).Count : 0))
+                    * (options.TrialSeconds + 20),
                 _ => 0,
             };
         }

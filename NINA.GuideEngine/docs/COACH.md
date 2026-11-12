@@ -27,7 +27,7 @@ A session runs selected steps in this order (all selected by default), then buil
 | 1 CameraCheck | camera; guiding/looping is stopped by the coach | ~2–3 min | exposure × gain sweep (existing settings-finder measurement) |
 | 2 Drift | calibration (the coach calibrates first if needed) and a star | 3 min (min 2) | guiding output off; seeing vs. mount error |
 | 3 MountResponse | calibration | ~1–2 min | Dec backlash, pulse response per direction |
-| 4 Trials | calibration | 4 × 2 min | guided A/B comparison of settings sets |
+| 4 Trials | calibration | 4–5 × 2 min | guided A/B comparison of settings sets |
 | 5 Report | — | — | error budget, grade, ranked actions, history |
 
 Steps can be skipped (`SkipCoachStep`) or the whole session cancelled. A step that cannot run (e.g. no
@@ -102,14 +102,24 @@ Candidate settings sets derived from the previous steps:
   capped by the drift-limiting exposure;
 * **C – variant**: B with the one parameter the coach is least sure about changed (e.g. RA aggression
   ±0.15 or the alternative exposure);
+* **E, E2 – shorter exposures** (optional `ExposureTrial`, default on): the current settings with only the exposure
+  shortened, when the current exposure is 1.5 s or longer: E guides at 1 s, E2 at the middle between 1 s and the
+  current exposure rounded down to 0.5 s, when that is at least 1.5 s and 0.5 s below the current one (2 s → 1, 1.5 s;
+  2.5 s → 1, 1.5 s; 3 s → 1, 2 s; 4 s → 1, 2.5 s; 1.5 s → 1 s only). The step between them shows whether a mount gains
+  from a moderately shorter exposure when 1 s is too short for it. The camera check judges exposures by the star's
+  jitter in unguided frames, where a longer exposure averages more seeing out; what a shorter exposure gains, a faster
+  reaction to the mount's own errors (gear noise, wind), only shows while guiding. An exposure is left out when B or C
+  already guide with it or the camera check found it infeasible at the current gain (e.g. SNR too low); E2 then
+  becomes E. The comparison is per guide frame, so the shorter exposure's frames carry more seeing: E or E2 win only
+  when the faster corrections more than make up for that;
 * **A′ – current again** (optional `RepeatBaseline`, default on) to detect changing conditions.
 Each trial: apply temporarily, settle (tolerance from the profile, max 30 s), then guide `TrialSeconds`,
 measure RMS RA/Dec/total, peak, oscillation index, frames. Significance: guide errors are autocorrelated, so each
 trial uses an effective sample size N_eff = N·(1−ρ²)/(1+ρ²) (the AR(1) form for a variance estimate, as RMS values are
 compared) from the lag-1 autocorrelation ρ of its guide-step errors (per axis, ρ clamped to [0, 0.95]; the smaller of the
-two axes is used), and the standard error of its RMS is ≈ RMS/√(2·N_eff). The best alternative (B or C) is declared `trials.winner` only if its improvement over A exceeds
+two axes is used), and the standard error of its RMS is ≈ RMS/√(2·N_eff). The best alternative (B, C, E or E2) is declared `trials.winner` only if its improvement over A exceeds
 2 × the combined standard error of the two RMS values; otherwise `trials.noImprovement` (the current settings
-are as good as the alternatives within the noise; B and C stay applicable as `trial:<id>`). Thin clouds (see [measurement uncertainty](ALGORITHMS.md#measurement-uncertainty)):
+are as good as the alternatives within the noise; B, C, E and E2 stay applicable as `trial:<id>`). Thin clouds (see [measurement uncertainty](ALGORITHMS.md#measurement-uncertainty)):
 each frame's centroid uncertainty σ (star size and SNR, `MeasurementUncertainty`) gives a trial's *cloud noise*, the
 σ² of its frames beyond 1.5² × the trial's median σ² averaged over all its frames (RA + Dec, in ″); the improvement must
 also exceed the 2 standard errors with each trial's cloud noise taken out of its RMS (in quadrature). So a cloud over the
@@ -119,7 +129,7 @@ before. If A and A′ differ by > 25 % **and** by more than 2 combined standard 
 finding warns that the comparison is unreliable. Settings are restored at the end (the user applies the winner
 explicitly).
 
-Without a suggestion only A (and A′) are guided: `trials.nothingToTry` {rms, predictive} instead of a winner. Min move,
+Without a suggestion or exposure trial only A (and A′) are guided: `trials.nothingToTry` {rms, predictive} instead of a winner. Min move,
 aggression and hysteresis are never suggested (nor offered in findings) for an axis with the Predictive algorithm, which
 sets its own gain and needs no dead band; with Predictive on both axes the trials only try camera, Dec guide mode and
 backlash changes.
@@ -145,6 +155,12 @@ A lightweight analyser over the guiding statistics window emits dismissable hint
 lower RA aggression), `hint.raSluggish` (index < 0.15 with large RMS → raise aggression),
 `hint.pulseLimited`, `hint.lowSnr`, `hint.decDrift` (one-sided Dec corrections → polar alignment),
 `hint.seeingBound` (RMS close to the seeing floor: settings are fine, seeing limits).
+
+`hint.longExposure` (guide exposure above 2 s → try 1 s) is a one-time hint: raised once per guiding session, it has
+no expiry and is listed only while guiding (Guiding, Paused, LostLock, Reacquiring) with an exposure above 2 s, so it
+is gone after guiding stops or as soon as the exposure is set to 2 s or shorter, also between frames. Once dismissed or applied it is never raised again: the
+analyser reports it (`PermanentlyDismissed`), the host stores the id in the profile and hands the stored ids back
+(`SetSuppressed`) when it creates the guider.
 
 ## 5. Engine/host/UI split
 * Engine (`NINA.GuideEngine.Coach`): session orchestrator (async, drives the Guider through its public API
@@ -178,7 +194,10 @@ is half the peak-to-peak of the detrended, smoothed RA motion. `GustPercent` is 
 
 Session rules:
 * Accepted from Stopped/Looping/Selected/Guiding/Paused; rejected while calibrating, building darks, disconnected or
-  when another session runs (`coach.busy`, `coach.notConnected`).
+  when another session runs (`coach.busy`, `coach.notConnected`). A session with more than the camera check is also
+  rejected when the mount points beyond Dec ±80° (`coach.nearPole` {declinationDeg, maxDeclinationDeg}; the host's declination, else the mount's; unknown = allowed): RA
+  pulses move the star by cos(Dec) there (under 17 %), so calibration fails or measures mostly noise. The TNS plugin's
+  `coach/start?slew=stay|east|west` slews to a calibration position first, and the app offers that from Dec ±60° on.
 * Guiding active at the start → resumed with the original settings when the session ends/cancels/fails.
 * External Start/Stop guiding, dither, loop stop, disconnect or a confirmed mount slew/tracking stop cancel the session
   (`coach.interrupted` with parameter `reason`); temporary settings are restored in every exit path.
@@ -197,7 +216,7 @@ Session rules:
   Binning, MultiStar, RaAggression, RaHysteresis, RaMinMove, DecAggression, DecMinMove, DecGuideMode, DecAlgorithm,
   BacklashCompensation, BacklashPulseMs, MaxRaDurationMs, MaxDecDurationMs. Values are invariant-culture strings.
 
-Failure/step message codes: `coach.busy`, `coach.notConnected`, `coach.noStar`, `coach.noCalibration`,
+Failure/step message codes: `coach.busy`, `coach.notConnected`, `coach.nearPole`, `coach.noStar`, `coach.noCalibration`,
 `coach.calibrationFailed`, `coach.starLost`, `coach.noPulseOutput`, `coach.interrupted` {reason: guiding|dither|
 stopped|slew|trackingOff|disconnect}, `coach.cameraError`, `coach.internal`.
 
@@ -241,6 +260,7 @@ Severity in brackets; `→` = setting changes carried in `Changes`. Parameter un
 | hint.lowSnr | warning | snr | star SNR dropped (clouds, dew) |
 | hint.decDrift | info | driftArcsecPerMin, arcmin | Dec corrections one-sided → polar alignment / DecGuideMode Drift (a change only from Auto) |
 | hint.seeingBound | good | rmsArcsec | RMS near the seeing floor: nothing to tune |
+| hint.longExposure | info | exposureSeconds, suggestedSeconds | exposure above 2 s → ExposureSeconds 1; shown once, never again after dismiss/apply |
 
 ## 8. Engine implementation notes
 

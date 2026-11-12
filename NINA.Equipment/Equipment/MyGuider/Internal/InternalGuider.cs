@@ -476,6 +476,8 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         var g = new Guider(camera, output, mount, SystemClock.Instance, settings);
         g.EventRaised += OnEngineEvent;
         g.SetIncidentStore(incidents, IncidentTagsNow);
+        g.LiveHints.SetSuppressed(options.DismissedHints);
+        g.LiveHints.PermanentlyDismissed += OnHintPermanentlyDismissed;
         guider = g;
         coach = new GuidingCoach(g, coachHost);
         cameraSource = camera;
@@ -546,6 +548,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             }
 
             g.EventRaised -= OnEngineEvent;
+            g.LiveHints.PermanentlyDismissed -= OnHintPermanentlyDismissed;
         }
 
         // no more engine events: the last learned play model is stored, and the next session stores its first at once
@@ -1298,6 +1301,18 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
     }
 
     public bool DismissHint(string id) => guider?.DismissHint(id) ?? false;
+
+    private void OnHintPermanentlyDismissed(string id)
+    {
+        try
+        {
+            options.AddDismissedHint(id);
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not remember the dismissed hint {id}: {ex.Message}");
+        }
+    }
 
     public AdvancedIncidentList GetIncidents()
     {
