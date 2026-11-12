@@ -333,6 +333,7 @@ public class InternalGuiderOptionsTests
         {
             parameters["PeriodicErrorPrediction"] = "periodicError";
             parameters["WormTeeth"] = "wormTeeth";
+            parameters["WormPeriodSeconds"] = "wormPeriod";
         }
 
         var described = Create().Options.Describe();
@@ -354,7 +355,14 @@ public class InternalGuiderOptionsTests
             o.TrySet(axis + "MinMove", "0.3", out _).Should().BeTrue();
             var settings = o.ToEngineSettings();
             var engine = (axis == "Ra" ? settings.RaAlgorithm : settings.DecAlgorithm).Parameters ?? new Dictionary<string, double>();
-            var shown = parameters.Keys.Where(p => described.Single(x => x.Name == p).AppliesTo!.Contains(name)).Select(p => parameters[p]);
+            // a setting behind another one (the worm teeth behind the worm period unit) is shown with that one
+            bool Shown(string setting)
+            {
+                var d = described.Single(x => x.Name == setting);
+                return d.DependsOn == axis + "Algorithm" ? d.AppliesTo!.Contains(name) : Shown(d.DependsOn);
+            }
+
+            var shown = parameters.Keys.Where(Shown).Select(p => parameters[p]);
             engine.Keys.Should().BeEquivalentTo(shown, $"{axis} {name} shows exactly the parameters it reads");
         }
     }
@@ -401,7 +409,18 @@ public class InternalGuiderOptionsTests
         o.TrySet("PeriodicErrorPrediction", "false", out _).Should().BeTrue();
         var p = o.ToEngineSettings().RaAlgorithm.Parameters!;
         p["wormTeeth"].Should().Be(180);
+        p["wormPeriod"].Should().Be(0, "the worm is given in teeth");
         p["periodicError"].Should().Be(0);
+
+        o.TrySet("WormPeriodSeconds", "150", out var tooShort).Should().BeFalse("the guider would drop it and detect the period");
+        tooShort.Should().Contain("0 (detect) or 180 to 1200 s");
+        o.TrySet("WormPeriodSeconds", "0", out _).Should().BeTrue("0 = detect");
+        o.TrySet("WormPeriodSeconds", "638.3", out _).Should().BeTrue();
+        o.ToEngineSettings().RaAlgorithm.Parameters!["wormPeriod"].Should().Be(0, "only the chosen unit is used");
+        o.TrySet("WormPeriodUnit", "Seconds", out _).Should().BeTrue();
+        p = o.ToEngineSettings().RaAlgorithm.Parameters!;
+        p["wormTeeth"].Should().Be(0, "only the chosen unit is used");
+        p["wormPeriod"].Should().Be(638.3);
 
         var forget = o.Describe().Single(x => x.Name == "ForgetPeriodicError");
         forget.Type.Should().Be("action");

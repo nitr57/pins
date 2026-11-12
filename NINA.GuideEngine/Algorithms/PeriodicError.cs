@@ -153,6 +153,12 @@ internal sealed class PeriodicErrorEstimator
     /// </summary>
     public const double DiscardDifference = 0.02;
 
+    /// <summary>
+    /// A stored curve is restored with a period set in seconds when the two periods differ by at most this many worm turns
+    /// per turn of the RA axis: over a full axis turn its phase then moves by at most 18°.
+    /// </summary>
+    public const double SamePeriodTurns = 0.05;
+
     // the period is Sidereal.DaySeconds / teeth, exactly: one worm turn moves the gear by one tooth
     private const int Parameters = 2 + 2 * Harmonics;
 
@@ -259,6 +265,7 @@ internal sealed class PeriodicErrorEstimator
     private readonly double[] fitPh = new double[Parameters];
 
     private int? configuredTeeth;
+    private double? configuredPeriod;
     private double? period;
     private int? teeth;
     private double periodSigma = double.PositiveInfinity;
@@ -305,6 +312,12 @@ internal sealed class PeriodicErrorEstimator
 
     /// <summary>Teeth of the worm wheel, null while not known exactly.</summary>
     public int? Teeth => teeth;
+
+    /// <summary>
+    /// True when the period is the worm's and not detected: from a tooth count (set, snapped or restored with it) or set
+    /// in seconds. Any other period is not taken for the worm's.
+    /// </summary>
+    public bool PeriodFixed => teeth is not null || configuredPeriod is not null;
 
     /// <summary>
     /// True when the fitted curve can be trusted: its fundamental stands out from its uncertainty, and the curve passed
@@ -368,33 +381,34 @@ internal sealed class PeriodicErrorEstimator
     }
 
     /// <summary>The tooth count of the setting (null or 0 = detect). A different one forgets everything learned.</summary>
-    public void SetTeeth(int? count)
+    public void SetTeeth(int? count) => SetWorm(count, null);
+
+    /// <summary>
+    /// The worm of the setting: its tooth count, else its period in seconds (<see cref="MinPeriodSeconds"/> …
+    /// <see cref="MaxPeriodSeconds"/>); neither = detect. A different one forgets everything learned. A period in seconds
+    /// is not detected, but without a tooth count the phase is re-learned after a flip, as with a detected period.
+    /// </summary>
+    public void SetWorm(int? count, double? periodSeconds)
     {
         int? value = count is > 0 ? count : null;
-        if (value == configuredTeeth && (period is not null || value is null))
+        double? seconds = value is null && periodSeconds is { } s && s >= MinPeriodSeconds && s <= MaxPeriodSeconds ? s : null;
+        if (value == configuredTeeth && seconds == configuredPeriod && (period is not null || (value is null && seconds is null)))
         {
             return;
         }
 
         configuredTeeth = value;
+        configuredPeriod = seconds;
         Forget();
-        if (value is { } n)
-        {
-            teeth = n;
-            period = Sidereal.DaySeconds / n;
-            periodSigma = 0;
-            fitActive = true;
-            ResetFit();
-        }
     }
 
-    /// <summary>Forgets the period (unless set by the tooth count) and the fitted curve.</summary>
+    /// <summary>Forgets the period (unless set) and the fitted curve.</summary>
     public void Forget()
     {
         ClearSamples();
         teeth = configuredTeeth;
-        period = configuredTeeth is { } n ? Sidereal.DaySeconds / n : null;
-        periodSigma = configuredTeeth is null ? double.PositiveInfinity : 0;
+        period = configuredTeeth is { } n ? Sidereal.DaySeconds / n : configuredPeriod;
+        periodSigma = period is null ? double.PositiveInfinity : 0;
         fitActive = period is not null;
         stable = false;
         verified = false;
@@ -418,8 +432,8 @@ internal sealed class PeriodicErrorEstimator
     }
 
     /// <summary>
-    /// Starts from a stored model (ignored when the tooth count of the setting differs). The curve counts as known, with
-    /// an uncertainty of a quarter of its amplitude: the live fit and the gate take it from there.
+    /// Starts from a stored model (ignored when the tooth count or the period of the setting differs). The curve counts as
+    /// known, with an uncertainty of a quarter of its amplitude: the live fit and the gate take it from there.
     /// </summary>
     public bool Restore(PeriodicErrorModel model)
     {
@@ -429,15 +443,28 @@ internal sealed class PeriodicErrorEstimator
             return false;
         }
 
-        if (configuredTeeth is { } n && model.Teeth != n)
+        // a curve stored with the period in seconds also fits the tooth count of that period
+        if (configuredTeeth is { } n && model.Teeth != n
+            && (model.Teeth is not null || Math.Abs(n - Sidereal.DaySeconds / model.PeriodSeconds) > SamePeriodTurns))
+        {
+            return false;
+        }
+
+        // the curve's phase is against the worm angle, which a different period turns differently over the sky
+        if (configuredPeriod is { } set && Math.Abs(Sidereal.DaySeconds / set - Sidereal.DaySeconds / model.PeriodSeconds) > SamePeriodTurns)
         {
             return false;
         }
 
         Forget();
-        teeth = model.Teeth;
-        period = model.Teeth is { } t ? Sidereal.DaySeconds / t : model.PeriodSeconds;
-        periodSigma = model.Teeth is null ? period.Value * 1e-3 : 0;
+        // a set worm keeps its own tooth count and period
+        if (configuredTeeth is null && configuredPeriod is null)
+        {
+            teeth = model.Teeth;
+            period = model.Teeth is { } t ? Sidereal.DaySeconds / t : model.PeriodSeconds;
+            periodSigma = model.Teeth is null ? period.Value * 1e-3 : 0;
+        }
+
         fitActive = true;
         ResetFit();
         double prior = Math.Max(RestoredUncertaintyShare * model.AmplitudeArcsec, MinRestoredUncertaintyArcsec);
@@ -598,8 +625,8 @@ internal sealed class PeriodicErrorEstimator
             else
             {
                 ResetFit();
-                stable &= teeth is null;
-                verified &= teeth is null;
+                stable &= !PeriodFixed;
+                verified &= !PeriodFixed;
             }
         }
 
@@ -639,10 +666,10 @@ internal sealed class PeriodicErrorEstimator
         Store(tau, u, r, Math.Max(seeingPx2, 1e-4) * scale * scale, context.PierSide);
 
         // a detected period is refined, checked and searched on; the curve of a known tooth count (set, snapped or
-        // restored with it) only checked. One step per frame.
+        // restored with it) or of a period set in seconds only checked. One step per frame.
         if (job is null && tau >= nextDetect)
         {
-            job = (teeth is null ? Detect(tau) : CheckCurve(tau)).GetEnumerator();
+            job = (PeriodFixed ? CheckCurve(tau) : Detect(tau)).GetEnumerator();
         }
 
         if (job is not null && !job.MoveNext())
@@ -989,8 +1016,8 @@ internal sealed class PeriodicErrorEstimator
         lastPhase = null;
         fitSignificant = IsSignificant = false;
 
-        // a detected period stays held; the curve of a known tooth count is checked again with its new phase
-        if (teeth is not null)
+        // a detected period stays held; the curve of a set or known period is checked again with its new phase
+        if (PeriodFixed)
         {
             stable = verified = false;
             unstableNoted = false;
