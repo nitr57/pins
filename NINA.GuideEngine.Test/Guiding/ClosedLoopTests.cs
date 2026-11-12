@@ -1761,6 +1761,29 @@ public class ClosedLoopTests
     }
 
     /// <summary>Wires a simulator, a guider and an event recorder together.</summary>
+    [Test]
+    public async Task A_slow_frame_is_an_info_note_and_not_the_last_error()
+    {
+        // every frame counts as slow; within the first minute there is no median yet
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { Safety = s.Safety with { SlowProcessingMs = 0 } });
+        await h.RunFor(TimeSpan.FromSeconds(30));
+
+        h.Alerts(GuideErrorSeverity.Info).Should().ContainSingle(a => a.Code == GuideErrorCode.SlowGuideFrame);
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.FrameProcessingSlow);
+        h.Guider.LastError.Should().BeNull();
+    }
+
+    [Test]
+    public async Task Slow_frames_for_a_minute_raise_the_warning_as_the_last_error()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { Safety = s.Safety with { SlowProcessingMs = 0 } });
+        await h.RunFor(TimeSpan.FromMinutes(3));
+
+        h.Alerts(GuideErrorSeverity.Warning).Should().ContainSingle(a => a.Code == GuideErrorCode.FrameProcessingSlow)
+            .Which.Detail.Should().StartWith("median ");
+        h.Guider.LastError!.Code.Should().Be(GuideErrorCode.FrameProcessingSlow);
+    }
+
     private sealed class Harness
     {
         private readonly object gate = new();

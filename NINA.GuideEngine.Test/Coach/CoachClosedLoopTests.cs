@@ -309,6 +309,7 @@ public class CoachClosedLoopTests
             Steps = [CoachStepNames.Drift, CoachStepNames.MountResponse, CoachStepNames.Trials],
             DriftSeconds = 120,
             TrialSeconds = 60,
+            ExposureTrial = false,
         });
 
         status.Phase.Should().Be(CoachPhases.Complete, status.Message);
@@ -463,6 +464,56 @@ public class CoachClosedLoopTests
         rejected.Status.SessionId.Should().Be(status.SessionId, "a rejection leaves the last session's status untouched");
         h.Coach.Status.MessageCode.Should().Be(CoachCodes.NoCalibration);
         h.Coach.Status.GainMax.Should().Be(100, "the gain range is always reported");
+    }
+
+    [TestCase(85.0)]
+    [TestCase(-81.0)]
+    public void Start_near_a_pole_is_refused_with_nearPole(double dec)
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.SetDeclination(dec);
+
+        var rejected = h.Coach.Start();
+
+        rejected.Accepted.Should().BeFalse();
+        rejected.MessageCode.Should().Be(CoachCodes.NearPole);
+        rejected.MessageParameters["declinationDeg"].Should().Be(dec);
+        rejected.MessageParameters["maxDeclinationDeg"].Should().Be(GuidingCoach.MaxDeclinationDeg);
+        rejected.Message.Should().Contain("too close to the pole");
+        h.Coach.IsRunning.Should().BeFalse();
+    }
+
+    [Test]
+    public void Start_at_80_degrees_is_still_accepted()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.SetDeclination(-80.0);
+
+        h.Coach.Start().Accepted.Should().BeTrue("all steps, and ±80° is still allowed");
+        h.Coach.Cancel();
+    }
+
+    [Test]
+    public async Task A_camera_check_alone_runs_near_the_pole()
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.SetDeclination(85.0);
+        var status = await h.RunFromLooping(new CoachOptions { Steps = [CoachStepNames.CameraCheck] });
+        status.Phase.Should().Be(CoachPhases.Complete, "the camera check neither calibrates nor pulses the mount");
+    }
+
+    [TestCase(CoachStepNames.Drift)]
+    [TestCase(CoachStepNames.MountResponse)]
+    [TestCase(CoachStepNames.Trials)]
+    public void A_step_that_guides_is_refused_near_the_pole(string step)
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        h.Sim.Mount.SetDeclination(85.0);
+
+        var rejected = h.Coach.Start(new CoachOptions { Steps = [CoachStepNames.CameraCheck, step] });
+
+        rejected.Accepted.Should().BeFalse();
+        rejected.MessageCode.Should().Be(CoachCodes.NearPole);
     }
 
     [Test]
@@ -763,6 +814,68 @@ public class CoachClosedLoopTests
         stats.Frames.Should().Be(a.Frames, "the trial's own statistics");
         stats.CloudNoiseArcsec.Should().BeGreaterThan(0);
         h.AssertRestoredAndGuiding();
+    }
+
+    [Test]
+    public async Task The_exposure_trials_guide_the_current_settings_with_shorter_exposures()
+    {
+        var predictive = new AlgorithmSettings(GuideAlgorithmKind.Predictive);
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { ExposureMs = 2500, RaAlgorithm = predictive, DecAlgorithm = predictive });
+        var trialExposureMs = new Dictionary<string, double>();
+        h.OnEvent = e =>
+        {
+            if (e is CoachStatusEvent { Status.Trials: var trials } && trials.FirstOrDefault(t => t.State == CoachTrialStates.Running) is { Kind: CoachTrialKinds.Exposure } running)
+            {
+                trialExposureMs.TryAdd(running.Id, h.Guider.Settings.ExposureMs);
+            }
+        };
+        var status = await h.RunFromGuiding(new CoachOptions { Steps = [CoachStepNames.Trials], TrialSeconds = 30, RepeatBaseline = false });
+
+        status.Phase.Should().Be(CoachPhases.Complete, status.Message);
+        status.Trials.Select(t => t.Id).Should().Equal(CoachTrialIds.A, CoachTrialIds.E, CoachTrialIds.E2);
+        var e = status.Trials.Single(t => t.Id == CoachTrialIds.E);
+        e.Kind.Should().Be(CoachTrialKinds.Exposure);
+        e.State.Should().Be(CoachTrialStates.Done);
+        e.Settings.Should().ContainSingle().Which.Should().Be(new CoachSettingChange(CoachSettingNames.ExposureSeconds, "1", "2.5"));
+        var e2 = status.Trials.Single(t => t.Id == CoachTrialIds.E2);
+        e2.Kind.Should().Be(CoachTrialKinds.Exposure);
+        e2.State.Should().Be(CoachTrialStates.Done);
+        e2.Settings.Should().ContainSingle().Which.Should().Be(new CoachSettingChange(CoachSettingNames.ExposureSeconds, "1.5", "2.5"));
+        trialExposureMs.Should().Equal(new Dictionary<string, double> { [CoachTrialIds.E] = 1000, [CoachTrialIds.E2] = 1500 },
+            "each exposure trial guides with its own shorter exposure");
+        status.Findings.Should().NotContain(f => f.Code == CoachCodes.TrialsNothingToTry, "the exposure trial is an alternative");
+        h.AfterSession!.Settings.ExposureMs.Should().Be(2500, "trials don't change the settings");
+    }
+
+    [TestCase(1000, true)]
+    [TestCase(2500, false)]
+    public async Task No_exposure_trial_for_short_exposures_or_when_turned_off(double exposureMs, bool exposureTrial)
+    {
+        var predictive = new AlgorithmSettings(GuideAlgorithmKind.Predictive);
+        var h = new Harness(SimulatorScenario.GoodMount, s => s with { ExposureMs = exposureMs, RaAlgorithm = predictive, DecAlgorithm = predictive });
+        var status = await h.RunFromGuiding(new CoachOptions
+        {
+            Steps = [CoachStepNames.Trials],
+            TrialSeconds = 30,
+            RepeatBaseline = false,
+            ExposureTrial = exposureTrial,
+        });
+
+        status.Trials.Select(t => t.Id).Should().Equal(CoachTrialIds.A);
+    }
+
+    [TestCase(1.0, new double[0])]
+    [TestCase(1.4, new double[0])]
+    [TestCase(1.5, new[] { 1.0 })]
+    [TestCase(2.0, new[] { 1.0, 1.5 })]
+    [TestCase(2.2, new[] { 1.0, 1.5 })]
+    [TestCase(2.5, new[] { 1.0, 1.5 })]
+    [TestCase(3.0, new[] { 1.0, 2.0 })]
+    [TestCase(4.0, new[] { 1.0, 2.5 })]
+    [TestCase(5.0, new[] { 1.0, 3.0 })]
+    public void Exposure_trials_try_1_s_and_the_middle_to_the_current_exposure(double current, double[] expected)
+    {
+        GuidingCoach.ShorterTrialExposures(current).Should().Equal(expected);
     }
 
     /// <summary>Wires simulator, guider, coach and an event recorder; runs sessions in virtual time.</summary>
