@@ -24,7 +24,10 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
         /// <summary>File name, e.g. InternalGuider_GuideLog_2026-10-12.txt; the key for <see cref="IGuideLogArchive.OpenGuideLog"/>.</summary>
         public string Name { get; set; } = string.Empty;
 
-        /// <summary>The night (noon to noon, local time) as yyyy-MM-dd, null when the name carries no date.</summary>
+        /// <summary>
+        /// The night (noon to noon, local time) as yyyy-MM-dd, null when the name carries no date. For an older per-session
+        /// log (…_yyyy-MM-dd_HHmmss.txt) the night of its start, the day before its date when it started after midnight.
+        /// </summary>
         public string? Night { get; set; }
 
         public long SizeBytes { get; set; }
@@ -37,7 +40,8 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
 
         /// <summary>
         /// Time zone of the log's wall-clock times (PHD2 logs local time): the host's zone id (IANA on Linux) and its
-        /// current UTC offset in minutes, for clients that do not know the id.
+        /// UTC offset in minutes in the evening of <see cref="Night"/> (the current one without a night), for clients
+        /// that do not know the id. A night with a DST change holds times of both offsets.
         /// </summary>
         public string TimeZone { get; set; } = string.Empty;
 

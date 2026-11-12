@@ -1357,10 +1357,11 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         return n;
     }
 
+    // I/O errors are thrown, not turned into "no logs": the caller reports them
     public IReadOnlyList<AdvancedGuideLogFile> GetGuideLogs() =>
-        Safe(() => GuideLogFiles.List(GuideLogDirectory, guideLogPath, TimeZoneInfo.Local, DateTime.UtcNow)) ?? [];
+        GuideLogFiles.List(GuideLogDirectory, guideLogPath, TimeZoneInfo.Local, DateTime.UtcNow);
 
-    public Stream? OpenGuideLog(string name) => Safe(() => GuideLogFiles.Open(GuideLogDirectory, name));
+    public Stream? OpenGuideLog(string name) => GuideLogFiles.Open(GuideLogDirectory, name);
 
     public string? MarkIncident(string? note, out string error)
     {

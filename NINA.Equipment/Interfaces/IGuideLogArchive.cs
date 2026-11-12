@@ -28,12 +28,13 @@ namespace NINA.Equipment.Interfaces {
     /// </summary>
     public interface IGuideLogArchive : IAdvancedGuider {
 
-        /// <summary>The guide logs, newest night first.</summary>
+        /// <summary>The guide logs, newest night first. Throws when the log directory cannot be read.</summary>
         IReadOnlyList<AdvancedGuideLogFile> GetGuideLogs();
 
         /// <summary>
         /// Opens a guide log of <see cref="GetGuideLogs"/> for reading (the log being written can be read too, up to
-        /// what it holds). Null when the name is unknown or not a guide log name. The caller disposes the stream.
+        /// what it holds). Null when the name is unknown or not a guide log name; other errors (an unreadable file) are thrown.
+        /// The caller disposes the stream.
         /// </summary>
         Stream? OpenGuideLog(string name);
     }

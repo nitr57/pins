@@ -90,4 +90,56 @@ public class GuideLogFilesTests
     {
         GuideLogFiles.Open(dir, "InternalGuider_GuideLog_2026-01-01.txt").Should().BeNull();
     }
+
+    [Test]
+    public void List_PerSessionLogStartedAfterMidnight_BelongsToTheNightBefore()
+    {
+        Write("PinsGuider_GuideLog_2026-09-24_013005.txt");
+        Write("PinsGuider_GuideLog_2_2026-09-23_213005.txt");
+        Write("PinsGuider_GuideLog_2026-09-24_133005.txt");
+
+        var nights = GuideLogFiles.List(dir, null, TimeZoneInfo.Utc, DateTime.UtcNow).ToDictionary(f => f.Name, f => f.Night);
+
+        nights["PinsGuider_GuideLog_2026-09-24_013005.txt"].Should().Be("2026-09-23");
+        nights["PinsGuider_GuideLog_2_2026-09-23_213005.txt"].Should().Be("2026-09-23");
+        nights["PinsGuider_GuideLog_2026-09-24_133005.txt"].Should().Be("2026-09-24");
+    }
+
+    [Test]
+    public void List_OffsetIsTheOneOfTheLogsNight()
+    {
+        Write("InternalGuider_GuideLog_2026-07-10.txt");
+        Write("InternalGuider_GuideLog_2026-12-10.txt");
+        Write("InternalGuider_GuideLog_undated.txt");
+        var zone = TimeZoneInfo.CreateCustomTimeZone("Test/Dst", TimeSpan.FromHours(1), "Test", "Test", "Test Summer",
+        [
+            TimeZoneInfo.AdjustmentRule.CreateAdjustmentRule(DateTime.MinValue.Date, DateTime.MaxValue.Date, TimeSpan.FromHours(1),
+                TimeZoneInfo.TransitionTime.CreateFloatingDateRule(new DateTime(1, 1, 1, 2, 0, 0), 3, 5, DayOfWeek.Sunday),
+                TimeZoneInfo.TransitionTime.CreateFloatingDateRule(new DateTime(1, 1, 1, 3, 0, 0), 10, 5, DayOfWeek.Sunday)),
+        ]);
+
+        // listed in winter
+        var offsets = GuideLogFiles.List(dir, null, zone, new DateTime(2026, 12, 20, 12, 0, 0, DateTimeKind.Utc))
+            .ToDictionary(f => f.Name, f => f.UtcOffsetMinutes);
+
+        offsets["InternalGuider_GuideLog_2026-07-10.txt"].Should().Be(120);
+        offsets["InternalGuider_GuideLog_2026-12-10.txt"].Should().Be(60);
+        offsets["InternalGuider_GuideLog_undated.txt"].Should().Be(60);
+    }
+
+    [Test]
+    public void Open_MissingDirectory_IsNull()
+    {
+        GuideLogFiles.Open(Path.Combine(dir, "nope"), "InternalGuider_GuideLog_2026-01-01.txt").Should().BeNull();
+    }
+
+    [Test]
+    public void Open_ErrorOtherThanMissing_IsThrown()
+    {
+        // a directory where the log should be: not "no such log", an error to report
+        Directory.CreateDirectory(Path.Combine(dir, "InternalGuider_GuideLog_2026-01-01.txt"));
+
+        FluentActions.Invoking(() => GuideLogFiles.Open(dir, "InternalGuider_GuideLog_2026-01-01.txt"))
+            .Should().Throw<UnauthorizedAccessException>();
+    }
 }
