@@ -182,7 +182,8 @@ namespace NINA.Test.Plugin {
 
         [Test]
         public void SequenceMediator_NavigationAndFactory() {
-            // ninaAPI Application/Sequence.cs and Utility/CoreUtility.cs; TNS SequenceController.cs
+            // sequenceNavigation: ninaAPI Utility/CoreUtility.cs (GetSequenceNavigation) and TNS SequenceController.cs;
+            // factory: TNS only (ninaAPI takes ISequence2VM.SequencerFactory)
             var navigation = typeof(SequenceMediator).GetField("sequenceNavigation", PrivateInstance);
             var factory = typeof(SequenceNavigationVM).GetField("factory", PrivateInstance);
 
@@ -193,6 +194,16 @@ namespace NINA.Test.Plugin {
 
             // TNS reads navVM.Sequence2VM through dynamic and casts it to ISequence2VM.
             Assert.That(typeof(SequenceNavigationVM).GetProperty("Sequence2VM")?.PropertyType, Is.EqualTo(typeof(ISequence2VM)));
+        }
+
+        [Test]
+        public void UnknownSequenceContainer_ByName() {
+            // ninaAPI Application/Sequence.cs refuses a load whose JSON deserializes to this internal placeholder,
+            // comparing the type's full name
+            var type = typeof(SequenceRootContainer).Assembly.GetType("NINA.Sequencer.Container.UnknownSequenceContainer");
+
+            Assert.That(type, Is.Not.Null);
+            Assert.That(typeof(ISequenceContainer).IsAssignableFrom(type), Is.True);
         }
 
         [TestCase("SkipToEndOfSequenceCommand")]
