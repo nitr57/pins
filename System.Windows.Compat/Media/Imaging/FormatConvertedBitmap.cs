@@ -81,6 +81,26 @@ namespace System.Windows.Media.Imaging {
         private Mat ConvertFormat(Mat source, Media.PixelFormat sourceFormat, Media.PixelFormat destFormat) {
             ColorConversionCodes? conversionCode = null;
 
+            // The compat layer keeps every 32-bit image as straight BGRA (Graphics blends straight alpha, a Bitmap has
+            // no premultiplied form), and a CV_8UC4 Mat always reports Bgra32. So Bgra32, Pbgra32 and Bgr32 are one
+            // layout here: converting between them copies, and Bgr32, which has no alpha, makes every pixel opaque.
+            if (source.Type() == MatType.CV_8UC4 && IsThirtyTwoBit(sourceFormat) && IsThirtyTwoBit(destFormat)) {
+                Mat result = source.Clone();
+
+                if (destFormat == Media.PixelFormats.Bgr32) {
+                    using Mat opaque = new Mat(result.Size(), MatType.CV_8UC1, Scalar.All(255));
+                    Cv2.InsertChannel(opaque, result, 3);
+                }
+
+                return result;
+            }
+
+            // Same format in and out: only when the Mat really has that layout, since Format reports Bgr24 for layouts
+            // it does not know.
+            if (sourceFormat == destFormat && MatTypeOf(destFormat) is MatType expected && source.Type() == expected) {
+                return source.Clone();
+            }
+
             if (destFormat == Media.PixelFormats.Gray8) {
                 if (sourceFormat == Media.PixelFormats.Bgr24) {
                     conversionCode = ColorConversionCodes.BGR2GRAY;
@@ -172,6 +192,31 @@ namespace System.Windows.Media.Imaging {
             // unconverted clone that lies about its Format and corrupts anything reading it as destFormat.
             throw new NotSupportedException(
                 $"FormatConvertedBitmap does not support converting {sourceFormat} to {destFormat}.");
+        }
+
+        private static bool IsThirtyTwoBit(Media.PixelFormat format) {
+            return format == Media.PixelFormats.Bgra32 || format == Media.PixelFormats.Pbgra32 || format == Media.PixelFormats.Bgr32;
+        }
+
+        /// <summary>The Mat layout <see cref="BitmapSource.Format"/> reports as <paramref name="format"/>, or null.</summary>
+        private static MatType? MatTypeOf(Media.PixelFormat format) {
+            if (format == Media.PixelFormats.Gray8 || format == Media.PixelFormats.Indexed8) {
+                return MatType.CV_8UC1;
+            }
+
+            if (format == Media.PixelFormats.Gray16) {
+                return MatType.CV_16UC1;
+            }
+
+            if (format == Media.PixelFormats.Bgr24) {
+                return MatType.CV_8UC3;
+            }
+
+            if (format == Media.PixelFormats.Rgb48) {
+                return MatType.CV_16UC3;
+            }
+
+            return IsThirtyTwoBit(format) ? MatType.CV_8UC4 : null;
         }
     }
 }

@@ -98,6 +98,44 @@ namespace NINA.Test.SystemWindowsCompat {
             Assert.That(converted.Format == PixelFormats.Gray16, Is.True);
         }
 
+        [Test]
+        public void FormatConverted_Bgra32_To_Pbgra32_KeepsTheStraightPixels() {
+            // The compat layer keeps 32-bit images straight (Graphics blends straight alpha): no premultiplication.
+            var pixels = new byte[] { 200, 100, 50, 128 };
+            using var source = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, pixels, 4);
+            using var converted = new FormatConvertedBitmap(source, PixelFormats.Pbgra32, null, 0);
+
+            Assert.That(ReadBytes(converted), Is.EqualTo(pixels));
+        }
+
+        [Test]
+        public void FormatConverted_Bgra32_To_Bgr32_MakesPixelsOpaque() {
+            var pixels = new byte[] { 200, 100, 50, 128 };
+            using var source = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null, pixels, 4);
+            using var converted = new FormatConvertedBitmap(source, PixelFormats.Bgr32, null, 0);
+
+            Assert.That(ReadBytes(converted), Is.EqualTo(new byte[] { 200, 100, 50, 255 }));
+        }
+
+        [Test]
+        public void FormatConverted_SameFormat_Copies() {
+            var pixels = new byte[] { 1, 2, 3, 4, 5, 6 };
+            using var source = BitmapSource.Create(2, 1, 96, 96, PixelFormats.Bgr24, null, pixels, 6);
+            using var converted = new FormatConvertedBitmap(source, PixelFormats.Bgr24, null, 0);
+
+            Assert.That(converted.Format == PixelFormats.Bgr24, Is.True);
+            Assert.That(ReadBytes(converted), Is.EqualTo(pixels));
+        }
+
+        [Test]
+        public void FormatConverted_LayoutFormatDoesNotKnow_StillThrows() {
+            // Format reports Bgr24 for a float Mat; an identity "conversion" must not pass it on as Bgr24.
+            using var mat = new OpenCvSharp.Mat(1, 1, OpenCvSharp.MatType.CV_32FC1, OpenCvSharp.Scalar.All(0.5));
+            using BitmapSource source = mat;
+
+            Assert.That(() => new FormatConvertedBitmap(source, PixelFormats.Bgr24, null, 0), Throws.InstanceOf<System.NotSupportedException>());
+        }
+
         #endregion
 
         #region CroppedBitmap
