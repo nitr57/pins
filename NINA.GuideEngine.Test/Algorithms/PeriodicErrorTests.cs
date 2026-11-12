@@ -236,6 +236,32 @@ public class PeriodicErrorTests
     }
 
     [Test]
+    public void A_curve_stored_in_seconds_is_restored_with_the_tooth_count_of_its_period()
+    {
+        // teeth → seconds → teeth: the curve is stored again without the tooth count in between
+        var learn = new PeriodicErrorEstimator(180);
+        new Sky(new Worm(Teeth: 180)).Run(learn, minutes: 30);
+        var inTeeth = learn.ModelForStorage(DateTimeOffset.UnixEpoch)!;
+
+        var seconds = new PeriodicErrorEstimator();
+        seconds.SetWorm(null, 478.7);
+        seconds.Restore(inTeeth).Should().BeTrue();
+        new Sky(new Worm(Teeth: 180)).Run(seconds, minutes: 30);
+        var inSeconds = seconds.ModelForStorage(DateTimeOffset.UnixEpoch);
+        inSeconds.Should().NotBeNull("verified again with the period in seconds");
+        inSeconds!.Teeth.Should().BeNull();
+
+        var teeth = new PeriodicErrorEstimator(180);
+        teeth.Restore(inSeconds).Should().BeTrue("478.7 s are 180 teeth");
+        teeth.Teeth.Should().Be(180, "the set tooth count stays");
+        teeth.PeriodSeconds.Should().BeApproximately(Sidereal.DaySeconds / 180, 1e-9);
+        teeth.IsSignificant.Should().BeTrue();
+
+        new PeriodicErrorEstimator(181).Restore(inSeconds).Should().BeFalse("one tooth off");
+        new PeriodicErrorEstimator(181).Restore(inTeeth).Should().BeFalse("a curve with a different tooth count, as before");
+    }
+
+    [Test]
     public void The_Predictive_algorithm_takes_the_tooth_count_over_the_period()
     {
         var algorithm = new PredictiveAlgorithm(periodicError: true);

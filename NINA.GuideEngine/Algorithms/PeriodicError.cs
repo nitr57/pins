@@ -313,8 +313,11 @@ internal sealed class PeriodicErrorEstimator
     /// <summary>Teeth of the worm wheel, null while not known exactly.</summary>
     public int? Teeth => teeth;
 
-    // the period is not detected: from a tooth count (set, snapped or restored with it) or set in seconds
-    private bool PeriodFixed => teeth is not null || configuredPeriod is not null;
+    /// <summary>
+    /// True when the period is the worm's and not detected: from a tooth count (set, snapped or restored with it) or set
+    /// in seconds. Any other period is not taken for the worm's.
+    /// </summary>
+    public bool PeriodFixed => teeth is not null || configuredPeriod is not null;
 
     /// <summary>
     /// True when the fitted curve can be trusted: its fundamental stands out from its uncertainty, and the curve passed
@@ -440,7 +443,9 @@ internal sealed class PeriodicErrorEstimator
             return false;
         }
 
-        if (configuredTeeth is { } n && model.Teeth != n)
+        // a curve stored with the period in seconds also fits the tooth count of that period
+        if (configuredTeeth is { } n && model.Teeth != n
+            && (model.Teeth is not null || Math.Abs(n - Sidereal.DaySeconds / model.PeriodSeconds) > SamePeriodTurns))
         {
             return false;
         }
@@ -452,7 +457,8 @@ internal sealed class PeriodicErrorEstimator
         }
 
         Forget();
-        if (configuredPeriod is null)
+        // a set worm keeps its own tooth count and period
+        if (configuredTeeth is null && configuredPeriod is null)
         {
             teeth = model.Teeth;
             period = model.Teeth is { } t ? Sidereal.DaySeconds / t : model.PeriodSeconds;

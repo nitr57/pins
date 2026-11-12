@@ -108,9 +108,10 @@ curl "$H/set-setting?settingName=InternalGuiderSetting&newValue=MinSnr=8"  # any
   See [ALGORITHMS.md](ALGORITHMS.md#pulse-model).
 * **Periodic error prediction** (Predictive on RA, `PeriodicErrorPrediction`, on by default): learns the periodic error
   of the RA worm and corrects it before it shows. The worm period comes from `WormTeeth` (the teeth of the RA worm
-  wheel, e.g. 180 on an EQ6-R, 135 on an HEQ5), or from `WormPeriodSeconds` (the period in seconds, for a drive whose
-  period is no whole tooth count, e.g. the 430.8 s of a strain-wave gear) as `WormPeriodUnit` (`Teeth` by default,
-  `Seconds`) chooses, or is detected after about five worm turns (40 min for a 480 s worm) and snapped to a whole tooth
+  wheel, e.g. 180 on an EQ6-R, 135 on an HEQ5), or from `WormPeriodSeconds` (the period in seconds, 180 to 1200 s, for
+  a drive whose period is no whole tooth count, e.g. the 856.5 s stage of a UMi17R; on a strain-wave gear whose curve
+  changes from turn to turn the curve may still never count) as `WormPeriodUnit` (`Teeth` by default, `Seconds`)
+  chooses, or is detected after about five worm turns (40 min for a 480 s worm) and snapped to a whole tooth
   count once that is unambiguous; only a set or snapped period is taken for the worm's. A period in seconds is never
   detected or snapped, but unlike a tooth count it doesn't give the phase after a meridian flip, which is learned anew.
   Either way the curve counts only once it stays the same from one worm turn to the next (two turns with the period set), so

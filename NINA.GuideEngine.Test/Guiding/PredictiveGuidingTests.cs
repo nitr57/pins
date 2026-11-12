@@ -343,6 +343,34 @@ public class PeriodicErrorGuidingTests
     }
 
     [Test]
+    public void A_change_of_the_worm_while_guiding_starts_from_the_stored_curve()
+    {
+        var clock = new VirtualClock();
+        var sim = new Simulator(Worm(), clock);
+        static AlgorithmSettings Ra(double teeth, double period) =>
+            new(GuideAlgorithmKind.Predictive, new Dictionary<string, double> { ["wormTeeth"] = teeth, ["wormPeriod"] = period });
+        var settings = new GuiderSettings { FocalLengthMm = sim.Scenario.Camera.FocalLengthMm, RaAlgorithm = Ra(180, 0) };
+        var guider = new Guider(sim.Camera, sim.Mount, sim.Mount, clock, settings) { AutoStartLoop = false };
+        var model = new PeriodicErrorModel { Teeth = 180, PeriodSeconds = WormPeriod, Sin = [0.7, 0.2, 0.05], Cos = [0.3, 0.1, 0.0], Cycles = 25, LearnedAt = clock.UtcNow };
+        guider.RestorePeriodicError(model);
+        var ra = (PredictiveAlgorithm)guider.RaAlgorithm;
+        ra.State.PeriodicError!.Stable.Should().BeTrue("restored");
+
+        guider.UpdateSettings(settings with { RaAlgorithm = Ra(0, 478.7) });
+        guider.RaAlgorithm.Should().BeSameAs(ra, "only a parameter changed");
+        ra.State.PeriodicError!.PeriodSeconds.Should().Be(478.7);
+        ra.State.PeriodicError.Stable.Should().BeTrue("the new worm starts from the stored curve again");
+
+        guider.UpdateSettings(settings with { RaAlgorithm = Ra(135, 0) });
+        ra.State.PeriodicError!.Teeth.Should().Be(135);
+        ra.State.PeriodicError.Stable.Should().BeFalse("the stored curve is of another worm");
+
+        guider.UpdateSettings(settings);
+        ra.State.PeriodicError!.Teeth.Should().Be(180);
+        ra.State.PeriodicError.Stable.Should().BeTrue();
+    }
+
+    [Test]
     [Category("Slow")]
     public async Task Prediction_cuts_the_periodic_error_of_a_poor_worm()
     {

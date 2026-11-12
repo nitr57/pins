@@ -145,7 +145,7 @@ internal sealed class InternalGuiderOptions
         new("WormPeriodUnit", "RA worm period in", "Algorithms", "enum", WormInTeeth, Options: [WormInTeeth, WormInSeconds],
             DependsOn: "RaAlgorithm", AppliesTo: PredictiveAlgorithms,
             Description: "Give the RA worm as the teeth of its wheel or as its period in seconds, e.g. from the mount's manual or a PEC tool. " +
-                "Seconds also suit a drive whose period is no whole tooth count (a strain wave gear, a belt). Only the chosen one is used."),
+                "Seconds also suit a drive whose period is no whole tooth count (e.g. a belt stage). Only the chosen one is used."),
         new("WormTeeth", "RA worm wheel teeth", "Algorithms", "int", "0", Min: 0, Max: 2000,
             DependsOn: "WormPeriodUnit", AppliesTo: [WormInTeeth],
             Description: "Teeth of the RA worm wheel (e.g. 180 on an EQ6-R, 135 on an HEQ5); gives the exact worm period. 0 = detect the period from the guide frames."),
@@ -339,6 +339,9 @@ internal sealed class InternalGuiderOptions
         return true;
     }
 
+    // the shortest worm period the guider takes (PeriodicErrorEstimator.MinPeriodSeconds in the engine)
+    private const double MinWormPeriodSeconds = 180;
+
     private static bool Validate(SettingDef def, string value, out string normalized, out string error)
     {
         value = (value ?? string.Empty).Trim();
@@ -356,6 +359,13 @@ internal sealed class InternalGuiderOptions
                 if ((def.Min is { } min && d < min) || (def.Max is { } max && d > max))
                 {
                     error = $"{def.Label} must be between {def.Min} and {def.Max}";
+                    return false;
+                }
+
+                // 0 = detect; a shorter period than the guider takes would be dropped without a word
+                if (def.Name == "WormPeriodSeconds" && d > 0 && d < MinWormPeriodSeconds)
+                {
+                    error = string.Create(Inv, $"{def.Label} must be 0 (detect) or {MinWormPeriodSeconds} to {def.Max} s");
                     return false;
                 }
 

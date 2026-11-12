@@ -273,8 +273,8 @@ public sealed partial class Guider
             DecRatePxPerMs = cal is { HasDecCalibration: true } ? cal.YRate : null,
             RaAngleDeg = cal is { IsValid: true } ? cal.XAngle * 180.0 / Math.PI : null,
             DecAngleDeg = cal is { HasDecCalibration: true } && double.IsFinite(cal.YAngle) ? cal.YAngle * 180.0 / Math.PI : null,
-            // only a worm's period (tooth count set or snapped): any other detected period is not the worm
-            WormPeriodSeconds = (corrector.RaAlgorithm as PredictiveAlgorithm)?.PeriodicError is { Teeth: not null } pe ? pe.PeriodSeconds : null,
+            // only a worm's period (tooth count set or snapped, or period set in seconds): any other detected period is not the worm
+            WormPeriodSeconds = (corrector.RaAlgorithm as PredictiveAlgorithm)?.PeriodicError is { PeriodFixed: true } pe ? pe.PeriodSeconds : null,
         };
     }
 

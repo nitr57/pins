@@ -395,6 +395,9 @@ public class InternalGuiderOptionsTests
         p["wormPeriod"].Should().Be(0, "the worm is given in teeth");
         p["periodicError"].Should().Be(0);
 
+        o.TrySet("WormPeriodSeconds", "150", out var tooShort).Should().BeFalse("the guider would drop it and detect the period");
+        tooShort.Should().Contain("0 (detect) or 180 to 1200 s");
+        o.TrySet("WormPeriodSeconds", "0", out _).Should().BeTrue("0 = detect");
         o.TrySet("WormPeriodSeconds", "638.3", out _).Should().BeTrue();
         o.ToEngineSettings().RaAlgorithm.Parameters!["wormPeriod"].Should().Be(0, "only the chosen unit is used");
         o.TrySet("WormPeriodUnit", "Seconds", out _).Should().BeTrue();
