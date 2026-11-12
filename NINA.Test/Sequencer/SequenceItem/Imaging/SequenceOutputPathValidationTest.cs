@@ -66,13 +66,14 @@ namespace NINA.Test.Sequencer.SequenceItem.Imaging {
             var first = CreateExposure(firstSubframe);
             AssertValidation(first, initiallyExists);
 
+            // pins: a directory found is kept until the path changes, a missing one is checked again
             SetDirectoryExists(imageDirectory, !initiallyExists);
             var second = CreateExposure(!firstSubframe);
-            AssertValidation(second, initiallyExists);
-            AssertValidation(first, initiallyExists);
+            AssertValidation(second, true);
+            AssertValidation(first, true);
             settings.FilePath = imageDirectory;
-            AssertValidation(first, initiallyExists);
-            AssertValidation(second, initiallyExists);
+            AssertValidation(first, true);
+            AssertValidation(second, true);
 
             SetDirectoryExists(alternateDirectory, !initiallyExists);
             settings.FilePath = alternateDirectory;
@@ -83,8 +84,8 @@ namespace NINA.Test.Sequencer.SequenceItem.Imaging {
             AssertValidation(second, !initiallyExists);
 
             SetDirectoryExists(imageDirectory, initiallyExists);
-            AssertValidation(first, !initiallyExists);
-            AssertValidation(second, !initiallyExists);
+            AssertValidation(first, true);
+            AssertValidation(second, true);
 
             settings.FilePath = alternateDirectory;
             settings.FilePath = imageDirectory;
@@ -111,12 +112,29 @@ namespace NINA.Test.Sequencer.SequenceItem.Imaging {
             AssertValidation(fullFrame, !initiallyExists);
             AssertValidation(subframe, !initiallyExists);
 
+            // pins: the first profile's missing directory is checked again and has appeared by now
             activeProfile = firstProfile;
-            AssertValidation(fullFrame, initiallyExists);
-            AssertValidation(subframe, initiallyExists);
+            AssertValidation(fullFrame, true);
+            AssertValidation(subframe, true);
             activeProfile = secondProfile;
             AssertValidation(fullFrame, !initiallyExists);
             AssertValidation(subframe, !initiallyExists);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Validate_MissingDirectoryIsFoundOnceItAppears(bool subframe) {
+            var settings = new ImageFileSettings { FilePath = imageDirectory };
+            activeProfile = CreateProfile(settings);
+            var exposure = CreateExposure(subframe);
+            AssertValidation(exposure, false);
+            AssertValidation(exposure, false);
+
+            SetDirectoryExists(imageDirectory, true);
+            AssertValidation(exposure, true);
+
+            SetDirectoryExists(imageDirectory, false);
+            AssertValidation(exposure, true);
         }
 
         private static IProfile CreateProfile(ImageFileSettings settings) {

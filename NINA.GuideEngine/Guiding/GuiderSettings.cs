@@ -42,7 +42,7 @@ public sealed record BacklashSettings
 public sealed record GuiderSettings
 {
     /// <summary>Guide exposure in milliseconds.</summary>
-    public double ExposureMs { get; init; } = 2000;
+    public double ExposureMs { get; init; } = 1000;
 
     /// <summary>Hardware binning.</summary>
     public int Binning { get; init; } = 1;

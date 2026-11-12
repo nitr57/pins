@@ -99,6 +99,9 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
         /// <summary>Guide with the current settings again at the end of the trials to detect changing conditions.</summary>
         public bool RepeatBaseline { get; set; } = true;
 
+        /// <summary>Also guide with only shorter exposures (trials E and E2) when the current one is 1.5 s or longer.</summary>
+        public bool ExposureTrial { get; set; } = true;
+
         /// <summary>Calibrate when a step needs a calibration and none is valid (otherwise such steps fail).</summary>
         public bool AllowCalibration { get; set; } = true;
     }
@@ -378,10 +381,10 @@ namespace NINA.Equipment.Equipment.MyGuider.Advanced {
 
     /// <summary>A guided trial of one settings set.</summary>
     public class AdvancedCoachTrial {
-        /// <summary>A (current), B (suggestion), C (variant), A2 (current again).</summary>
+        /// <summary>A (current), B (suggestion), C (variant), E and E2 (shorter exposures), A2 (current again).</summary>
         public string Id { get; set; }
 
-        /// <summary>current, suggestion, variant or currentRepeat.</summary>
+        /// <summary>current, suggestion, variant, exposure or currentRepeat.</summary>
         public string Kind { get; set; }
 
         /// <summary>Settings that differ from the current settings (empty for A/A2).</summary>

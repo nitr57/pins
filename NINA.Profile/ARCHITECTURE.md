@@ -59,7 +59,7 @@ This is also why many higher-level components subscribe to `ProfileChanged` inst
 
 ## Output-Path Validation
 
-`ImageFileSettings` checks directory existence when its default output path is initialized and whenever `FilePath` changes. The result is ready before the `FilePath` notification and is not serialized; loading or cloning a profile checks the path again. Reassigning an unchanged path does not check again. Filesystem changes alone do not refresh this result, including for relative paths.
+`ImageFileSettings` checks directory existence when its default output path is initialized and whenever `FilePath` changes. The result is ready before the `FilePath` notification and is not serialized; loading or cloning a profile checks the path again. Reassigning an unchanged path does not check again. A directory that was found stays valid until the path changes, including for relative paths. In pins a missing directory is checked again on every `IsFilePathValid` call until it is found, because the app starts at boot before removable drives are mounted.
 
 `ImageFileSettingsExtensions.IsFilePathValid` exposes the result through the existing `IImageFileSettings` contract without adding an interface member. Custom interface implementations retain direct filesystem validation. Consumers should read the active profile's settings each time rather than retaining an old profile's result. Actual image saving still performs its own filesystem operations and error handling.
 

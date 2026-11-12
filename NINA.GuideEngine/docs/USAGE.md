@@ -24,7 +24,7 @@ The internal guider runs inside pins (no PHD2 process). It appears in the guider
 |---|---|---|
 | `GuideSource` | `GuideCamera` (the guide camera slot) or `Simulator` (built-in simulator, no hardware) | `GuideCamera` |
 | `FocalLengthMm` | guide scope focal length (main scope FL with an OAG) | PHD2 focal length from the profile, else unknown |
-| `ExposureSeconds` | 1–4 s typical | PHD2 exposure from the profile, else 2 s |
+| `ExposureSeconds` | 1 s for most mounts, longer for a faint guide star | PHD2 exposure from the profile, else 1 s |
 | `Gain` | camera gain in the driver's native units (−1 = the guide camera's gain setting) | −1 (PHD2's gain is a percentage and is not carried over) |
 | `Binning` | 1 (2 for very long focal lengths) | 1 |
 | `DecGuideMode` | Auto / North / South / Off / Drift (see [Guiding](#3-guiding)) | PHD2 setting, else Auto |
@@ -108,9 +108,13 @@ curl "$H/set-setting?settingName=InternalGuiderSetting&newValue=MinSnr=8"  # any
   See [ALGORITHMS.md](ALGORITHMS.md#pulse-model).
 * **Periodic error prediction** (Predictive on RA, `PeriodicErrorPrediction`, on by default): learns the periodic error
   of the RA worm and corrects it before it shows. The worm period comes from `WormTeeth` (the teeth of the RA worm
-  wheel, e.g. 180 on an EQ6-R, 135 on an HEQ5), or is detected after about five worm turns (40 min for a 480 s worm) and
-  snapped to a whole tooth count once that is unambiguous; only a set or snapped period is taken for the worm's. Either
-  way the curve counts only once it stays the same from one worm turn to the next (two turns with `WormTeeth` set), so
+  wheel, e.g. 180 on an EQ6-R, 135 on an HEQ5), or from `WormPeriodSeconds` (the period in seconds, 180 to 1200 s, for
+  a drive whose period is no whole tooth count, e.g. the 856.5 s stage of a UMi17R; on a strain-wave gear whose curve
+  changes from turn to turn the curve may still never count) as `WormPeriodUnit` (`Teeth` by default, `Seconds`)
+  chooses, or is detected after about five worm turns (40 min for a 480 s worm) and snapped to a whole tooth
+  count once that is unambiguous; only a set or snapped period is taken for the worm's. A period in seconds is never
+  detected or snapped, but unlike a tooth count it doesn't give the phase after a meridian flip, which is learned anew.
+  Either way the curve counts only once it stays the same from one worm turn to the next (two turns with the period set), so
   that a wobble of the mount that comes and goes is not taken for periodic error. The turns add up while guiding stops
   and starts again (autofocus, a filter change) and the mount tracks on; a slew, a plate-solve sync or a meridian flip
   starts the count over, since a sync shifts the curve against the hour angle (without a mount connection, every start

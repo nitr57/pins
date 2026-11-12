@@ -71,6 +71,7 @@ public sealed partial class Guider : IAsyncDisposable
     private MountStateWatcher mountWatch;
     private CameraRetryPolicy cameraRetry;
     private ReacquirePolicy reacquire;
+    private SlowProcessingMonitor slowProcessing;
 
     private Task? loopTask;
     private CancellationTokenSource? loopCts;
@@ -118,7 +119,6 @@ public sealed partial class Guider : IAsyncDisposable
     private (double RaPx, double DecPx)? pendingCorrection;
     private double lastGoodMass;
     private double lastGoodSnr;
-    private DateTimeOffset lastSlowAlert = DateTimeOffset.MinValue;
 
     // a driver that rejects pulses may do so at every Dec reversal: alert once per interval, with the count
     private DateTimeOffset lastPulseRejectedAlert = DateTimeOffset.MinValue;
@@ -148,6 +148,7 @@ public sealed partial class Guider : IAsyncDisposable
         mountWatch = new MountStateWatcher(this.settings.Safety);
         cameraRetry = new CameraRetryPolicy(this.settings.Safety);
         reacquire = new ReacquirePolicy(this.settings.Safety);
+        slowProcessing = new SlowProcessingMonitor(this.settings.Safety);
         ApplySettings(this.settings, initial: true);
     }
 
@@ -892,10 +893,17 @@ public sealed partial class Guider : IAsyncDisposable
         cycleTimer.Processed(clock.UtcNow);
 
         double processingMs = sw.Elapsed.TotalMilliseconds;
-        if (processingMs > settings.Safety.SlowProcessingMs && (now - lastSlowAlert).TotalMinutes >= 5)
+        switch (slowProcessing.Record(TimeSpan.FromMilliseconds(clock.ElapsedMs), processingMs, out double medianMs))
         {
-            lastSlowAlert = now;
-            Alert(GuideErrorCode.FrameProcessingSlow, $"{processingMs:F0} ms");
+            case SlowProcessingVerdict.SlowMedian:
+                Alert(GuideErrorCode.FrameProcessingSlow, $"median {medianMs:F0} ms over the last minute, limit {settings.Safety.SlowProcessingMs:F0} ms");
+                break;
+            case SlowProcessingVerdict.SlowFrame:
+                int more = slowProcessing.UnreportedSlowFrames;
+                Alert(GuideErrorCode.SlowGuideFrame, more == 0
+                    ? $"{processingMs:F0} ms"
+                    : $"{processingMs:F0} ms; {more} more slow frame{(more == 1 ? "" : "s")} since the last note, up to {slowProcessing.UnreportedMaxMs:F0} ms");
+                break;
         }
 
         if (settings.FrameEventInterval > 0 && frame.FrameNumber % settings.FrameEventInterval == 0)
@@ -2181,9 +2189,11 @@ public sealed partial class Guider : IAsyncDisposable
             : NextAlgorithm(corrector.RaAlgorithm, old.RaAlgorithm, s.RaAlgorithm, GuideAxis.Ra, minMove, sameMinMove, samePixels);
         var dec = initial ? CreateAlgorithm(s.DecAlgorithm, GuideAxis.Dec, minMove)
             : NextAlgorithm(corrector.DecAlgorithm, old.DecAlgorithm, s.DecAlgorithm, GuideAxis.Dec, minMove, sameMinMove, samePixels);
-        if (ra is PredictiveAlgorithm freshRa && !ReferenceEquals(ra, corrector.RaAlgorithm) && storedPeriodicError is { } storedModel)
+        // a new algorithm starts from the stored curve, and so does the running one when its worm changed (that forgot its curve)
+        if (ra is PredictiveAlgorithm predictiveRa && storedPeriodicError is { } storedModel
+            && (!ReferenceEquals(ra, corrector.RaAlgorithm) || !SameWorm(old.RaAlgorithm, s.RaAlgorithm)))
         {
-            freshRa.RestorePeriodicError(storedModel);
+            predictiveRa.RestorePeriodicError(storedModel);
         }
         // The corrector, its limiter and the fixed backlash compensation stay for the guider's lifetime and take the new
         // values. Rebuilding them on every change (TNS, the coach) lost the limiter's grace after a dither (false limit
@@ -2253,6 +2263,7 @@ public sealed partial class Guider : IAsyncDisposable
             mountWatch = new MountStateWatcher(s.Safety);
             cameraRetry = new CameraRetryPolicy(s.Safety);
             reacquire = new ReacquirePolicy(s.Safety);
+            slowProcessing = new SlowProcessingMonitor(s.Safety);
         }
 
         if (!initial)
@@ -2302,6 +2313,12 @@ public sealed partial class Guider : IAsyncDisposable
         }
 
         return fresh;
+    }
+
+    private static bool SameWorm(AlgorithmSettings a, AlgorithmSettings b)
+    {
+        static double Get(AlgorithmSettings x, string name) => x.Parameters?.GetValueOrDefault(name) ?? 0;
+        return Get(a, "wormTeeth") == Get(b, "wormTeeth") && Get(a, "wormPeriod") == Get(b, "wormPeriod");
     }
 
     private static IGuideAlgorithm CreateAlgorithm(AlgorithmSettings a, GuideAxis axis, double minMove)
