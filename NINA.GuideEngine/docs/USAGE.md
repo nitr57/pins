@@ -24,7 +24,7 @@ The internal guider runs inside pins (no PHD2 process). It appears in the guider
 |---|---|---|
 | `GuideSource` | `GuideCamera` (the guide camera slot) or `Simulator` (built-in simulator, no hardware) | `GuideCamera` |
 | `FocalLengthMm` | guide scope focal length (main scope FL with an OAG) | PHD2 focal length from the profile, else unknown |
-| `ExposureSeconds` | 1–4 s typical | PHD2 exposure from the profile, else 2 s |
+| `ExposureSeconds` | 1 s for most mounts, longer for a faint guide star | PHD2 exposure from the profile, else 1 s |
 | `Gain` | camera gain in the driver's native units (−1 = the guide camera's gain setting) | −1 (PHD2's gain is a percentage and is not carried over) |
 | `Binning` | 1 (2 for very long focal lengths) | 1 |
 | `DecGuideMode` | Auto / North / South / Off / Drift (see [Guiding](#3-guiding)) | PHD2 setting, else Auto |

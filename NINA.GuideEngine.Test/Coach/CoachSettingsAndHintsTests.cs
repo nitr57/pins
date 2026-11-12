@@ -83,7 +83,7 @@ public class CoachSettingsAndHintsTests
         changed.Backlash.Should().Be(new BacklashSettings { Enabled = true, PulseMs = 600 });
         changed.MaxRaDurationMs.Should().Be(3000);
         changed.MultiStar.MultiStarEnabled.Should().BeFalse();
-        s.ExposureMs.Should().Be(2000, "the input is not modified");
+        s.ExposureMs.Should().Be(1000, "the input is not modified");
 
         var auto = CoachSettingsMap.Apply(changed, [new(CoachSettingNames.RaMinMove, "0"), new(CoachSettingNames.Gain, "-1")]);
         auto.RaAlgorithm.Parameters!.ContainsKey("minMove").Should().BeFalse();
@@ -241,6 +241,114 @@ public class CoachSettingsAndHintsTests
         raised.Should().Contain(h => h.Code == CoachCodes.HintLowSnr, "SNR dropped from 40 to 12");
         raised.Should().Contain(h => h.Code == CoachCodes.HintSeeingBound && h.Severity == CoachSeverities.Good);
         raised.Should().NotContain(h => h.Code == CoachCodes.HintRaOscillation || h.Code == CoachCodes.HintRaSluggish);
+    }
+
+    [Test]
+    public void Long_exposure_hint_shows_once_per_session_and_goes_with_a_shorter_exposure()
+    {
+        var hints = new LiveHintAnalyser();
+        var settings = new GuiderSettings { ExposureMs = 2500 };
+        var stats = Stats(oscillation: 0.4, rmsRa: 0.5);
+        var raised = new List<CoachFinding>();
+        for (int i = 0; i < 60; i++)
+        {
+            raised.AddRange(hints.Analyse(Input(T0.AddSeconds(2.5 * i), stats, settings)));
+        }
+
+        var hint = raised.Should().ContainSingle(h => h.Code == CoachCodes.HintLongExposure).Subject;
+        hint.Id.Should().Be(CoachCodes.HintLongExposure);
+        hint.Severity.Should().Be(CoachSeverities.Info);
+        hint.Parameters["exposureSeconds"].Should().Be(2.5);
+        hint.ExpiresAt.Should().BeNull("it stays until it is dismissed or its condition ends");
+        hint.Changes.Should().ContainSingle().Which.Should().Be(new CoachSettingChange(CoachSettingNames.ExposureSeconds, "1", "2.5"));
+
+        hints.Analyse(Input(T0.AddMinutes(30), stats, settings)).Should().BeEmpty("a one-time hint is not raised again in the session");
+        hints.GetActive(T0.AddMinutes(30)).Should().ContainSingle(h => h.Id == hint.Id);
+
+        hints.Analyse(Input(T0.AddMinutes(31), stats, settings with { ExposureMs = 1000 }));
+        hints.GetActive(T0.AddMinutes(31)).Should().BeEmpty("the exposure is short now");
+        hints.Analyse(Input(T0.AddMinutes(32), stats, settings)).Should().BeEmpty("raised once per guiding session");
+    }
+
+    [Test]
+    public void Long_exposure_hint_is_listed_only_while_guiding_with_a_long_exposure()
+    {
+        var hints = new LiveHintAnalyser();
+        var settings = new GuiderSettings { ExposureMs = 2500 };
+        var stats = Stats(oscillation: 0.4, rmsRa: 0.5);
+        for (int i = 0; i < 40; i++)
+        {
+            hints.Analyse(Input(T0.AddSeconds(2.5 * i), stats, settings));
+        }
+
+        var now = T0.AddMinutes(30);
+        hints.GetActive(now, 2.5).Should().ContainSingle(h => h.Id == CoachCodes.HintLongExposure);
+        hints.GetActive(now, 2.5, guiding: false).Should().BeEmpty("guiding stopped, and Analyse no longer runs to remove it");
+        hints.GetActive(now, 1.0).Should().BeEmpty("the exposure was shortened in the settings since the last frame");
+        hints.GetActive(now, 2.5).Should().ContainSingle("it is only hidden, e.g. for a resume after a pause");
+    }
+
+    [TestCase(2000, false)]
+    [TestCase(2001, true)]
+    [TestCase(1000, false)]
+    public void Long_exposure_hint_starts_above_2_seconds(double exposureMs, bool expected)
+    {
+        var hints = new LiveHintAnalyser();
+        var settings = new GuiderSettings { ExposureMs = exposureMs };
+        var raised = new List<CoachFinding>();
+        for (int i = 0; i < 40; i++)
+        {
+            raised.AddRange(hints.Analyse(Input(T0.AddSeconds(2 * i), Stats(oscillation: 0.4, rmsRa: 0.5), settings)));
+        }
+
+        raised.Any(h => h.Code == CoachCodes.HintLongExposure).Should().Be(expected);
+    }
+
+    [Test]
+    public void Dismissed_long_exposure_hint_is_reported_once_and_never_raised_again()
+    {
+        var hints = new LiveHintAnalyser();
+        var reported = new List<string>();
+        hints.PermanentlyDismissed += reported.Add;
+        var settings = new GuiderSettings { ExposureMs = 3000 };
+        var stats = Stats(oscillation: 0.4, rmsRa: 0.5);
+        for (int i = 0; i < 40; i++)
+        {
+            hints.Analyse(Input(T0.AddSeconds(3 * i), stats, settings));
+        }
+
+        hints.Dismiss(CoachCodes.HintLongExposure).Should().BeTrue();
+        hints.Dismiss(CoachCodes.HintLongExposure).Should().BeTrue();
+        reported.Should().Equal([CoachCodes.HintLongExposure], "reported once for the host to store");
+
+        hints.ResetSession();
+        var raised = new List<CoachFinding>();
+        for (int i = 0; i < 40; i++)
+        {
+            raised.AddRange(hints.Analyse(Input(T0.AddMinutes(60).AddSeconds(3 * i), stats, settings)));
+        }
+
+        raised.Should().NotContain(h => h.Code == CoachCodes.HintLongExposure, "a new guiding session does not bring it back");
+    }
+
+    [Test]
+    public void Stored_dismissals_suppress_only_one_time_hints()
+    {
+        var hints = new LiveHintAnalyser();
+        hints.SetSuppressed([CoachCodes.HintLongExposure, CoachCodes.HintRaOscillation]);
+        var reported = new List<string>();
+        hints.PermanentlyDismissed += reported.Add;
+        var settings = new GuiderSettings { ExposureMs = 3000 };
+        var raised = new List<CoachFinding>();
+        for (int i = 0; i < 40; i++)
+        {
+            raised.AddRange(hints.Analyse(Input(T0.AddSeconds(3 * i), Stats(oscillation: 0.8, rmsRa: 0.9), settings)));
+        }
+
+        raised.Should().NotContain(h => h.Code == CoachCodes.HintLongExposure, "dismissed in an earlier session");
+        raised.Should().Contain(h => h.Code == CoachCodes.HintRaOscillation, "normal hints are only dismissed per session");
+        hints.Dismiss(CoachCodes.HintRaOscillation).Should().BeTrue();
+        reported.Should().BeEmpty();
     }
 
     [TestCase(DecGuideMode.Drift)]

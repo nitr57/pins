@@ -181,4 +181,80 @@ public class SafetyTests
         r.IsPlausible(50000, 200).Should().BeFalse();
         r.IsPlausible(9000, 5).Should().BeFalse();
     }
+
+    [Test]
+    public void A_single_slow_frame_gets_a_note_at_most_every_5_minutes_and_no_warning()
+    {
+        // it raised the warning, which stayed on the guider page as the last error for the rest of the night
+        var m = new SlowProcessingMonitor(settings);
+        var reports = RecordSlowProcessing(m, Frames(0, 1200, 2, t => t is 100 or 110 or 500 ? 800 : 50));
+
+        reports.Should().Equal((100, SlowProcessingVerdict.SlowFrame), (500, SlowProcessingVerdict.SlowFrame));
+    }
+
+    [Test]
+    public void Slow_frames_for_a_minute_raise_the_warning_at_most_every_5_minutes()
+    {
+        var m = new SlowProcessingMonitor(settings);
+        var reports = RecordSlowProcessing(m, Frames(0, 700, 2, _ => 700));
+
+        // the first minute is not enough for a median: only the note
+        reports.Should().Equal(
+            (0, SlowProcessingVerdict.SlowFrame),
+            (60, SlowProcessingVerdict.SlowMedian),
+            (360, SlowProcessingVerdict.SlowMedian),
+            (660, SlowProcessingVerdict.SlowMedian));
+        m.Record(TimeSpan.FromSeconds(702), 700, out double median);
+        median.Should().Be(700);
+
+        // after more than a minute without frames (guiding stopped) the minute starts over
+        RecordSlowProcessing(m, Frames(1000, 1100, 2, _ => 700)).Should().Equal(
+            (1000, SlowProcessingVerdict.SlowFrame),
+            (1060, SlowProcessingVerdict.SlowMedian));
+    }
+
+    [Test]
+    public void The_warning_needs_the_median_above_the_limit()
+    {
+        // fewer than half of the frames slow: notes only
+        var m = new SlowProcessingMonitor(settings);
+        RecordSlowProcessing(m, Frames(0, 1200, 2, t => t % 6 == 0 ? 900 : 100))
+            .Should().OnlyContain(r => r.Verdict == SlowProcessingVerdict.SlowFrame);
+
+        // 40 s guide exposures: a minute holds two frames, and one slow frame of them is no median
+        m = new SlowProcessingMonitor(settings);
+        RecordSlowProcessing(m, Frames(0, 1200, 40, t => t % 80 == 40 ? 900 : 100))
+            .Should().OnlyContain(r => r.Verdict == SlowProcessingVerdict.SlowFrame);
+    }
+
+    [Test]
+    public void A_note_counts_the_slow_frames_since_the_last_one()
+    {
+        // a lone outlier and forty slow frames in five minutes must read differently in the log
+        var m = new SlowProcessingMonitor(settings);
+        m.Record(TimeSpan.FromSeconds(0), 600, out _).Should().Be(SlowProcessingVerdict.SlowFrame);
+        m.UnreportedSlowFrames.Should().Be(0);
+
+        m.Record(TimeSpan.FromSeconds(100), 900, out _).Should().Be(SlowProcessingVerdict.None);
+        m.Record(TimeSpan.FromSeconds(200), 2100, out _).Should().Be(SlowProcessingVerdict.None);
+        m.Record(TimeSpan.FromSeconds(250), 100, out _).Should().Be(SlowProcessingVerdict.None);
+        m.Record(TimeSpan.FromSeconds(300), 700, out _).Should().Be(SlowProcessingVerdict.SlowFrame);
+        (m.UnreportedSlowFrames, m.UnreportedMaxMs).Should().Be((2, 2100));
+
+        m.Record(TimeSpan.FromSeconds(600), 800, out _).Should().Be(SlowProcessingVerdict.SlowFrame);
+        m.UnreportedSlowFrames.Should().Be(0);
+    }
+
+    private static IEnumerable<(double T, double Ms)> Frames(double from, double to, double interval, Func<double, double> ms)
+    {
+        for (double t = from; t <= to; t += interval)
+        {
+            yield return (t, ms(t));
+        }
+    }
+
+    private static List<(double T, SlowProcessingVerdict Verdict)> RecordSlowProcessing(SlowProcessingMonitor m, IEnumerable<(double T, double Ms)> frames) =>
+        frames.Select(f => (f.T, Verdict: m.Record(TimeSpan.FromSeconds(f.T), f.Ms, out _)))
+            .Where(r => r.Verdict != SlowProcessingVerdict.None)
+            .ToList();
 }

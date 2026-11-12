@@ -204,12 +204,29 @@ public class InternalGuiderOptionsTests
     }
 
     [Test]
+    public void Dismissed_one_time_hints_are_kept_in_the_plugin_settings()
+    {
+        var store = new Dictionary<string, string>();
+        var (o, _) = Create(store);
+        o.DismissedHints.Should().BeEmpty();
+
+        o.AddDismissedHint("hint.longExposure");
+        o.AddDismissedHint("hint.longExposure");
+        o.AddDismissedHint("hint.other");
+
+        o.DismissedHints.Should().BeEquivalentTo(["hint.longExposure", "hint.other"]);
+        store["DismissedHints"].Should().Be("hint.longExposure,hint.other");
+        var (again, _) = Create(store);
+        again.DismissedHints.Should().BeEquivalentTo(["hint.longExposure", "hint.other"], "another connect reads them back");
+    }
+
+    [Test]
     public void Defaults_without_phd2_settings()
     {
         var (o, _) = Create();
         o.GetString("GuideSource").Should().Be(InternalGuiderOptions.GuideCameraSource);
         o.IsSimulator.Should().BeFalse();
-        o.GetDouble("ExposureSeconds").Should().Be(2);
+        o.GetDouble("ExposureSeconds").Should().Be(1);
         var s = o.ToEngineSettings();
         s.RaAlgorithm.Kind.Should().Be(GuideAlgorithmKind.Predictive);
         s.DecAlgorithm.Kind.Should().Be(GuideAlgorithmKind.Predictive);

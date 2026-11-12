@@ -76,8 +76,8 @@ namespace NINA.Test.ProfileTest {
 
             restored.ImageFileSettings.Should().NotBeSameAs(original.ImageFileSettings);
             restored.ImageFileSettings.FilePath.Should().Be(imageDirectory);
-            if (initiallyExists) Directory.CreateDirectory(imageDirectory);
-            else Directory.Delete(imageDirectory);
+            // pins: a missing directory is checked again, so it is only taken away, not brought back
+            if (!initiallyExists) Directory.Delete(imageDirectory);
             restored.ImageFileSettings.IsFilePathValid().Should().Be(!initiallyExists,
                 "deserialization must refresh the result before its first consumer reads it");
             original.ImageFileSettings.IsFilePathValid().Should().Be(initiallyExists,

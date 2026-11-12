@@ -49,7 +49,7 @@ namespace NINA.Profile {
         private string filePath;
 
         [field: NonSerialized]
-        internal bool FilePathExists { get; private set; }
+        internal bool FilePathExists { get; set; }
 
         [DataMember]
         public string FilePath {

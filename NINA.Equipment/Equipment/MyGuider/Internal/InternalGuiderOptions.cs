@@ -96,7 +96,7 @@ internal sealed class InternalGuiderOptions
         new("GuideSource", "Guide frames from", "Camera", "enum", GuideCameraSource, Basic: true, Options: [GuideCameraSource, SimulatorSource],
             RequiresReconnect: true,
             Description: "GuideCamera: the camera in the guide camera slot of the equipment. Simulator: the built-in simulator, for testing without hardware."),
-        new("ExposureSeconds", "Exposure", "Camera", "double", "2", Basic: true, Unit: "s", Min: 0.01, Max: 30,
+        new("ExposureSeconds", "Exposure", "Camera", "double", "1", Basic: true, Unit: "s", Min: 0.01, Max: 30,
             Phd2Fallback: s => s.PHD2ExposureMs is { } ms && ms > 0 ? (ms / 1000.0).ToString(Inv) : null),
         new("Gain", "Gain", "Camera", "int", "-1", Basic: true, Min: -1, Max: 10000,
             Description: "-1 uses the gain of the guide camera's settings. (PHD2's gain is a percentage, so it is not carried over.)"),
@@ -439,6 +439,48 @@ internal sealed class InternalGuiderOptions
 
     /// <summary>Names of the settings shown in the basic view.</summary>
     public static IReadOnlyCollection<string> BasicSettings { get; } = Definitions.Where(d => d.Basic).Select(d => d.Name).ToHashSet();
+
+    // not a setting: ids of one-time live hints the user dismissed or applied (LiveHintAnalyser.IsOneTime), comma-separated
+    private const string DismissedHintsKey = "DismissedHints";
+
+    /// <summary>One-time live hints dismissed or applied in this profile; they are not shown again.</summary>
+    public IReadOnlyCollection<string> DismissedHints
+    {
+        get
+        {
+            lock (gate)
+            {
+                return ReadDismissedHints();
+            }
+        }
+    }
+
+    /// <summary>Remembers a dismissed one-time hint in the profile.</summary>
+    public void AddDismissedHint(string id)
+    {
+        lock (gate)
+        {
+            var ids = ReadDismissedHints();
+            if (ids.Add(id))
+            {
+                Accessor.SetValueString(DismissedHintsKey, string.Join(",", ids.Order(StringComparer.Ordinal)));
+            }
+        }
+    }
+
+    private HashSet<string> ReadDismissedHints()
+    {
+        try
+        {
+            return Accessor.GetValueString(DismissedHintsKey, string.Empty)
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToHashSet(StringComparer.Ordinal);
+        }
+        catch
+        {
+            // profile not ready
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+    }
 
     public bool IsSimulator => GetString("GuideSource") == SimulatorSource;
 
