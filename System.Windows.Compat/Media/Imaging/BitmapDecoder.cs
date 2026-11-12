@@ -45,37 +45,14 @@ namespace System.Windows.Media.Imaging {
         }
 
         public TiffBitmapDecoder(Uri uri, BitmapCreateOptions createOptions, BitmapCacheOption cacheOption) {
-            if (uri.IsFile) {
-                LoadFromFile(uri.LocalPath);
-            }
+            Frames.Add(new BitmapFrame(ImageCodec.ReadFile(uri), foreignMat: false));
         }
 
         private void LoadFromStream(Stream stream) {
-            // Read stream into memory
-            byte[] buffer;
-            if (stream is MemoryStream ms) {
-                buffer = ms.ToArray();
-            } else {
-                using (var memStream = new MemoryStream()) {
-                    stream.CopyTo(memStream);
-                    buffer = memStream.ToArray();
-                }
-            }
+            // A MemoryStream is decoded whole (as before), any other stream from its position.
+            byte[] buffer = stream is MemoryStream ms ? ms.ToArray() : ImageCodec.ReadToEnd(stream);
 
-            // Decode using OpenCV
-            Mat mat = Cv2.ImDecode(buffer, ImreadModes.Unchanged);
-            if (mat != null && !mat.Empty()) {
-                var frame = new BitmapFrame(mat, foreignMat: false);
-                Frames.Add(frame);
-            }
-        }
-
-        private void LoadFromFile(string filePath) {
-            Mat mat = Cv2.ImRead(filePath, ImreadModes.Unchanged);
-            if (mat != null && !mat.Empty()) {
-                var frame = new BitmapFrame(mat, foreignMat: false);
-                Frames.Add(frame);
-            }
+            Frames.Add(new BitmapFrame(ImageCodec.Decode(buffer), foreignMat: false));
         }
     }
 
@@ -84,13 +61,7 @@ namespace System.Windows.Media.Imaging {
     /// </summary>
     public class GifBitmapDecoder : BitmapDecoder {
         public GifBitmapDecoder(Uri uri, BitmapCreateOptions createOptions, BitmapCacheOption cacheOption) {
-            if (uri.IsFile) {
-                Mat mat = Cv2.ImRead(uri.LocalPath, ImreadModes.Unchanged);
-                if (mat != null && !mat.Empty()) {
-                    var frame = new BitmapFrame(mat, foreignMat: false);
-                    Frames.Add(frame);
-                }
-            }
+            Frames.Add(new BitmapFrame(ImageCodec.ReadFile(uri), foreignMat: false));
         }
     }
 
@@ -99,29 +70,12 @@ namespace System.Windows.Media.Imaging {
     /// </summary>
     public class JpegBitmapDecoder : BitmapDecoder {
         public JpegBitmapDecoder(Uri uri, BitmapCreateOptions createOptions, BitmapCacheOption cacheOption) {
-            if (uri.IsFile) {
-                Mat mat = Cv2.ImRead(uri.LocalPath, ImreadModes.Unchanged);
-                if (mat != null && !mat.Empty()) {
-                    var frame = new BitmapFrame(mat, foreignMat: false);
-                    Frames.Add(frame);
-                }
-            }
+            Frames.Add(new BitmapFrame(ImageCodec.ReadFile(uri), foreignMat: false));
         }
 
         public JpegBitmapDecoder(Stream stream, BitmapCreateOptions createOptions, BitmapCacheOption cacheOption) {
-            byte[] data = new byte[stream.Length - stream.Position];
-            // A single Read can return fewer bytes than requested (network/chunked streams) -
-            // loop until the buffer is full, matching BitmapImage.SetSource's read loop.
-            int offset = 0;
-            int bytesRead;
-            while (offset < data.Length && (bytesRead = stream.Read(data, offset, data.Length - offset)) > 0) {
-                offset += bytesRead;
-            }
-            Mat mat = Cv2.ImDecode(data, ImreadModes.Unchanged);
-            if (mat != null && !mat.Empty()) {
-                var frame = new BitmapFrame(mat, foreignMat: false);
-                Frames.Add(frame);
-            }
+            // From the stream's position, also for a stream that can't seek or reads in chunks.
+            Frames.Add(new BitmapFrame(ImageCodec.Decode(ImageCodec.ReadToEnd(stream)), foreignMat: false));
         }
     }
 
@@ -130,13 +84,7 @@ namespace System.Windows.Media.Imaging {
     /// </summary>
     public class PngBitmapDecoder : BitmapDecoder {
         public PngBitmapDecoder(Uri uri, BitmapCreateOptions createOptions, BitmapCacheOption cacheOption) {
-            if (uri.IsFile) {
-                Mat mat = Cv2.ImRead(uri.LocalPath, ImreadModes.Unchanged);
-                if (mat != null && !mat.Empty()) {
-                    var frame = new BitmapFrame(mat, foreignMat: false);
-                    Frames.Add(frame);
-                }
-            }
+            Frames.Add(new BitmapFrame(ImageCodec.ReadFile(uri), foreignMat: false));
         }
     }
 

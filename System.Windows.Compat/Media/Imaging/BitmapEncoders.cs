@@ -51,8 +51,7 @@ namespace System.Windows.Media.Imaging {
             using var frameLease = frame.LeaseMat();
             Mat mat = frameLease.Mat;
 
-            // Encode as TIFF using OpenCV
-            Cv2.ImEncode(".tif", mat, out byte[] buffer);
+            byte[] buffer = ImageCodec.Encode(".tif", mat);
             stream.Write(buffer, 0, buffer.Length);
         }
     }
@@ -70,23 +69,7 @@ namespace System.Windows.Media.Imaging {
             using var frameLease = frame.LeaseMat();
             Mat mat = frameLease.Mat;
 
-            if (mat == null) {
-                throw new InvalidOperationException("Mat is null");
-            }
-
-            if (mat.Empty()) {
-                throw new InvalidOperationException("Mat is empty");
-            }
-
-            if (mat.Data == IntPtr.Zero) {
-                throw new InvalidOperationException("Mat data pointer is null");
-            }
-
-            var encodingParams = new ImageEncodingParam[] {
-                new ImageEncodingParam(ImwriteFlags.PngCompression, 3)
-            };
-
-            Cv2.ImEncode(".png", mat, out byte[] buffer, encodingParams);
+            byte[] buffer = ImageCodec.Encode(".png", mat, new ImageEncodingParam(ImwriteFlags.PngCompression, 3));
             stream.Write(buffer, 0, buffer.Length);
         }
     }
@@ -107,6 +90,10 @@ namespace System.Windows.Media.Imaging {
             using var frameLease = frame.LeaseMat();
             Mat mat = frameLease.Mat;
 
+            if (mat == null || mat.Empty()) {
+                throw new InvalidOperationException("Cannot encode an empty image as .jpg.");
+            }
+
             // JPEG only supports 8-bit, so convert if necessary
             Mat matToEncode = mat;
             bool needsCleanup = false;
@@ -119,13 +106,7 @@ namespace System.Windows.Media.Imaging {
             }
 
             try {
-                // Set JPEG quality
-                var encodingParams = new ImageEncodingParam[] {
-                    new ImageEncodingParam(ImwriteFlags.JpegQuality, QualityLevel)
-                };
-
-                // Encode as JPEG using OpenCV
-                Cv2.ImEncode(".jpg", matToEncode, out byte[] buffer, encodingParams);
+                byte[] buffer = ImageCodec.Encode(".jpg", matToEncode, new ImageEncodingParam(ImwriteFlags.JpegQuality, QualityLevel));
                 stream.Write(buffer, 0, buffer.Length);
             } finally {
                 if (needsCleanup) {

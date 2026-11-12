@@ -15,6 +15,7 @@
 using OpenCvSharp;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Linq;
 
 namespace System.Drawing
 {
@@ -422,7 +423,8 @@ namespace System.Drawing
             {
                 throw new InvalidOperationException("Cannot save an empty bitmap");
             }
-            Cv2.ImWrite(filename, _mat);
+
+            WriteFile(filename, null);
         }
 
         /// <summary>
@@ -436,16 +438,7 @@ namespace System.Drawing
             }
 
             // For encoder-based save, use OpenCV's ImWrite which is more reliable on Linux
-            // Extract quality if provided
-            int quality = 95;
-            if (encoderParams != null && encoderParams.Param != null && encoderParams.Param.Length > 0)
-            {
-                var qualityParam = encoderParams.Param[0];
-                if (qualityParam != null)
-                {
-                    quality = Math.Clamp((int)qualityParam.Value, 0, 100);
-                }
-            }
+            int quality = QualityOf(encoderParams);
 
             // Determine extension from filename or encoder
             string extension = Path.GetExtension(filename).ToLowerInvariant();
@@ -467,12 +460,7 @@ namespace System.Drawing
                 filename = Path.ChangeExtension(filename, extension);
             }
 
-            // Use OpenCV ImEncode with quality parameters
-            var encodeParams = new int[] { (int)ImwriteFlags.JpegQuality, quality };
-            if (!Cv2.ImWrite(filename, _mat, encodeParams))
-            {
-                throw new IOException($"Failed to save bitmap to {filename}");
-            }
+            WriteFile(filename, new[] { (int)ImwriteFlags.JpegQuality, quality });
         }
 
         /// <summary>
@@ -486,7 +474,7 @@ namespace System.Drawing
             }
             // OpenCV's ImWrite determines format from filename extension
             // Format parameter is for compatibility but not used
-            Cv2.ImWrite(filename, _mat);
+            WriteFile(filename, null);
         }
 
         /// <summary>
@@ -506,8 +494,7 @@ namespace System.Drawing
             else if (format == Imaging.ImageFormat.Tiff) ext = ".tiff";
             else if (format == Imaging.ImageFormat.Gif) ext = ".gif";
 
-            // Encode to memory buffer
-            Cv2.ImEncode(ext, _mat, out byte[] buffer);
+            byte[] buffer = EncodeToBuffer(ext, null);
             stream.Write(buffer, 0, buffer.Length);
         }
 
@@ -552,21 +539,64 @@ namespace System.Drawing
                 }
             }
 
-            // For JPEG with quality parameter, extract quality value
-            int quality = 95;
-            if (encoderParams != null && encoderParams.Param != null && encoderParams.Param.Length > 0)
+            int quality = QualityOf(encoderParams);
+            byte[] buffer = EncodeToBuffer(ext, new[] { (int)ImwriteFlags.JpegQuality, quality });
+            stream.Write(buffer, 0, buffer.Length);
+        }
+
+        /// <summary>The JPEG quality among the encoder parameters (found by GDI+'s Quality GUID), else 95.</summary>
+        private static int QualityOf(Imaging.EncoderParameters encoderParams)
+        {
+            var qualityParam = encoderParams?.Param?.FirstOrDefault(parameter =>
+                parameter?.Encoder != null && parameter.Encoder.Guid == Imaging.Encoder.Quality.Guid);
+
+            return qualityParam == null ? 95 : (int)Math.Clamp(qualityParam.Value, 0L, 100L);
+        }
+
+        /// <summary>Writes the file or throws as GDI+ does when it can't (OpenCV only returns false or throws its own).</summary>
+        private void WriteFile(string filename, int[] parameters)
+        {
+            bool written;
+
+            try
             {
-                var qualityParam = encoderParams.Param[0];
-                if (qualityParam != null)
-                {
-                    quality = Math.Clamp((int)qualityParam.Value, 0, 100);
-                }
+                written = parameters == null
+                    ? Cv2.ImWrite(filename, _mat)
+                    : Cv2.ImWrite(filename, _mat, parameters);
+            }
+            catch (OpenCVException ex)
+            {
+                throw new System.Runtime.InteropServices.ExternalException($"A generic error occurred in GDI+. OpenCV could not write {filename}: {ex.Message}", ex);
             }
 
-            // Encode to memory buffer with quality parameter
-            var encodeParams = new int[] { (int)ImwriteFlags.JpegQuality, quality };
-            Cv2.ImEncode(ext, _mat, out byte[] buffer, encodeParams);
-            stream.Write(buffer, 0, buffer.Length);
+            if (!written)
+            {
+                throw new System.Runtime.InteropServices.ExternalException($"A generic error occurred in GDI+. OpenCV could not write {filename}.");
+            }
+        }
+
+        private byte[] EncodeToBuffer(string extension, int[] parameters)
+        {
+            bool encoded;
+            byte[] buffer;
+
+            try
+            {
+                encoded = parameters == null
+                    ? Cv2.ImEncode(extension, _mat, out buffer)
+                    : Cv2.ImEncode(extension, _mat, out buffer, parameters);
+            }
+            catch (OpenCVException ex)
+            {
+                throw new System.Runtime.InteropServices.ExternalException($"A generic error occurred in GDI+. OpenCV could not encode the bitmap as {extension}: {ex.Message}", ex);
+            }
+
+            if (!encoded || buffer.Length == 0)
+            {
+                throw new System.Runtime.InteropServices.ExternalException($"A generic error occurred in GDI+. OpenCV could not encode the bitmap as {extension}.");
+            }
+
+            return buffer;
         }
 
         public override void Dispose() => _mat?.Dispose();

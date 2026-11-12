@@ -525,20 +525,11 @@ namespace System.Windows.Media.Imaging {
                 return;
             }
 
-            try {
-                string path = UriSource.IsAbsoluteUri && UriSource.IsFile ? UriSource.LocalPath : UriSource.ToString();
-                var mat = OpenCvSharp.Cv2.ImRead(path, OpenCvSharp.ImreadModes.Unchanged);
-                if (mat != null && !mat.Empty()) {
-                    _mat?.Dispose();
-                    _mat = mat;
-                    AddMemoryPressure();
-                } else {
-                    mat?.Dispose();
-                }
-            } catch {
-                // Malformed/unsupported URI - leave the image empty, matching SetSource's
-                // silent-failure behavior on a bad stream.
-            }
+            // As WPF: a missing file, a URI that is no file or data that can't be decoded throws (see ImageCodec).
+            var mat = ImageCodec.ReadFile(UriSource);
+            _mat?.Dispose();
+            _mat = mat;
+            AddMemoryPressure();
         }
 
         /// <summary>
@@ -575,24 +566,21 @@ namespace System.Windows.Media.Imaging {
         }
 
         public void SetSource(System.IO.Stream stream) {
-            // Load image from stream using OpenCV
-            if (stream != null && stream.CanSeek) {
-                stream.Position = 0;
-                var bytes = new byte[stream.Length];
-                int bytesRead = 0;
-                int offset = 0;
-                while (offset < bytes.Length && (bytesRead = stream.Read(bytes, offset, bytes.Length - offset)) > 0) {
-                    offset += bytesRead;
-                }
-                var mat = OpenCvSharp.Cv2.ImDecode(bytes, OpenCvSharp.ImreadModes.Unchanged);
-                if (mat != null && !mat.Empty()) {
-                    _mat?.Dispose();
-                    _mat = mat;
-                    AddMemoryPressure();
-                } else {
-                    mat?.Dispose();
-                }
+            if (stream == null) {
+                return;
             }
+
+            // The whole stream, as this shim has always read it (WPF reads from the position); one that can't seek is read
+            // from where it stands.
+            if (stream.CanSeek) {
+                stream.Position = 0;
+            }
+
+            // As WPF: data that can't be decoded throws (see ImageCodec) instead of leaving the image empty.
+            var mat = ImageCodec.Decode(ImageCodec.ReadToEnd(stream));
+            _mat?.Dispose();
+            _mat = mat;
+            AddMemoryPressure();
         }
     }
 

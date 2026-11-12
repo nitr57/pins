@@ -195,5 +195,179 @@ namespace NINA.Test.SystemWindowsCompat {
             frame.CopyPixels(output, 6, 0);
             Assert.That(output, Is.EqualTo(input));
         }
+
+        // ----- failures throw as in WPF instead of giving an empty image or stream -----
+
+        private static byte[] PngBytes() {
+            using var source = CreateGray8(4, 4, new byte[16]);
+            using var stream = Encode(new PngBitmapEncoder(), source);
+
+            return stream.ToArray();
+        }
+
+        private static string TempFile(byte[] content) {
+            string path = Path.Combine(Path.GetTempPath(), $"pins_codec_test_{Guid.NewGuid():N}.png");
+            File.WriteAllBytes(path, content);
+
+            return path;
+        }
+
+        [Test]
+        public void BitmapImage_TruncatedStream_ThrowsFileFormatException() {
+            byte[] png = PngBytes();
+            using var truncated = new MemoryStream(png, 0, png.Length / 2);
+            var image = new BitmapImage();
+
+            image.BeginInit();
+            image.StreamSource = truncated;
+
+            Assert.That(() => image.EndInit(), Throws.InstanceOf<FileFormatException>());
+        }
+
+        [Test]
+        public void BitmapImage_EmptyStream_ThrowsFileFormatException() {
+            var image = new BitmapImage();
+
+            Assert.That(() => image.SetSource(new MemoryStream()), Throws.InstanceOf<FileFormatException>());
+        }
+
+        [Test]
+        public void BitmapImage_StreamThatCannotSeek_IsDecoded() {
+            using var stream = new ForwardOnlyStream(PngBytes());
+            var image = new BitmapImage();
+
+            image.SetSource(stream);
+
+            using (image) {
+                Assert.That(image.PixelWidth, Is.EqualTo(4));
+            }
+        }
+
+        [Test]
+        public void JpegDecoder_ReadsFromTheStreamsPosition() {
+            using var source = CreateGray8(4, 4, new byte[16]);
+            using var jpeg = Encode(new JpegBitmapEncoder(), source);
+            byte[] prefixed = [1, 2, 3, .. jpeg.ToArray()];
+
+            using var stream = new MemoryStream(prefixed);
+            stream.Position = 3;
+            var fromMemory = new JpegBitmapDecoder(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+
+            using var forwardOnly = new ForwardOnlyStream(prefixed);
+            forwardOnly.ReadExactly(new byte[3]);
+            var fromForwardOnly = new JpegBitmapDecoder(forwardOnly, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+
+            Assert.That(fromMemory.Frames[0].PixelWidth, Is.EqualTo(4));
+            Assert.That(fromForwardOnly.Frames[0].PixelWidth, Is.EqualTo(4));
+        }
+
+        [Test]
+        public void BitmapImage_ZeroByteFile_ThrowsFileFormatException() {
+            string path = TempFile([]);
+
+            try {
+                var image = new BitmapImage();
+                image.BeginInit();
+                image.UriSource = new Uri(path);
+
+                Assert.That(() => image.EndInit(), Throws.InstanceOf<FileFormatException>());
+            } finally {
+                File.Delete(path);
+            }
+        }
+
+        [Test]
+        public void BitmapImage_MissingFile_ThrowsFileNotFoundException() {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.UriSource = new Uri(Path.Combine(Path.GetTempPath(), $"pins_missing_{Guid.NewGuid():N}.png"));
+
+            Assert.That(() => image.EndInit(), Throws.InstanceOf<FileNotFoundException>());
+        }
+
+        [Test]
+        public void BitmapImage_WebUri_IsNotSupported() {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.UriSource = new Uri("https://example.invalid/tile.png");
+
+            Assert.That(() => image.EndInit(), Throws.InstanceOf<NotSupportedException>());
+        }
+
+        [Test]
+        public void Decoders_DataThatIsNoImage_ThrowFileFormatException() {
+            string path = TempFile(System.Text.Encoding.ASCII.GetBytes("not an image"));
+
+            try {
+                var uri = new Uri(path);
+
+                Assert.That(() => new PngBitmapDecoder(uri, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), Throws.InstanceOf<FileFormatException>());
+                Assert.That(() => new JpegBitmapDecoder(uri, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), Throws.InstanceOf<FileFormatException>());
+                Assert.That(() => new TiffBitmapDecoder(uri, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), Throws.InstanceOf<FileFormatException>());
+                Assert.That(() => new GifBitmapDecoder(uri, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), Throws.InstanceOf<FileFormatException>());
+
+                using var stream = new MemoryStream(File.ReadAllBytes(path));
+
+                Assert.That(() => new JpegBitmapDecoder(stream, BitmapCreateOptions.None, BitmapCacheOption.OnLoad), Throws.InstanceOf<FileFormatException>());
+            } finally {
+                File.Delete(path);
+            }
+        }
+
+        [Test]
+        public void Encoders_EmptyImage_ThrowInvalidOperationException() {
+            using var empty = new BitmapSource(new OpenCvSharp.Mat());
+
+            foreach (BitmapEncoder encoder in new BitmapEncoder[] { new PngBitmapEncoder(), new JpegBitmapEncoder(), new TiffBitmapEncoder() }) {
+                encoder.Frames.Add(BitmapFrame.Create(empty));
+
+                Assert.That(() => encoder.Save(new MemoryStream()), Throws.InstanceOf<InvalidOperationException>(), encoder.GetType().Name);
+            }
+        }
+
+        /// <summary>A stream that can only be read forward and has no length, as a network response.</summary>
+        private sealed class ForwardOnlyStream : Stream {
+
+            private readonly MemoryStream inner;
+
+            public ForwardOnlyStream(byte[] buffer) {
+                inner = new MemoryStream(buffer);
+            }
+
+            public override bool CanRead => true;
+
+            public override bool CanSeek => false;
+
+            public override bool CanWrite => false;
+
+            public override long Length => throw new NotSupportedException();
+
+            public override long Position {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count) {
+                // A network stream hands out what has arrived: at most a few bytes per read.
+                return inner.Read(buffer, offset, Math.Min(count, 7));
+            }
+
+            public override void Flush() {
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing) {
+                if (disposing) {
+                    inner.Dispose();
+                }
+
+                base.Dispose(disposing);
+            }
+        }
     }
 }

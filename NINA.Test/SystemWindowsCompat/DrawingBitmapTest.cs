@@ -252,5 +252,46 @@ namespace NINA.Test.SystemWindowsCompat {
 
             Assert.That(bitmap.GetPixel(0, 0).R, Is.EqualTo(0));
         }
+
+        [Test]
+        public void Save_IntoAMissingFolder_ThrowsAsGdiPlus() {
+            var path = Path.Combine(Path.GetTempPath(), $"pins_missing_{Guid.NewGuid():N}", "image.png");
+            using var bitmap = new Bitmap(4, 4, PixelFormat.Format24bppRgb);
+
+            Assert.That(() => bitmap.Save(path), Throws.InstanceOf<System.Runtime.InteropServices.ExternalException>());
+            Assert.That(() => bitmap.Save(path, ImageFormat.Png), Throws.InstanceOf<System.Runtime.InteropServices.ExternalException>());
+        }
+
+        [Test]
+        public void SaveToStream_TakesTheQualityParameter_NotJustTheFirst() {
+            using var bitmap = new Bitmap(64, 64, PixelFormat.Format24bppRgb);
+
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    bitmap.SetPixel(x, y, Color.FromArgb((x * 37) % 256, (y * 53) % 256, (x * y) % 256));
+                }
+            }
+
+            ImageCodecInfo jpeg = ImageCodecInfo.GetImageEncoders().First(codec => codec.FormatID == ImageFormat.Jpeg.Guid);
+
+            long Size(params EncoderParameter[] parameters) {
+                var encoderParameters = new EncoderParameters(parameters.Length);
+
+                for (int i = 0; i < parameters.Length; i++) {
+                    encoderParameters.Param[i] = parameters[i];
+                }
+
+                using var stream = new MemoryStream();
+                bitmap.Save(stream, jpeg, encoderParameters);
+
+                return stream.Length;
+            }
+
+            // Another parameter first must not be read as the quality.
+            long lowQuality = Size(new EncoderParameter(Encoder.Compression, 100), new EncoderParameter(Encoder.Quality, 5));
+            long defaultQuality = Size(new EncoderParameter(Encoder.Compression, 5));
+
+            Assert.That(lowQuality, Is.LessThan(defaultQuality));
+        }
     }
 }
