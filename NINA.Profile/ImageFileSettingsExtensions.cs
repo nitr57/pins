@@ -19,10 +19,21 @@ namespace NINA.Profile {
     public static class ImageFileSettingsExtensions {
         /// <summary>
         /// Returns the directory result recorded when the output path was configured.
+        /// A missing directory is checked again, since it can appear later (a drive mounted after the start).
         /// Custom settings implementations retain direct filesystem validation.
         /// </summary>
-        public static bool IsFilePathValid(this IImageFileSettings settings) => settings.GetType() == typeof(ImageFileSettings)
-            ? ((ImageFileSettings)settings).FilePathExists
-            : Directory.Exists(settings.FilePath);
+        public static bool IsFilePathValid(this IImageFileSettings settings) {
+            if (settings.GetType() != typeof(ImageFileSettings)) {
+                return Directory.Exists(settings.FilePath);
+            }
+
+            var imageFileSettings = (ImageFileSettings)settings;
+
+            if (!imageFileSettings.FilePathExists) {
+                imageFileSettings.FilePathExists = Directory.Exists(imageFileSettings.FilePath);
+            }
+
+            return imageFileSettings.FilePathExists;
+        }
     }
 }
