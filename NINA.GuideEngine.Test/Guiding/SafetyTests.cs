@@ -204,7 +204,7 @@ public class SafetyTests
             (60, SlowProcessingVerdict.SlowMedian),
             (360, SlowProcessingVerdict.SlowMedian),
             (660, SlowProcessingVerdict.SlowMedian));
-        m.Record(T0.AddSeconds(702), 700, out double median);
+        m.Record(TimeSpan.FromSeconds(702), 700, out double median);
         median.Should().Be(700);
 
         // after more than a minute without frames (guiding stopped) the minute starts over
@@ -227,6 +227,24 @@ public class SafetyTests
             .Should().OnlyContain(r => r.Verdict == SlowProcessingVerdict.SlowFrame);
     }
 
+    [Test]
+    public void A_note_counts_the_slow_frames_since_the_last_one()
+    {
+        // a lone outlier and forty slow frames in five minutes must read differently in the log
+        var m = new SlowProcessingMonitor(settings);
+        m.Record(TimeSpan.FromSeconds(0), 600, out _).Should().Be(SlowProcessingVerdict.SlowFrame);
+        m.UnreportedSlowFrames.Should().Be(0);
+
+        m.Record(TimeSpan.FromSeconds(100), 900, out _).Should().Be(SlowProcessingVerdict.None);
+        m.Record(TimeSpan.FromSeconds(200), 2100, out _).Should().Be(SlowProcessingVerdict.None);
+        m.Record(TimeSpan.FromSeconds(250), 100, out _).Should().Be(SlowProcessingVerdict.None);
+        m.Record(TimeSpan.FromSeconds(300), 700, out _).Should().Be(SlowProcessingVerdict.SlowFrame);
+        (m.UnreportedSlowFrames, m.UnreportedMaxMs).Should().Be((2, 2100));
+
+        m.Record(TimeSpan.FromSeconds(600), 800, out _).Should().Be(SlowProcessingVerdict.SlowFrame);
+        m.UnreportedSlowFrames.Should().Be(0);
+    }
+
     private static IEnumerable<(double T, double Ms)> Frames(double from, double to, double interval, Func<double, double> ms)
     {
         for (double t = from; t <= to; t += interval)
@@ -236,7 +254,7 @@ public class SafetyTests
     }
 
     private static List<(double T, SlowProcessingVerdict Verdict)> RecordSlowProcessing(SlowProcessingMonitor m, IEnumerable<(double T, double Ms)> frames) =>
-        frames.Select(f => (f.T, Verdict: m.Record(T0.AddSeconds(f.T), f.Ms, out _)))
+        frames.Select(f => (f.T, Verdict: m.Record(TimeSpan.FromSeconds(f.T), f.Ms, out _)))
             .Where(r => r.Verdict != SlowProcessingVerdict.None)
             .ToList();
 }

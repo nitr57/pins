@@ -62,7 +62,8 @@ public sealed record SafetySettings
 
     /// <summary>
     /// Processing time per frame (ms). The slow-processing warning comes when the median of the last minute is above it; a
-    /// single frame above it only gets a note (see <see cref="SlowProcessingMonitor"/>).
+    /// single frame above it only gets a note (see <see cref="SlowProcessingMonitor"/>). With guide cycles over 30 s a
+    /// minute holds too few frames for a median, so only notes come.
     /// </summary>
     public double SlowProcessingMs { get; init; } = 500;
 
@@ -466,7 +467,8 @@ public enum SlowProcessingVerdict
 /// Watches how long the guider takes to process a frame. A single slow frame is normal when the computer is busy with
 /// other work for a moment (an image of the main camera being saved, plate solved or stacked), so it only gets a note.
 /// The warning comes when the median of the last minute is above <see cref="SafetySettings.SlowProcessingMs"/>. Each is
-/// reported at most every <see cref="ReportInterval"/>.
+/// reported at most every <see cref="ReportInterval"/>. Times are monotonic (since the guider started), so setting the
+/// clock during the night does not silence it.
 /// </summary>
 public sealed class SlowProcessingMonitor(SafetySettings settings)
 {
@@ -476,19 +478,28 @@ public sealed class SlowProcessingMonitor(SafetySettings settings)
     /// <summary>Shortest time between two warnings, and between two notes.</summary>
     public static readonly TimeSpan ReportInterval = TimeSpan.FromMinutes(5);
 
-    // with long exposures a minute holds only a few frames, and one slow frame of two must not make the median
+    // With long exposures a minute holds only a few frames, and one slow frame of two must not make the median. So with
+    // cycles over 30 s there is never a median and only notes come; a frame that late barely matters for such long cycles.
     private const int MinFrames = 3;
 
-    private readonly Queue<(DateTimeOffset Time, double Ms)> frames = new();
-    private DateTimeOffset firstFrame;
-    private DateTimeOffset lastWarning = DateTimeOffset.MinValue;
-    private DateTimeOffset lastNote = DateTimeOffset.MinValue;
+    private readonly Queue<(TimeSpan Time, double Ms)> frames = new();
+    private TimeSpan firstFrame;
+    private TimeSpan? lastWarning;
+    private TimeSpan? lastNote;
+    private int unreported;
+    private double unreportedMaxMs;
+
+    /// <summary>Slow frames since the previous note that got no report of their own; set when a note is returned.</summary>
+    public int UnreportedSlowFrames { get; private set; }
+
+    /// <summary>The longest processing time (ms) of <see cref="UnreportedSlowFrames"/>.</summary>
+    public double UnreportedMaxMs { get; private set; }
 
     /// <summary>
-    /// Records the processing time of a frame. <paramref name="medianMs"/> is the median of the last minute when it was
-    /// computed (for a slow frame, once a minute of frames is in), otherwise NaN.
+    /// Records the processing time of a frame at monotonic time <paramref name="now"/>. <paramref name="medianMs"/> is the
+    /// median of the last minute when it was computed (for a slow frame, once a minute of frames is in), otherwise NaN.
     /// </summary>
-    public SlowProcessingVerdict Record(DateTimeOffset now, double processingMs, out double medianMs)
+    public SlowProcessingVerdict Record(TimeSpan now, double processingMs, out double medianMs)
     {
         medianMs = double.NaN;
         while (frames.Count > 0 && now - frames.Peek().Time > Window)
@@ -516,9 +527,9 @@ public sealed class SlowProcessingMonitor(SafetySettings settings)
             if (medianMs > settings.SlowProcessingMs)
             {
                 // still slow after a warning: no note for each slow frame in between
-                if (now - lastWarning < ReportInterval)
+                if (lastWarning is { } w && now - w < ReportInterval)
                 {
-                    return SlowProcessingVerdict.None;
+                    return Unreported(processingMs);
                 }
 
                 lastWarning = now;
@@ -526,13 +537,24 @@ public sealed class SlowProcessingMonitor(SafetySettings settings)
             }
         }
 
-        if (now - lastNote < ReportInterval)
+        if (lastNote is { } n && now - n < ReportInterval)
         {
-            return SlowProcessingVerdict.None;
+            return Unreported(processingMs);
         }
 
         lastNote = now;
+        UnreportedSlowFrames = unreported;
+        UnreportedMaxMs = unreportedMaxMs;
+        unreported = 0;
+        unreportedMaxMs = 0;
         return SlowProcessingVerdict.SlowFrame;
+    }
+
+    private SlowProcessingVerdict Unreported(double processingMs)
+    {
+        unreported++;
+        unreportedMaxMs = Math.Max(unreportedMaxMs, processingMs);
+        return SlowProcessingVerdict.None;
     }
 
     private double Median()

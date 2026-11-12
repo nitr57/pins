@@ -893,13 +893,16 @@ public sealed partial class Guider : IAsyncDisposable
         cycleTimer.Processed(clock.UtcNow);
 
         double processingMs = sw.Elapsed.TotalMilliseconds;
-        switch (slowProcessing.Record(now, processingMs, out double medianMs))
+        switch (slowProcessing.Record(TimeSpan.FromMilliseconds(clock.ElapsedMs), processingMs, out double medianMs))
         {
             case SlowProcessingVerdict.SlowMedian:
                 Alert(GuideErrorCode.FrameProcessingSlow, $"median {medianMs:F0} ms over the last minute, limit {settings.Safety.SlowProcessingMs:F0} ms");
                 break;
             case SlowProcessingVerdict.SlowFrame:
-                Alert(GuideErrorCode.SlowGuideFrame, $"{processingMs:F0} ms");
+                int more = slowProcessing.UnreportedSlowFrames;
+                Alert(GuideErrorCode.SlowGuideFrame, more == 0
+                    ? $"{processingMs:F0} ms"
+                    : $"{processingMs:F0} ms; {more} more slow frame{(more == 1 ? "" : "s")} since the last note, up to {slowProcessing.UnreportedMaxMs:F0} ms");
                 break;
         }
 
