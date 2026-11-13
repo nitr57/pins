@@ -1937,6 +1937,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         finally
         {
             RemoveProgressSink(progress);
+            progress?.Report(new ApplicationStatus { Source = Name, Status = string.Empty });
         }
     }
 
