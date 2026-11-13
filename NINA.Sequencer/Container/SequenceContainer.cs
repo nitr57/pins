@@ -558,7 +558,11 @@ namespace NINA.Sequencer.Container {
         }
 
         public override void ResetProgressCascaded() {
-            base.ResetProgress();
+            // A container that is executing stays RUNNING. Resetting an item below it must not
+            // make the running sequence look idle (clients read the running state from here).
+            if (Status != SequenceEntityStatus.RUNNING) {
+                base.ResetProgress();
+            }
             this.Parent?.ResetProgressCascaded();
         }
 
