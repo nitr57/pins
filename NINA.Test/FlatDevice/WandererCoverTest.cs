@@ -25,8 +25,8 @@ namespace NINA.Test.FlatDevice {
     /// <summary>
     /// WandererCover's open/close wait against scripted cover states (0 = closed, 1 = open, 2 = intermediate,
     /// 3 = moving): it succeeds only at the requested end, tolerates the old end within the start grace (before the motor
-    /// starts and as a late status after it), and fails on a stop short of it, a cover that never arrives and a status
-    /// read error the cover does not tolerate (it goes on after one it does).
+    /// starts and as a late status after it) and an intermediate state that does not last, and fails on a stop short of
+    /// it, a cover that never arrives and a status read error the cover does not tolerate (it goes on after one it does).
     /// </summary>
     [TestFixture]
     public class WandererCoverTest {
@@ -38,6 +38,7 @@ namespace NINA.Test.FlatDevice {
         private static readonly TimeSpan Poll = TimeSpan.FromMilliseconds(1);
         private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);
         private static readonly TimeSpan StartGrace = TimeSpan.FromSeconds(2);
+        private static readonly TimeSpan StopConfirm = TimeSpan.FromMilliseconds(100);
 
         [Test]
         public async Task Open_SucceedsOnlyWhenTheCoverReportsOpen() {
@@ -65,10 +66,152 @@ namespace NINA.Test.FlatDevice {
 
         [Test]
         public async Task Open_FailsWhenTheCoverStopsHalfway() {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
             var (result, _, state) = await WaitAsync(Open, Moving, Moving, Intermediate);
 
             Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Stopped));
             Assert.That(state, Is.EqualTo(Intermediate));
+            Assert.That(watch.Elapsed, Is.GreaterThanOrEqualTo(StopConfirm - TimeSpan.FromMilliseconds(10)), "an intermediate state has to last before it counts as a stop");
+        }
+
+        [Test]
+        public async Task Close_SucceedsAfterABriefIntermediateStateAtTheEndOfTheMove() {
+            // The first status after the move is still more than 1° off the closed angle, the next one is at it
+            var (result, _, state) = await WaitAsync(Closed, StartGrace, (Moving, 150), (Intermediate, 40), (Closed, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+            Assert.That(state, Is.EqualTo(Closed));
+        }
+
+        [Test]
+        public async Task Open_SucceedsAfterABriefIntermediateStateAtTheEndOfTheMove() {
+            var (result, _, state) = await WaitAsync(Open, StartGrace, (Moving, 150), (Intermediate, 40), (Open, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+            Assert.That(state, Is.EqualTo(Open));
+        }
+
+        [Test]
+        public async Task Close_SucceedsAfterABriefIntermediateState_WhenTheStartGraceIsOver() {
+            // A move that takes longer than the start grace: seen on a cover whose move took 18 s with a grace of 15 s
+            var (result, _, _) = await WaitAsync(Closed, TimeSpan.FromMilliseconds(20), (Moving, 150), (Intermediate, 40), (Closed, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+        }
+
+        [Test]
+        public async Task Open_SucceedsAfterABriefIntermediateStateWithoutAMove_WhenTheStartGraceIsOver() {
+            var (result, _, _) = await WaitAsync(Open, TimeSpan.FromMilliseconds(20), (Intermediate, 60), (Open, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+        }
+
+        [Test]
+        public async Task Open_GoesOnWhenTheCoverMovesAgainAfterAnIntermediateState() {
+            // Each intermediate phase is shorter than the confirm time, the three together are longer. The moving phases
+            // are long, so that a stalled test run still reads each of them
+            var (result, _, _) = await WaitAsync(
+                Open,
+                StartGrace,
+                (Moving, 150),
+                (Intermediate, 40),
+                (Moving, 150),
+                (Intermediate, 40),
+                (Moving, 150),
+                (Intermediate, 40),
+                (Open, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+        }
+
+        [Test]
+        public async Task Open_GoesOnWhenTheOldEndIsReportedBetweenTwoIntermediateStates() {
+            // A late status of the old end within the start grace ends the intermediate phase as well
+            var (result, _, _) = await WaitAsync(Open, StartGrace, (Moving, 150), (Intermediate, 60), (Closed, 150), (Intermediate, 60), (Open, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+        }
+
+        [Test]
+        public async Task Open_SucceedsWhenAToleratedReadErrorFallsIntoABriefIntermediateState() {
+            var poll = 0;
+            var result = await WandererCover.WaitForCoverStateAsync(
+                () => poll++ switch {
+                    0 => (WC_ERROR_TYPE.WC_SUCCESS, Moving),
+                    1 => (WC_ERROR_TYPE.WC_SUCCESS, Intermediate),
+                    2 or 3 => (WC_ERROR_TYPE.WC_ERROR_COMMUNICATION, Closed),
+                    _ => (WC_ERROR_TYPE.WC_SUCCESS, Open)
+                },
+                Open,
+                Poll,
+                Timeout,
+                StartGrace,
+                StopConfirm,
+                CancellationToken.None,
+                _ => true);
+
+            Assert.That(result.Result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+        }
+
+        [Test]
+        public async Task Open_FailsWhenAnIntermediateStateLastsOverToleratedReadErrors() {
+            // The failed reads are no break: the intermediate state before and after them is one stop
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var poll = 0;
+            var result = await WandererCover.WaitForCoverStateAsync(
+                () => {
+                    if (poll++ == 0) {
+                        return (WC_ERROR_TYPE.WC_SUCCESS, Moving);
+                    }
+
+                    var failing = watch.ElapsedMilliseconds is > 30 and < 150;
+                    return failing ? (WC_ERROR_TYPE.WC_ERROR_COMMUNICATION, Closed) : (WC_ERROR_TYPE.WC_SUCCESS, Intermediate);
+                },
+                Open,
+                Poll,
+                Timeout,
+                StartGrace,
+                StopConfirm,
+                CancellationToken.None,
+                _ => true);
+
+            Assert.That(result.Result, Is.EqualTo(WandererCover.CoverMoveResult.Stopped));
+            Assert.That(result.State, Is.EqualTo(Intermediate));
+        }
+
+        [Test]
+        public async Task Open_FailsOnAnIntermediateStateWithoutAMove_OnlyOnceTheStartGraceIsOver() {
+            var startGrace = TimeSpan.FromMilliseconds(250);
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var (result, _, state) = await WaitAsync(Open, startGrace, (Intermediate, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Stopped));
+            Assert.That(state, Is.EqualTo(Intermediate));
+            Assert.That(watch.Elapsed, Is.GreaterThanOrEqualTo(startGrace - TimeSpan.FromMilliseconds(10)), "the cover may still start moving within the grace");
+        }
+
+        [Test]
+        public async Task Open_SucceedsFromAnIntermediateStateWithoutAMove_WithinTheStartGrace() {
+            // Longer than the confirm time, but the cover was not seen moving and the grace is not over
+            var (result, _, _) = await WaitAsync(Open, StartGrace, (Intermediate, 150), (Open, 0));
+
+            Assert.That(result, Is.EqualTo(WandererCover.CoverMoveResult.Reached));
+        }
+
+        [Test]
+        public async Task Open_TimesOutInAnIntermediateStateBeforeItIsConfirmedAsAStop() {
+            var poll = 0;
+            var result = await WandererCover.WaitForCoverStateAsync(
+                () => (WC_ERROR_TYPE.WC_SUCCESS, poll++ == 0 ? Moving : Intermediate),
+                Open,
+                Poll,
+                TimeSpan.FromMilliseconds(50),
+                StartGrace,
+                TimeSpan.FromSeconds(5),
+                CancellationToken.None);
+
+            Assert.That(result.Result, Is.EqualTo(WandererCover.CoverMoveResult.TimedOut));
+            Assert.That(result.State, Is.EqualTo(Intermediate));
         }
 
         [Test]
@@ -143,6 +286,7 @@ namespace NINA.Test.FlatDevice {
                 Poll,
                 Timeout,
                 StartGrace,
+                StopConfirm,
                 CancellationToken.None,
                 error => {
                     errors.Add(error);
@@ -162,6 +306,7 @@ namespace NINA.Test.FlatDevice {
                 Poll,
                 TimeSpan.FromMilliseconds(100),
                 StartGrace,
+                StopConfirm,
                 CancellationToken.None,
                 _ => true);
 
@@ -178,6 +323,7 @@ namespace NINA.Test.FlatDevice {
                 Poll,
                 Timeout,
                 StartGrace,
+                StopConfirm,
                 CancellationToken.None,
                 _ => poll < 4);
 
@@ -197,7 +343,35 @@ namespace NINA.Test.FlatDevice {
             TimeSpan timeout,
             TimeSpan startGrace) {
             var poll = 0;
-            return WandererCover.WaitForCoverStateAsync(() => status(poll++), target, Poll, timeout, startGrace, CancellationToken.None);
+            return WandererCover.WaitForCoverStateAsync(() => status(poll++), target, Poll, timeout, startGrace, StopConfirm, CancellationToken.None);
+        }
+
+        // Each state is reported for its time in milliseconds, one after the other from the start of the wait; the last
+        // one stays
+        private static Task<(WandererCover.CoverMoveResult Result, WC_ERROR_TYPE Error, int State)> WaitAsync(
+            int target,
+            TimeSpan startGrace,
+            params (int State, int Milliseconds)[] phases) {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+
+            return WaitAsync(
+                _ => {
+                    var elapsed = watch.ElapsedMilliseconds;
+                    var end = 0L;
+
+                    for (var i = 0; i < phases.Length - 1; i++) {
+                        end += phases[i].Milliseconds;
+
+                        if (elapsed < end) {
+                            return (WC_ERROR_TYPE.WC_SUCCESS, phases[i].State);
+                        }
+                    }
+
+                    return (WC_ERROR_TYPE.WC_SUCCESS, phases[^1].State);
+                },
+                target,
+                Timeout,
+                startGrace);
         }
     }
 }

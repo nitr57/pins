@@ -191,14 +191,20 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
         private const int StateOpen = 1;
         private const int StateMoving = 3;
 
-        // The cover takes about 10 s from one end to the other
+        // The cover takes 16 to 19 s from one end to the other (two units, 2026-11-13)
         private static readonly TimeSpan MoveTimeout = TimeSpan.FromSeconds(60);
 
         // How long the end the cover is leaving still counts as "not moving yet". The SDK reports moving (3) as soon as
         // the command is sent and clears it with the first status after the move, which the device only sends once it
         // stopped. A status sent before the move but arriving after the SDK's 150 ms grace would clear it early and leave
-        // the old end reported for the whole move, so this is longer than one move (about 10 s).
-        private static readonly TimeSpan MotionStartGrace = TimeSpan.FromSeconds(15);
+        // the old end reported for the whole move, so this is longer than one move (16 to 19 s).
+        private static readonly TimeSpan MotionStartGrace = TimeSpan.FromSeconds(30);
+
+        // How long a state that is neither an end nor moving has to stay before it counts as a stop. The SDK reports
+        // intermediate (2) while the cover stands with its angle more than 1° from both set angles, and the first status
+        // after a move can still be that far off: a close ended with 2 and was closed within 3 s (2026-11-13), which
+        // made a cover that had closed fail.
+        private static readonly TimeSpan StopConfirm = TimeSpan.FromSeconds(5);
 
         public async Task<bool> Open(CancellationToken ct, int delay = 300) {
             return await MoveCover(CoverOpenCover, StateOpen, "open", ct, delay);
@@ -216,6 +222,10 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
                         return false;
                     }
 
+                    // the last status read without an error, for the angles of a failed move
+                    WC_COVER_STATUS lastStatus = default;
+                    var offEndLogged = false;
+
                     // a failed status read is counted and the wait goes on while the connection is kept: one USB hiccup
                     // made the whole open or close fail
                     var (result, statusError, state) = await WaitForCoverStateAsync(
@@ -223,6 +233,15 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
                             var statusErr = CoverGetStatus(_uniqueId, out var status);
                             if (statusErr == WC_ERROR_TYPE.WC_SUCCESS) {
                                 communicationErrors.RecordSuccess();
+                                lastStatus = status;
+
+                                var offEnd = status.coverState != StateClosed && status.coverState != StateOpen && status.coverState != StateMoving;
+                                if (offEnd && !offEndLogged) {
+                                    // once per move, also when the cover then arrives: how far off and for how long shows
+                                    // whether StopConfirm fits
+                                    offEndLogged = true;
+                                    Logger.Info($"WandererCover reports cover state {status.coverState} while it should {action} ({Angles(status)}); that counts as a stop if it lasts {StopConfirm.TotalSeconds:F0}s");
+                                }
                             }
                             return (statusErr, status.coverState);
                         },
@@ -230,6 +249,7 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
                         TimeSpan.FromMilliseconds(delay),
                         MoveTimeout,
                         MotionStartGrace,
+                        StopConfirm,
                         ct,
                         statusErr => {
                             if (statusErr != WC_ERROR_TYPE.WC_ERROR_COMMUNICATION || !Connected) {
@@ -253,11 +273,11 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
                             return false;
 
                         case CoverMoveResult.TimedOut:
-                            Logger.Error($"WandererCover did not {action} within {MoveTimeout.TotalSeconds:F0}s (cover state {state})");
+                            Logger.Error($"WandererCover did not {action} within {MoveTimeout.TotalSeconds:F0}s (cover state {state}, {Angles(lastStatus)})");
                             return false;
 
                         default:
-                            Logger.Error($"WandererCover did not {action}: it stopped in cover state {state}");
+                            Logger.Error($"WandererCover did not {action}: it stopped in cover state {state} ({Angles(lastStatus)})");
                             return false;
                     }
                 } catch (OperationCanceledException) {
@@ -268,6 +288,11 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
                     return false;
                 }
             }, ct);
+        }
+
+        // The angles the SDK derives the cover state from: an end is within 1° of its set angle
+        private static string Angles(WC_COVER_STATUS status) {
+            return $"angle {status.currentPositionAngle:F1}°, closed at {status.closePositionAngle:F1}°, open at {status.openPositionAngle:F1}°";
         }
 
         internal enum CoverMoveResult {
@@ -281,9 +306,12 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
         /// Polls the cover until it reports <paramref name="targetState"/> (0 = closed, 1 = open). Within
         /// <paramref name="startGrace"/> it may still report the end it is leaving, also after it was seen moving (3): a
         /// status from before the move that arrives late clears the SDK's moving state, and the old end then stays
-        /// reported until the move is done. Any other state after it was seen moving, or anything but the target once
-        /// the grace is over, means it stopped short; a cover that really returns to its start is therefore only reported
-        /// at the end of the grace. Gives up after <paramref name="timeout"/>. A failed status read ends the wait unless
+        /// reported until the move is done. The old end once the grace is over means it stopped short; a cover that
+        /// really returns to its start is therefore only reported at the end of the grace. Any other state (2 =
+        /// intermediate) means it stopped short once the cover was seen moving or the grace is over, and only when it was
+        /// read without a break for <paramref name="stopConfirm"/>: the first status after a move can still be off the
+        /// end. A tolerated failed read in between is no break, and a stop is only reported on a successful read. Gives
+        /// up after <paramref name="timeout"/>. A failed status read ends the wait unless
         /// <paramref name="keepPolling"/> says to go on (a transient communication error).
         /// </summary>
         internal static async Task<(CoverMoveResult Result, WC_ERROR_TYPE Error, int State)> WaitForCoverStateAsync(
@@ -292,12 +320,14 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
             TimeSpan pollInterval,
             TimeSpan timeout,
             TimeSpan startGrace,
+            TimeSpan stopConfirm,
             CancellationToken ct,
             Func<WC_ERROR_TYPE, bool> keepPolling = null) {
             var watch = System.Diagnostics.Stopwatch.StartNew();
             var seenMoving = false;
             var lastState = -1; // the last state read without an error, -1 before the first
             var leavingState = targetState == StateOpen ? StateClosed : StateOpen;
+            TimeSpan? offEndSince = null; // since when a state that is neither an end nor moving is read without a break
 
             while (true) {
                 await Task.Delay(pollInterval, ct);
@@ -323,13 +353,29 @@ namespace NINA.Equipment.Equipment.MyFlatDevice {
                     return (CoverMoveResult.Reached, error, state);
                 }
 
+                var elapsed = watch.Elapsed;
+
                 if (state == StateMoving) {
                     seenMoving = true;
-                } else if (watch.Elapsed > startGrace || (seenMoving && state != leavingState)) {
-                    return (CoverMoveResult.Stopped, error, state);
+                    offEndSince = null;
+                } else if (state == leavingState) {
+                    offEndSince = null;
+
+                    if (elapsed > startGrace) {
+                        return (CoverMoveResult.Stopped, error, state);
+                    }
+                } else {
+                    offEndSince ??= elapsed;
+
+                    var mayHaveStopped = seenMoving || elapsed > startGrace;
+                    var lasted = elapsed - offEndSince.Value >= stopConfirm;
+
+                    if (mayHaveStopped && lasted) {
+                        return (CoverMoveResult.Stopped, error, state);
+                    }
                 }
 
-                if (watch.Elapsed > timeout) {
+                if (elapsed > timeout) {
                     return (CoverMoveResult.TimedOut, error, state);
                 }
             }
