@@ -750,6 +750,60 @@ namespace NINA.Test.Equipment.OnStepX {
             Assert.That(clock.Elapsed, Is.GreaterThanOrEqualTo(TimeSpan.FromSeconds(1)).And.LessThan(TimeSpan.FromSeconds(2)));
         }
 
+        [Test]
+        public void LatePulseLog_NotesTheFirstLatePulseAtOnce() {
+            var log = new OnStepXTelescope.LatePulseLog(TimeSpan.FromMilliseconds(50));
+
+            var note = log.Record(TimeSpan.FromMilliseconds(85), new DateTime(2026, 11, 13, 20, 0, 0, DateTimeKind.Utc));
+
+            Assert.That(note, Does.Contain("a guide pulse 85 ms after its estimated end"));
+        }
+
+        [Test]
+        public void LatePulseLog_CollectsLatePulsesUntilTheIntervalIsOver() {
+            var log = new OnStepXTelescope.LatePulseLog(TimeSpan.FromMilliseconds(50));
+            var start = new DateTime(2026, 11, 13, 20, 0, 0, DateTimeKind.Utc);
+            log.Record(TimeSpan.FromMilliseconds(85), start);
+
+            var within = OnStepXTelescope.LatePulseLog.Interval - TimeSpan.FromSeconds(1);
+            Assert.That(log.Record(TimeSpan.FromMilliseconds(215), start + TimeSpan.FromSeconds(75)), Is.Null);
+            Assert.That(log.Record(TimeSpan.FromMilliseconds(70), start + within), Is.Null);
+
+            var note = log.Record(TimeSpan.FromMilliseconds(90), start + OnStepXTelescope.LatePulseLog.Interval);
+
+            Assert.That(note, Does.Contain("3 guide pulses 50 ms or more after their estimated end"));
+            Assert.That(note, Does.Contain("the longest for 215 ms"));
+        }
+
+        [Test]
+        public void LatePulseLog_NotesASingleLatePulseAfterAQuietInterval() {
+            var log = new OnStepXTelescope.LatePulseLog(TimeSpan.FromMilliseconds(50));
+            var start = new DateTime(2026, 11, 13, 20, 0, 0, DateTimeKind.Utc);
+            log.Record(TimeSpan.FromMilliseconds(215), start);
+
+            var note = log.Record(TimeSpan.FromMilliseconds(60), start + TimeSpan.FromMinutes(20));
+
+            Assert.That(note, Does.Contain("a guide pulse 60 ms after its estimated end"));
+        }
+
+        [Test]
+        public void LatePulseLog_StartsOverAfterANote() {
+            var log = new OnStepXTelescope.LatePulseLog(TimeSpan.FromMilliseconds(50));
+            var start = new DateTime(2026, 11, 13, 20, 0, 0, DateTimeKind.Utc);
+            log.Record(TimeSpan.FromMilliseconds(215), start);
+            log.Record(TimeSpan.FromMilliseconds(120), start + TimeSpan.FromMinutes(1));
+            log.Record(TimeSpan.FromMilliseconds(60), start + OnStepXTelescope.LatePulseLog.Interval);
+
+            // the next interval counts from the last note, and the earlier pulses are not in it
+            var next = start + OnStepXTelescope.LatePulseLog.Interval + OnStepXTelescope.LatePulseLog.Interval;
+            Assert.That(log.Record(TimeSpan.FromMilliseconds(70), next - TimeSpan.FromSeconds(1)), Is.Null);
+
+            var note = log.Record(TimeSpan.FromMilliseconds(65), next);
+
+            Assert.That(note, Does.Contain("2 guide pulses"));
+            Assert.That(note, Does.Contain("the longest for 70 ms"));
+        }
+
         [TestCase("nNPEW260#", "parked")]
         [TestCase("pEW260#", "goto")]
         [TestCase("NpEW222#", "limit")]

@@ -142,8 +142,8 @@ a command sets `numericReply = false`, see `src/libApp/commands/ProcessCmds.cpp`
   on the line, estimated from the characters queued at the port's baud rate (`TelescopeSettings.SerialBaudRate`,
   OnStepX's default 9600). A pulse counts as running until then plus its
   duration plus 15 ms, and after that until `:GU#` no longer shows `G`, so no guide exposure starts while the mount
-  moves: on a UMi17S most pulses ended 0-15 ms after the estimate, but USB serial now and then delays a command by up
-  to ~80 ms. Pulses the controller would refuse (`Guide::validate`) throw, judged on the last known status, never on a
+  moves: on a UMi17S most pulses ended 0-15 ms after the estimate, but now and then the controller still reports a pulse
+  35-90 ms after it (noted together at most every 5 minutes, `LatePulseLog`). Pulses the controller would refuse (`Guide::validate`) throw, judged on the last known status, never on a
   fresh read that would delay the pulse; so does a pulse after a goto, park or home was sent and before a status read
   after it, since a pulse aborts a goto.
 - Proxisky vendor settings (`ProxiskyUmiDevice.Settings.cs`, `OnStepXTelescope.GetProxiskySettings` and the

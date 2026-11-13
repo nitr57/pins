@@ -76,15 +76,16 @@ namespace NINA.Equipment.Equipment.MyTelescope {
 
         /// <summary>
         /// Added to a guide pulse counted from when its command is on the line. The controller ends a pulse exactly
-        /// (its guide task runs without pause, Guide.cpp), but USB serial delays commands by a few ms and now and then by
-        /// up to ~80 ms: measured on a UMi17S, most 300 ms pulses ended 0-15 ms after the estimate, one 33-59 ms after
-        /// it. This margin lets the first 'G' check in <see cref="IsPulseGuiding"/> usually confirm the end; that check
-        /// covers the rest. INDI times pulses from the write, with no margin.
+        /// (its guide task runs without pause, Guide.cpp), but USB serial delays commands by a few ms: measured on a
+        /// UMi17S, most 300 ms pulses ended 0-15 ms after the estimate. Now and then the controller still reports a
+        /// pulse 35-90 ms after it (<see cref="LatePulseLog"/>). This margin lets the first 'G' check in
+        /// <see cref="IsPulseGuiding"/> usually confirm the end; that check covers the rest. INDI times pulses from the
+        /// write, with no margin.
         /// </summary>
         private static readonly TimeSpan PulseEndMargin = TimeSpan.FromMilliseconds(15);
 
-        /// <summary>A pulse ending this much later than estimated is logged as a warning; a little late is normal (USB).</summary>
-        private static readonly TimeSpan PulseLateWarning = TimeSpan.FromMilliseconds(50);
+        /// <summary>A pulse the controller still reports this long or longer after its estimated end counts as late (<see cref="LatePulseLog"/>).</summary>
+        private static readonly TimeSpan PulseLateThreshold = TimeSpan.FromMilliseconds(50);
 
         /// <summary>How often the controller is asked whether a pulse is still running once its estimated end has passed.</summary>
         private static readonly TimeSpan PulseCheckInterval = TimeSpan.FromMilliseconds(15);
@@ -162,7 +163,9 @@ namespace NINA.Equipment.Equipment.MyTelescope {
         private DateTime raPulseEnd = DateTime.MinValue;
         private DateTime decPulseEnd = DateTime.MinValue;
         private bool pulseEndConfirmed = true;
-        private bool pulseLateLogged;
+        // How long after its estimated end the pulse was last reported, zero when not late
+        private TimeSpan pulseSeenLate;
+        private readonly LatePulseLog latePulses = new(PulseLateThreshold);
         private DateTime lastPulseCheck = DateTime.MinValue;
         private OnStepXStatus? latestStatus;
         private DateTime latestStatusAt = DateTime.MinValue;
@@ -1927,9 +1930,11 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     }
                     if (!status.PulseGuiding) {
                         pulseEndConfirmed = true;
-                        if (pulseLateLogged) {
-                            Logger.Warning($"OnStepX: a guide pulse ended {late.TotalMilliseconds:F0} ms after its estimated end (USB serial delay)");
+
+                        if (pulseSeenLate > TimeSpan.Zero && latePulses.Record(pulseSeenLate, now) is { } note) {
+                            Logger.Info(note);
                         }
+
                         return false;
                     }
                     if (late >= PulseEndTimeout) {
@@ -1937,11 +1942,13 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                         pulseEndConfirmed = true;
                         return false;
                     }
-                    if (late >= PulseLateWarning) {
-                        pulseLateLogged = true;
-                    } else {
-                        Logger.Debug($"OnStepX: pulse still running {late.TotalMilliseconds:F0} ms after its estimated end");
+
+                    Logger.Debug($"OnStepX: pulse still running {late.TotalMilliseconds:F0} ms after its estimated end");
+
+                    if (late >= PulseLateThreshold) {
+                        pulseSeenLate = late;
                     }
+
                     return true;
                 }
             }
@@ -1976,6 +1983,53 @@ namespace NINA.Equipment.Equipment.MyTelescope {
             } catch (InvalidOperationException ex) {
                 // logged where it failed, without a notification of its own
                 Logger.Debug($"OnStepX: {direction} pulse of {duration} ms not sent: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Collects the guide pulses the controller still reported as running well after their estimated end, for one
+        /// note at most every <see cref="Interval"/>. A warning for each was noise: on a UMi the controller reported 45
+        /// of 868 pulses for 35-90 ms longer, 42 of them sent within the same 60 ms of the second (trace of 2026-11-13),
+        /// while the star moved no further than commanded after such pulses (guide log of that night), and the guider
+        /// waits for the reported end anyway. Late pulses counted after the last note are dropped when no further one
+        /// follows; each is in the log at debug level. Not thread-safe; the caller holds the pulse lock.
+        /// </summary>
+        internal sealed class LatePulseLog(TimeSpan threshold) {
+            internal static readonly TimeSpan Interval = TimeSpan.FromMinutes(5);
+
+            private DateTime lastNote = DateTime.MinValue;
+            private int count;
+            private TimeSpan longest;
+
+            /// <summary>
+            /// Counts a pulse last reported <paramref name="late"/> after its estimated end. Returns the note for it and
+            /// those counted since the last note when one is due, otherwise null.
+            /// </summary>
+            internal string? Record(TimeSpan late, DateTime now) {
+                count++;
+
+                if (late > longest) {
+                    longest = late;
+                }
+
+                if (now - lastNote < Interval) {
+                    return null;
+                }
+
+                string note;
+
+                if (count == 1) {
+                    note = $"OnStepX: the controller still reported a guide pulse {late.TotalMilliseconds:F0} ms after its estimated end";
+                } else {
+                    note = $"OnStepX: the controller still reported {count} guide pulses {threshold.TotalMilliseconds:F0} ms or more after their estimated end"
+                        + $" since the last note, the longest for {longest.TotalMilliseconds:F0} ms";
+                }
+
+                lastNote = now;
+                count = 0;
+                longest = TimeSpan.Zero;
+
+                return note;
             }
         }
 
@@ -2044,7 +2098,7 @@ namespace NINA.Equipment.Equipment.MyTelescope {
                     decPulseEnd = end;
                 }
                 pulseEndConfirmed = false;
-                pulseLateLogged = false;
+                pulseSeenLate = TimeSpan.Zero;
             }
         }
 
