@@ -1017,5 +1017,51 @@ namespace NINA.Test.Sequencer.Container {
             root.Remove(Sut);
         }
 
+        private static SequentialContainer Container(SequenceEntityStatus status, params ISequenceItem[] items) {
+            var container = new SequentialContainer();
+            foreach (var item in items) {
+                container.Add(item);
+            }
+            container.Status = status;
+            return container;
+        }
+
+        private static ISequenceItem Item(SequenceEntityStatus status) {
+            var item = new Mock<NINA.Sequencer.SequenceItem.SequenceItem>() { CallBase = true }.Object;
+            item.Status = status;
+            return item;
+        }
+
+        [Test]
+        public void ResetProgressCascaded_KeepsRunningParentsRunning() {
+            var finishedItem = Item(SequenceEntityStatus.FINISHED);
+            var finishedBlock = Container(SequenceEntityStatus.FINISHED, finishedItem);
+            var runningItem = Item(SequenceEntityStatus.RUNNING);
+            var runningBlock = Container(SequenceEntityStatus.RUNNING, runningItem);
+            var target = Container(SequenceEntityStatus.RUNNING, finishedBlock, runningBlock);
+            var root = Container(SequenceEntityStatus.RUNNING, target);
+
+            finishedItem.ResetProgressCascaded();
+
+            finishedItem.Status.Should().Be(SequenceEntityStatus.CREATED);
+            finishedBlock.Status.Should().Be(SequenceEntityStatus.CREATED);
+            target.Status.Should().Be(SequenceEntityStatus.RUNNING);
+            root.Status.Should().Be(SequenceEntityStatus.RUNNING);
+            runningBlock.Status.Should().Be(SequenceEntityStatus.RUNNING);
+            runningItem.Status.Should().Be(SequenceEntityStatus.RUNNING);
+        }
+
+        [Test]
+        public void ResetProgressCascaded_ResetsFinishedParents() {
+            var item = Item(SequenceEntityStatus.FINISHED);
+            var block = Container(SequenceEntityStatus.FINISHED, item);
+            var root = Container(SequenceEntityStatus.FAILED, block);
+
+            item.ResetProgressCascaded();
+
+            item.Status.Should().Be(SequenceEntityStatus.CREATED);
+            block.Status.Should().Be(SequenceEntityStatus.CREATED);
+            root.Status.Should().Be(SequenceEntityStatus.CREATED);
+        }
     }
 }
