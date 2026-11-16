@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 1.2.0 - 2026-11-16
 ### Added
 - Advanced API: the entries of the image history (`image-history`) and the `IMAGE-SAVE` event carry `FocuserTemperature`, the temperature of the focuser's sensor in °C when the image was taken, for a focuser temperature curve next to the camera's `Temperature`. It is left out (null in the event) without a focuser or without a temperature sensor (ninaAPI f2c62bc)
 - Internal guider: the optional contract `IGuideLogArchive` (`GetGuideLogs`, `OpenGuideLog`) lists and opens the per-night guide logs (`InternalGuider/Logs`, also the older `PinsGuider_`/`NativeGuider_` ones) for a log viewer, also while the guider is not connected. Each entry has the night, size, last write, whether it is being written, and the host's time zone with its offset on that night, since the log's times are local time without a zone. An older per-session log that started after midnight belongs to the night before its date. A log that can't be read is an error, not a missing log. The log being written can be read while the guider writes it. The Touch-N-Stars plugin serves them under `/api/internal-guider/logs`.
