@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Altair, Ogma, Risingcam, MallinCam, SVBony and Omegon cameras, filter wheels and focusers showed a garbled driver version on Linux, and ToupTek always showed a fixed old one; the SDK's real version is shown (pins a2a51a2ed)
 - DSLR (libgphoto2): the camera's temperature is no longer read from the camera during an exposure, where the read could disturb a bulb exposure or wait for a timed one, and a failed read then no longer switched the temperature off for the session; the bulb shutter is released only once when the exposure timer and an abort meet (pins a2a51a2ed)
 - QHY: the log says when a camera shares its handle with the filter wheel plugged into it, and when initializing such a shared handle fails, it says to disconnect both camera and filter wheel after the camera was unplugged (pins a2a51a2ed)
+- Advanced API: after NINA started a new log file (at the start of a month, or when the log reached its size limit), no autofocus error, plate solve or centering event from the log reached the apps any more until pins was restarted, so the Touch-N-Stars session timeline missed them. The Advanced API now follows the log NINA is writing, also when pins renames it after a clock correction, and reports when it can't find it (ninaAPI 9d6a598)
 
 ## 1.2.0 - 2026-11-16
 ### Added
