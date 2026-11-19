@@ -35,6 +35,11 @@ public sealed partial class NinaObservatory {
             return new PlateSolveOutcome(false, "sync needs a connected mount. Connect it, or solve without sync.", null);
         }
 
+        // A sync from a frame taken while the mount moved would set the pointing wrong.
+        if (sync && MountBusyReason() is string busy) {
+            return new PlateSolveOutcome(false, $"Not syncing: {busy}", null);
+        }
+
         if (!TryTakeCaptureBlock(out var holdsCaptureBlock)) {
             return new PlateSolveOutcome(false, CaptureBlockedMessage, null);
         }
@@ -99,7 +104,7 @@ public sealed partial class NinaObservatory {
     /// (as in NINA, an internal guider that was only looping also counts as running).
     /// </summary>
     /// <remarks>
-    /// Cancellation aborts the running exposure (ImagingVM) and the solver process; the mount gets <see cref="StopSlew"/>,
+    /// Cancellation aborts the running exposure (ImagingVM) and the solver process; the mount gets <see cref="StopOwnSlew"/>,
     /// which only sends an abort while the mount reports slewing (the solver's correction slews are not counted as MCP
     /// motions, so an idle mount between two exposures never gets an abort that could stop tracking).
     /// </remarks>
@@ -112,6 +117,10 @@ public sealed partial class NinaObservatory {
 
         if (mount.AtPark) {
             return new PlateSolveOutcome(false, "Mount is parked. Unpark it first (unpark_mount).", null);
+        }
+
+        if (MountBusyReason() is string busy) {
+            return new PlateSolveOutcome(false, busy, null);
         }
 
         var camera = cameraMediator.GetInfo();
@@ -168,7 +177,7 @@ public sealed partial class NinaObservatory {
 
             PlateSolveResult? result;
 
-            using (cancellationToken.Register(StopSlew)) {
+            using (cancellationToken.Register(StopOwnSlew)) {
                 result = await solver.Center(CreatePlateSolveSequence(), parameter, null, CreateProgress(), cancellationToken);
             }
 

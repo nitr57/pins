@@ -22,6 +22,11 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail("Rotator is not connected.");
         }
 
+        // A second move replaces the first one's cancellation, and the first one then never reaches its target.
+        if (info.IsMoving) {
+            return OperationResult.Fail($"The rotator is moving (a move started outside this MCP request, e.g. from Touch-N-Stars or the sequence). {WaitDoNotStop}");
+        }
+
         // RotatorVM.GetTargetPosition throws for sky angles until a plate solve synced the rotator.
         if (!mechanical && !info.Synced) {
             return OperationResult.Fail(
@@ -166,6 +171,14 @@ public sealed partial class NinaObservatory {
 
         if (unsupported != null) {
             return OperationResult.Fail(unsupported);
+        }
+
+        // A close under way (rain, an unsafe safety monitor, Touch-N-Stars) is never undone or disturbed by MCP; a close is
+        // always allowed.
+        if (action != DomeAction.CloseShutter && action != DomeAction.StopFollowing && ShutterClosing()) {
+            return OperationResult.Fail(
+                "The dome shutter is closing (started outside this MCP request: the safety monitor, the sequence or Touch-N-Stars). "
+                + "Wait until it is closed; do not move or reopen the dome unless the user asks.");
         }
 
         try {
@@ -358,6 +371,19 @@ public sealed partial class NinaObservatory {
         var difference = Math.Abs(a - b) % 360;
 
         return difference > 180 ? 360 - difference : difference;
+    }
+
+    /// <summary>The shutter is closing, read from the device (the info is refreshed once per polling interval) and the info.</summary>
+    private bool ShutterClosing() {
+        try {
+            if (domeMediator.GetDevice() is IDome dome && dome.ShutterStatus == ShutterState.ShutterClosing) {
+                return true;
+            }
+        } catch (Exception ex) {
+            Logger.Error("MCP: reading the dome shutter state failed", ex);
+        }
+
+        return domeMediator.GetInfo()?.ShutterStatus == ShutterState.ShutterClosing;
     }
 
     /// <summary>

@@ -55,6 +55,8 @@ public sealed partial class NinaObservatory : IPinsObservatory {
 
     private readonly NinaSequenceService sequence;
 
+    private readonly MountParkOrHomeWatch mountParkOrHome;
+
     private readonly object focuserMoveLock = new();
     private CancellationTokenSource? focuserMoveCts;
 
@@ -86,7 +88,8 @@ public sealed partial class NinaObservatory : IPinsObservatory {
             IPlateSolverFactory plateSolverFactory,
             IDomeFollower domeFollower,
             IAdvancedGuider internalGuider,
-            NinaSequenceService sequence) {
+            NinaSequenceService sequence,
+            MountParkOrHomeWatch mountParkOrHome) {
         this.cameraMediator = cameraMediator ?? throw new ArgumentNullException(nameof(cameraMediator));
         this.telescopeMediator = telescopeMediator ?? throw new ArgumentNullException(nameof(telescopeMediator));
         this.focuserMediator = focuserMediator ?? throw new ArgumentNullException(nameof(focuserMediator));
@@ -109,6 +112,7 @@ public sealed partial class NinaObservatory : IPinsObservatory {
         this.domeFollower = domeFollower ?? throw new ArgumentNullException(nameof(domeFollower));
         this.internalGuider = internalGuider ?? throw new ArgumentNullException(nameof(internalGuider));
         this.sequence = sequence ?? throw new ArgumentNullException(nameof(sequence));
+        this.mountParkOrHome = mountParkOrHome ?? throw new ArgumentNullException(nameof(mountParkOrHome));
     }
 
     // ----- Equipment connection -----

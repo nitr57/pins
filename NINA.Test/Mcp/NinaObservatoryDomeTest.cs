@@ -48,15 +48,21 @@ namespace NINA.Test.Mcp {
         [Test]
         public void CancellingAnotherDomeJob_WhileNinaClosesTheShutter_DoesNotStopTheDome() {
             var harness = new NinaObservatoryHarness();
-            harness.ConnectDome(ShutterState.ShutterClosing);
+            var info = harness.ConnectDome(ShutterState.ShutterOpen);
+            var shutter = ShutterState.ShutterOpen;
             var device = new Mock<IDome>();
-            device.SetupGet(dome => dome.ShutterStatus).Returns(ShutterState.ShutterClosing);
+            device.SetupGet(dome => dome.ShutterStatus).Returns(() => shutter);
             harness.Dome.Setup(mediator => mediator.GetDevice()).Returns(device.Object);
             harness.Dome.Setup(mediator => mediator.FindHome(It.IsAny<CancellationToken>())).Returns(new TaskCompletionSource<bool>().Task);
 
+            // The job starts while the shutter is open (a closing one would refuse it); NINA starts closing meanwhile.
             using var job = new CancellationTokenSource();
-            _ = harness.Observatory.ControlDomeAsync(DomeAction.FindHome, null, job.Token);
+            var running = harness.Observatory.ControlDomeAsync(DomeAction.FindHome, null, job.Token);
 
+            Assert.That(running.IsCompleted, Is.False, "the find-home job runs");
+
+            shutter = ShutterState.ShutterClosing;
+            info.ShutterStatus = ShutterState.ShutterClosing;
             job.Cancel();
 
             device.Verify(dome => dome.StopAll(), Times.Never);

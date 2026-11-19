@@ -17,7 +17,93 @@ public sealed partial class NinaObservatory {
         "The camera is in use by another pins operation (flat wizard, framing, plate solving or a snapshot loop). "
         + "Wait for it to finish, then retry.";
 
+    private const string WaitDoNotStop =
+        "Wait until get_status shows it idle, then retry; do not stop it unless the user asks.";
+
+    private static readonly TimeSpan ParkElsewhereTimeout = TimeSpan.FromMinutes(5);
+
+    // A park or home under way that its driver does not report as slewing still moves the mount by more than this between
+    // two reads a second apart (a mount that does not track drifts 0.004°/s).
+    private const double MovingDegreesPerSecond = 0.02;
+
+    // A flag on which no motion was seen (NINA left it set) ends the wait after this; once the mount was seen moving, the
+    // driver may still confirm the park after the mount stopped (pins' INDI park waits up to 10 s for that), so longer.
+    private static readonly TimeSpan StillFor = TimeSpan.FromSeconds(3);
+
+    private static readonly TimeSpan StillAfterMotionFor = TimeSpan.FromSeconds(20);
+
+    private long lastLiveReadErrorTicks;
+
     // ----- Mount -----
+
+    /// <summary>
+    /// Why the mount is busy with a motion started outside this MCP request (Touch-N-Stars, the Advanced API, the sequence or
+    /// another client), or null. MCP's own motions are serialized by the mount resource already. The driver's slewing state
+    /// is read from the device, not from the info NINA refreshes once per polling interval; NINA's park/home flag covers the
+    /// first seconds before a driver reports a park or home (see <see cref="MountParkOrHomeWatch"/>).
+    /// </summary>
+    private string? MountBusyReason() {
+        if (LiveMountSlewing()) {
+            return $"The mount is moving (its driver reports slewing), started outside this MCP request (Touch-N-Stars, the sequence or another client). {WaitDoNotStop}";
+        }
+
+        if (mountParkOrHome.RecentlyStarted) {
+            // get_status shows no motion yet while the driver does not report one.
+            return "The mount is parking or homing (started outside this MCP request: Touch-N-Stars, the sequence or another "
+                + "client). Retry in about 15 seconds; do not stop it unless the user asks.";
+        }
+
+        return null;
+    }
+
+    /// <summary>The device's slewing state; the cached info's when the device can't be read.</summary>
+    private bool LiveMountSlewing() {
+        try {
+            if (telescopeMediator.GetDevice() is ITelescope telescope && telescope.Connected) {
+                return telescope.Slewing;
+            }
+        } catch (Exception ex) {
+            LogLiveReadError("the mount's slewing state", ex);
+        }
+
+        return telescopeMediator.GetInfo()?.Slewing == true;
+    }
+
+    /// <summary>The device's parked state (the info lags up to one polling interval); the cached info's when unreadable.</summary>
+    private bool LiveMountAtPark() {
+        try {
+            if (telescopeMediator.GetDevice() is ITelescope telescope && telescope.Connected) {
+                return telescope.AtPark;
+            }
+        } catch (Exception ex) {
+            LogLiveReadError("the mount's parked state", ex);
+        }
+
+        return telescopeMediator.GetInfo()?.AtPark == true;
+    }
+
+    /// <summary>The device's RA (hours) and Dec (degrees), or null.</summary>
+    private (double Ra, double Dec)? LiveMountPosition() {
+        try {
+            if (telescopeMediator.GetDevice() is ITelescope telescope && telescope.Connected) {
+                return (telescope.RightAscension, telescope.Declination);
+            }
+        } catch (Exception ex) {
+            LogLiveReadError("the mount's position", ex);
+        }
+
+        return null;
+    }
+
+    /// <summary>At most once a minute: the park wait reads the device every second.</summary>
+    private void LogLiveReadError(string what, Exception ex) {
+        var now = DateTime.UtcNow.Ticks;
+        var last = Interlocked.Read(ref lastLiveReadErrorTicks);
+
+        if (now - last >= TimeSpan.TicksPerMinute && Interlocked.CompareExchange(ref lastLiveReadErrorTicks, now, last) == last) {
+            Logger.Error($"MCP: reading {what} failed", ex);
+        }
+    }
 
     public async Task<OperationResult> SlewAsync(double raHours, double decDegrees, CancellationToken cancellationToken) {
         var info = telescopeMediator.GetInfo();
@@ -28,6 +114,10 @@ public sealed partial class NinaObservatory {
 
         if (info.AtPark) {
             return OperationResult.Fail("Mount is parked. Unpark it first (unpark_mount).");
+        }
+
+        if (MountBusyReason() is string busy) {
+            return OperationResult.Fail(busy);
         }
 
         var stoppedGuiding = false;
@@ -79,6 +169,79 @@ public sealed partial class NinaObservatory {
         }
     }
 
+    /// <summary>
+    /// Waits while a park or home started outside MCP is under way, at most <see cref="ParkElsewhereTimeout"/>, so that
+    /// pins does not send a second park into it (a driver may refuse that, and secure_observatory closes the dome only
+    /// after a park). It starts whenever NINA's flag is set, also long after the park began. Under way: the flag in its
+    /// first seconds, then while it is still set and the driver reports slewing or the mount's position still changes (as
+    /// pins' INDI park itself judges a park by); a flag on which no motion was seen (NINA left it set) ends the wait after a
+    /// few seconds, one on a mount seen moving after 20 still seconds, as the driver may confirm the park late.
+    /// </summary>
+    /// <returns>Whether NINA's flag was set.</returns>
+    private async Task<bool> WaitForParkOrHomeElsewhereAsync(CancellationToken cancellationToken) {
+        if (!mountParkOrHome.Flag) {
+            return false;
+        }
+
+        Logger.Info("MCP: park requested while NINA's park/home flag is set; waiting while a park or home may be under way");
+
+        var deadline = DateTime.UtcNow + ParkElsewhereTimeout;
+        var lastPosition = LiveMountPosition();
+        var lastMoved = DateTime.UtcNow;
+        var sawMotion = false;
+
+        while (true) {
+            if (LiveMountAtPark()) {
+                Logger.Info("MCP: the park under way finished");
+                return true;
+            }
+
+            if (!mountParkOrHome.Flag) {
+                Logger.Info("MCP: NINA's park or home ended without the mount parked; parking");
+                return true;
+            }
+
+            var position = LiveMountPosition();
+            var moved = Moved(lastPosition, position);
+            var slewing = LiveMountSlewing();
+
+            if (moved || slewing) {
+                lastMoved = DateTime.UtcNow;
+                sawMotion = true;
+            }
+
+            lastPosition = position;
+
+            var stillFor = sawMotion ? StillAfterMotionFor : StillFor;
+
+            if (!mountParkOrHome.RecentlyStarted && DateTime.UtcNow - lastMoved >= stillFor) {
+                Logger.Info($"MCP: the mount stood still for {stillFor.TotalSeconds:0} s with NINA's park/home flag set; parking");
+                return true;
+            }
+
+            if (DateTime.UtcNow >= deadline) {
+                Logger.Warning($"MCP: a park or home started elsewhere was still under way after {ParkElsewhereTimeout.TotalMinutes:0} minutes; parking anyway");
+                return true;
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+        }
+    }
+
+    private static bool Moved((double Ra, double Dec)? before, (double Ra, double Dec)? after) {
+        if (before is not { } a || after is not { } b) {
+            return false;
+        }
+
+        // An hour of RA is 15° on the equator and less towards the pole, where mounts often park and RA readouts jitter; the
+        // floor keeps a large turn of the RA axis near the pole counting.
+        var raDegrees = Math.Abs(a.Ra - b.Ra) * 15;
+        var poleFactor = Math.Max(Math.Abs(Math.Cos((a.Dec + b.Dec) / 2 * Math.PI / 180)), 0.1);
+        raDegrees = Math.Min(raDegrees, 360 - raDegrees) * poleFactor;
+
+        return Math.Max(Math.Abs(raDegrees), Math.Abs(a.Dec - b.Dec)) > MovingDegreesPerSecond;
+    }
+
     private static string GuidingNotRestarted(bool stoppedGuiding) {
         return stoppedGuiding ? " Guiding was stopped for the slew and was not restarted; start it with start_guiding." : string.Empty;
     }
@@ -95,6 +258,13 @@ public sealed partial class NinaObservatory {
         }
 
         try {
+            // Never refused (secure_observatory parks before it closes the dome): while NINA's park/home flag is set, a motion
+            // is waited for (a park or home started elsewhere, or with a flag NINA left set any slew), and the mount parked
+            // when that was no park; without the flag, a slew under way is NINA's park's to handle.
+            if (await WaitForParkOrHomeElsewhereAsync(cancellationToken) && LiveMountAtPark()) {
+                return OperationResult.Ok("Mount parked (by a park that was already under way).");
+            }
+
             await StopGuidingBeforeMountMotionAsync(cancellationToken);
 
             var success = await RunMountMotionAsync(
@@ -119,6 +289,11 @@ public sealed partial class NinaObservatory {
 
         if (info?.Connected != true) {
             return OperationResult.Fail("Mount is not connected.");
+        }
+
+        // Before the answer below: during a park started elsewhere the mount does not report parked yet.
+        if (MountBusyReason() is string busy) {
+            return OperationResult.Fail(busy);
         }
 
         if (!info.AtPark) {
@@ -150,6 +325,20 @@ public sealed partial class NinaObservatory {
 
         if (!info.CanFindHome) {
             return OperationResult.Fail("This mount cannot find its home position.");
+        }
+
+        // NINA's home does not move a parked or homed mount, but leaves its parking/homing flag set until the next park.
+        if (info.AtPark) {
+            return OperationResult.Fail("Mount is parked. Unpark it first (unpark_mount).");
+        }
+
+        // Before the answer below: a mount leaving home reports at home until the next poll.
+        if (MountBusyReason() is string busy) {
+            return OperationResult.Fail(busy);
+        }
+
+        if (info.AtHome) {
+            return OperationResult.Ok("Mount is already at home.");
         }
 
         try {
@@ -208,15 +397,32 @@ public sealed partial class NinaObservatory {
     }
 
     /// <summary>
-    /// Aborts a running slew, park or home. Sends nothing to an idle mount: on several drivers the abort command also
-    /// stops tracking. A motion started over MCP counts as running even before the cached <c>Slewing</c> flag, which is
-    /// refreshed only once per device polling interval, reports it.
+    /// stop_all: aborts a running slew, park or home, also one started outside MCP that the driver reports as slewing (not
+    /// on NINA's park/home flag alone, which a home that did not move leaves set). Sends nothing to an idle mount: on
+    /// several drivers the abort command also stops tracking.
     /// </summary>
     public void StopSlew() {
+        StopSlew(includeMotionsElsewhere: true);
+    }
+
+    /// <summary>
+    /// The cancellation of an MCP slew, park, home or centering: aborts that motion. A motion started over MCP counts as
+    /// running even before the cached <c>Slewing</c> flag, which is refreshed only once per device polling interval,
+    /// reports it. Never reads the device (it runs inside the token's Cancel).
+    /// </summary>
+    private void StopOwnSlew() {
+        StopSlew(includeMotionsElsewhere: false);
+    }
+
+    private void StopSlew(bool includeMotionsElsewhere) {
         try {
             var info = telescopeMediator.GetInfo();
 
-            if (info?.Connected == true && (Volatile.Read(ref mountMotionsInFlight) > 0 || info.Slewing)) {
+            if (info?.Connected != true) {
+                return;
+            }
+
+            if (Volatile.Read(ref mountMotionsInFlight) > 0 || info.Slewing || (includeMotionsElsewhere && LiveMountSlewing())) {
                 telescopeMediator.StopSlew();
             }
         } catch (Exception ex) {
@@ -321,7 +527,7 @@ public sealed partial class NinaObservatory {
         Interlocked.Increment(ref mountMotionsInFlight);
 
         try {
-            using (cancellationToken.Register(StopSlew)) {
+            using (cancellationToken.Register(StopOwnSlew)) {
                 return await motion();
             }
         } finally {
@@ -567,6 +773,11 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail($"Position {position} is beyond the focuser's maximum of {info.MaxStep}.");
         }
 
+        // NINA does not serialize focuser moves: two targets would fight.
+        if (info.IsMoving) {
+            return OperationResult.Fail($"The focuser is moving (a move started outside this MCP request, e.g. from Touch-N-Stars or an autofocus run). {WaitDoNotStop}");
+        }
+
         var moveCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
         lock (focuserMoveLock) {
@@ -619,6 +830,14 @@ public sealed partial class NinaObservatory {
 
         if (focuserMediator.GetInfo()?.Connected != true) {
             return new AutofocusResult(false, "Focuser is not connected.", null, null, null, null);
+        }
+
+        if (cameraMediator.GetInfo()?.IsExposing == true) {
+            return new AutofocusResult(false, "The camera is already exposing (another capture or the sequence uses it).", null, null, null, null);
+        }
+
+        if (focuserMediator.GetInfo()?.IsMoving == true) {
+            return new AutofocusResult(false, $"The focuser is moving (a move started outside this MCP request). {WaitDoNotStop}", null, null, null, null);
         }
 
         // Same steps as the RunAutofocus sequence instruction: profile filter of the current position, window service
@@ -716,6 +935,11 @@ public sealed partial class NinaObservatory {
     public async Task<OperationResult> StartGuidingAsync(bool forceCalibration, CancellationToken cancellationToken) {
         if (guiderMediator.GetInfo()?.Connected != true) {
             return OperationResult.Fail("Guider is not connected.");
+        }
+
+        // A calibration while the mount moves comes out wrong.
+        if (forceCalibration && MountBusyReason() is string busy) {
+            return OperationResult.Fail($"Not calibrating: {busy}");
         }
 
         try {

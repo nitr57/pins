@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 using Moq;
+using System.ComponentModel;
 using NINA.Core.Utility.WindowService;
 using NINA.Equipment.Equipment.MyDome;
 using NINA.Equipment.Interfaces;
@@ -16,6 +17,34 @@ using NINA.WPF.Base.Interfaces.Mediator;
 using NINA.WPF.Base.Interfaces.ViewModel;
 
 namespace NINA.Test.Mcp {
+
+    /// <summary>Stands in for NINA's TelescopeVM.IsParkingOrHoming.</summary>
+    internal sealed class ParkingOrHomingFlag : INotifyPropertyChanged {
+
+        private volatile bool flag;
+
+        public event PropertyChangedEventHandler? PropertyChanged;
+
+        public bool Value {
+            get => flag;
+            set {
+                flag = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs("IsParkingOrHoming"));
+            }
+        }
+    }
+
+    /// <summary>A clock that only moves with <see cref="Advance"/>.</summary>
+    internal sealed class TestClock : TimeProvider {
+
+        private long ticks = new DateTimeOffset(2026, 11, 19, 20, 0, 0, TimeSpan.Zero).UtcTicks;
+
+        public void Advance(TimeSpan by) {
+            Interlocked.Add(ref ticks, by.Ticks);
+        }
+
+        public override DateTimeOffset GetUtcNow() => new(Interlocked.Read(ref ticks), TimeSpan.Zero);
+    }
 
     /// <summary>
     /// A <see cref="NinaObservatory"/> on Moq mediators. Mocks without setups return defaults; the profile mock returns
@@ -53,8 +82,14 @@ namespace NINA.Test.Mcp {
                     Mock.Of<ISequenceNavigationVM>(),
                     Profile.Object,
                     Camera.Object,
-                    Rotator.Object));
+                    Rotator.Object),
+                new MountParkOrHomeWatch(ParkOrHomeFlag, () => ParkOrHomeFlag.Value, Clock));
         }
+
+        /// <summary>NINA's park/home flag as the observatory sees it.</summary>
+        public ParkingOrHomingFlag ParkOrHomeFlag { get; } = new();
+
+        public TestClock Clock { get; } = new();
 
         public NinaObservatory Observatory { get; }
 
