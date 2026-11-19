@@ -142,4 +142,28 @@ public class GuideLogFilesTests
         FluentActions.Invoking(() => GuideLogFiles.Open(dir, "InternalGuider_GuideLog_2026-01-01.txt"))
             .Should().Throw<UnauthorizedAccessException>();
     }
+
+    [Test]
+    public void A_log_cut_in_the_middle_of_a_line_gets_a_newline_before_the_next_session()
+    {
+        string path = Path.Combine(dir, "cut.txt");
+        File.WriteAllText(path, "PHD2 version x\n1,2.0,\"Mount\",0.5");
+
+        InternalGuider.EndCutLastLine(path);
+
+        File.ReadAllText(path).Should().Be("PHD2 version x\n1,2.0,\"Mount\",0.5\n");
+    }
+
+    [Test]
+    public void A_complete_log_and_a_missing_log_are_left_alone()
+    {
+        string path = Path.Combine(dir, "complete.txt");
+        File.WriteAllText(path, "PHD2 version x\n");
+
+        InternalGuider.EndCutLastLine(path);
+        InternalGuider.EndCutLastLine(Path.Combine(dir, "missing.txt"));
+
+        File.ReadAllText(path).Should().Be("PHD2 version x\n");
+        File.Exists(Path.Combine(dir, "missing.txt")).Should().BeFalse();
+    }
 }

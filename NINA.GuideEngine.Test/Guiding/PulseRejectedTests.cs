@@ -78,6 +78,35 @@ public class PulseRejectedTests
         output.SentAfterRejection.Should().BeGreaterThan(0, "the Dec pulse of a frame whose RA pulse was rejected went out");
     }
 
+    [Test]
+    public async Task Rejected_RA_pulses_are_not_taken_for_a_mount_that_does_not_respond()
+    {
+        var clock = new VirtualClock();
+        var sim = new Simulator(SimulatorScenario.GoodMount, clock);
+        var output = new RejectingOutput(sim.Mount, clock, GuideAxis.Ra);
+        var settings = new GuiderSettings
+        {
+            FocalLengthMm = SimulatorScenario.GoodMount.Camera.FocalLengthMm,
+            ExposureMs = 2000,
+
+            // every RA correction counts as a large pulse for the response monitor, and the runaway monitor, which keeps
+            // the corrections asked for, does not end guiding first
+            Safety = new SafetySettings { NotRespondingMinExpectedPx = 0.05, RunawayMinErrorPx = 1e6, MaxPulseDuty = 1 },
+        };
+        var guider = new Guider(sim.Camera, output, sim.Mount, clock, settings, ditherSeed: 5) { AutoStartLoop = false };
+        output.Active = () => guider.State == GuiderState.Guiding;
+
+        _ = guider.StartGuidingAsync(Settle);
+        var duration = TimeSpan.FromMinutes(6);
+        guider.StartLooping(clock.CancelAt(clock.Elapsed + duration));
+        await guider.WaitForLoopAsync().Within(duration);
+
+        // before, a pulse judged although it was never sent made three frames in a row "mount not responding"
+        output.Rejected.Should().BeGreaterThan(settings.Safety.NotRespondingPulses * 5);
+        guider.LastError?.Code.Should().NotBe(GuideErrorCode.MountNotResponding);
+        output.LastRejectedAt.Should().BeGreaterThan(duration - TimeSpan.FromMinutes(1), "guiding went on to the end");
+    }
+
     /// <summary>While <see cref="Active"/>, every pulse on the axis is rejected without moving the mount.</summary>
     private sealed class RejectingOutput(SimulatedMount inner, VirtualClock clock, GuideAxis axis = GuideAxis.Dec) : IPulseOutput
     {

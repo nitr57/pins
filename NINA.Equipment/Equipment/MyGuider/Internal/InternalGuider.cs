@@ -2422,6 +2422,7 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
             // one log per night (noon to noon) like PHD2's per-session log; reconnects append to it
             var night = GuideLogNight(DateTime.Now);
             var path = Path.Combine(dir, IncidentArchive.GuideLogFileName(night));
+            EndCutLastLine(path);
             guideLogWriter = new StreamWriter(path, append: true) { AutoFlush = true };
             guideLog = new GuidingLog(guideLogWriter, SystemClock.Instance, new GuidingLogOptions { AppVersion = "pins Native Guider " + DriverVersion });
             guideLog.EnableLogging();
@@ -2465,17 +2466,64 @@ public sealed class InternalGuider : BaseINPC, IAdvancedGuider, IGuidingCoach, I
         OpenGuideLog(camera, g, mount);
     }
 
+    // A night's log that a power loss cut in the middle of a line: the next session's header starts on a line of its own
+    internal static void EndCutLastLine(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return;
+            }
+
+            using var file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite);
+            if (file.Length == 0)
+            {
+                return;
+            }
+
+            file.Seek(-1, SeekOrigin.End);
+            if (file.ReadByte() != '\n')
+            {
+                file.WriteByte((byte)'\n');
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"InternalGuider: could not check the end of the guide log {path}: {ex.Message}");
+        }
+    }
+
     private void CloseGuideLog()
     {
         try
         {
             guideLogBridge?.Dispose();
-            guideLog?.Close();
-            guideLogWriter?.Dispose();
         }
         catch
         {
             // ignore
+        }
+
+        try
+        {
+            // writes the summary; after a write failure it writes nothing
+            guideLog?.Close();
+        }
+        catch
+        {
+            // ignore
+        }
+        finally
+        {
+            try
+            {
+                guideLogWriter?.Dispose();
+            }
+            catch
+            {
+                // a writer that could not flush its last bytes still closes its file
+            }
         }
 
         guideLogBridge = null;

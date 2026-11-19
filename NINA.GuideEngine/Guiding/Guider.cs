@@ -920,6 +920,9 @@ public sealed partial class Guider : IAsyncDisposable
                 pulseModel.Interrupt(mountMoved: true);
 
                 PlayModelPulsesNotSent();
+
+                // a pulse that never went out says nothing about whether the mount responds
+                response.NoPulse();
                 return;
             }
 
@@ -931,6 +934,15 @@ public sealed partial class Guider : IAsyncDisposable
             // per axis: a rejected RA pulse leaves the Dec pulse sent, its correction applied and the Dec gear tracked
             bool raSent = sent.Any(p => p.Direction.Axis() == GuideAxis.Ra);
             bool decSent = sent.Any(p => p.Direction.Axis() == GuideAxis.Dec);
+
+            // the response monitor judges the RA pulse the frame asked for: only when it went out. The runaway monitor
+            // counted the correction before the send and keeps it: when the mount keeps rejecting RA pulses, a growing
+            // error still ends guiding there, rather than only an alert every 5 minutes while the star drifts away
+            if (!raSent)
+            {
+                response.NoPulse();
+            }
+
             if (pendingCorrection is { } applied && sent.Count > 0)
             {
                 corrector.CorrectionsApplied(raSent ? applied.RaPx : 0, decSent ? applied.DecPx : 0);
@@ -2520,15 +2532,25 @@ public sealed partial class Guider : IAsyncDisposable
 
     private void Deliver(GuiderEvent e)
     {
-        try
+        if (EventRaised is not { } handlers)
         {
-            EventRaised?.Invoke(this, e);
+            return;
         }
-        catch (Exception ex)
+
+        // each subscriber on its own: one that throws (the guide log on a full disk) must not keep the event from the
+        // ones after it (the Guiding Coach)
+        foreach (EventHandler<GuiderEvent> handler in handlers.GetInvocationList())
         {
-            // a faulty subscriber must never break the guide loop (rate-limited: a subscriber that fails on the fault
-            // event too ends there)
-            ReportFault("Guider.EventSubscriber", ex);
+            try
+            {
+                handler(this, e);
+            }
+            catch (Exception ex)
+            {
+                // a faulty subscriber must never break the guide loop (rate-limited per subscriber: a subscriber that
+                // fails on the fault event too ends there, and does not hide another subscriber's fault)
+                ReportFault("Guider.EventSubscriber." + (handler.Method.DeclaringType?.FullName ?? handler.Method.Name), ex);
+            }
         }
     }
 

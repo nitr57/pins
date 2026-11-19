@@ -179,7 +179,13 @@ namespace QHYCCD {
                 entry.Initialized = false;
             }
 
-            CheckReturn(registry.Native.InitCamera(handle), callingMethod, handle);
+            try {
+                CheckReturn(registry.Native.InitCamera(handle), callingMethod, handle);
+            } catch (QHYCameraException) when (entry?.RefCount > 1) {
+                // the handle stays open while the other device holds it, also after the camera was unplugged
+                Logger.Warning($"QhyccdSdk: Initializing {entry.Id} failed on the handle it shares with another device. If the camera was unplugged, disconnect both the camera and its filter wheel so the handle is opened again.");
+                throw;
+            }
 
             if (entry != null) {
                 entry.Initialized = true;

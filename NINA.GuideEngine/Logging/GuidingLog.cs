@@ -90,6 +90,7 @@ public sealed class GuidingLog
     private readonly GuidingLogOptions options;
     private readonly TimeZoneInfo timeZone;
     private bool enabled;
+    private bool failed;
     private bool isGuiding;
     private bool isCalibrating;
     private DateTimeOffset guidingStarted;
@@ -113,6 +114,18 @@ public sealed class GuidingLog
         get
         {
             lock (gate) return enabled;
+        }
+    }
+
+    /// <summary>
+    /// A write failed (a full or read-only disk, or the writer was closed): nothing more is written, including the
+    /// summary of <see cref="Close"/>.
+    /// </summary>
+    public bool HasFailed
+    {
+        get
+        {
+            lock (gate) return failed;
         }
     }
 
@@ -552,11 +565,43 @@ public sealed class GuidingLog
 
     private string Now() => Format(clock.UtcNow);
 
-    private void Write(string s) => writer.Write(s);
+    private void Write(string s)
+    {
+        if (failed)
+        {
+            return;
+        }
+
+        Guarded(() => writer.Write(s));
+    }
 
     private void Flush()
     {
-        if (options.AutoFlush) writer.Flush();
+        if (failed || !options.AutoFlush)
+        {
+            return;
+        }
+
+        Guarded(writer.Flush);
+    }
+
+    // The first I/O failure stops the log and is thrown once, so the guider reports it; a writer closed by its owner
+    // (a disconnect while an event is written) just stops the log.
+    private void Guarded(Action write)
+    {
+        try
+        {
+            write();
+        }
+        catch (IOException)
+        {
+            failed = true;
+            throw;
+        }
+        catch (ObjectDisposedException)
+        {
+            failed = true;
+        }
     }
 
     private void WriteGuidingHeader(GuideLogHeader h)

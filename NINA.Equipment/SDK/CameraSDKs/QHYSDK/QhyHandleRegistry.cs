@@ -142,7 +142,10 @@ namespace QHYCCD {
                     if (!closing.TryGetValue(id, out pending)) {
                         InitLocked();
 
-                        if (!open.TryGetValue(id, out var entry)) {
+                        if (open.TryGetValue(id, out var entry)) {
+                            // the usual case for a camera with its filter wheel plugged in: both use the one handle
+                            Logger.Info($"QhyccdSdk: {id} is already open, sharing its handle with {entry.RefCount} other device(s)");
+                        } else {
                             Logger.Trace($"QhyccdSdk: Opening {id}");
 
                             var handle = native.Open(id);

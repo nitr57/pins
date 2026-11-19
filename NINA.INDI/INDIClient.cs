@@ -158,6 +158,10 @@ namespace NINA.INDI {
 
             _port = port;
             _managesServer = startServer;
+            // only a client that starts indiserver has it exec the drivers; a test client's fake server knows every one
+            DriverIsInstalled = startServer
+                ? name => IsDriverInstalled(name, Environment.GetEnvironmentVariable("PATH"))
+                : _ => true;
             if (startServer) {
                 // Held like a recovery, so a server that dies during its start doesn't start a second one alongside
                 _recovering = 1;
@@ -185,6 +189,59 @@ namespace NINA.INDI {
         /// which never writes to the machine's FIFO.
         /// </summary>
         internal Action<string> FifoCommandsForTests { get; set; }
+
+        /// <summary>
+        /// Whether indiserver can start a driver of this name; replaced by tests. See <see cref="IsDriverInstalled"/>.
+        /// </summary>
+        internal Func<string, bool> DriverIsInstalled { get; set; }
+
+        // Drivers the user was told are not installed, so that a rescan does not repeat the notification
+        private readonly HashSet<string> _notInstalledNotified = [];
+
+        /// <summary>
+        /// Whether indiserver can start <paramref name="driverName"/>: it runs a driver with execlp and no prefix, so the
+        /// name (its first word, as indiserver reads it) is looked up in <paramref name="path"/> like execlp does (no PATH:
+        /// /bin and /usr/bin; an empty entry: the current directory; a name with '/' as it is) and has to be executable.
+        /// A driver of a chained server ("name@host") is not checked.
+        /// </summary>
+        internal static bool IsDriverInstalled(string driverName, string path) {
+            if (string.IsNullOrWhiteSpace(driverName) || driverName.Contains('@')) {
+                return true;
+            }
+
+            string name = driverName.Trim().Split((char[])null, 2, StringSplitOptions.RemoveEmptyEntries)[0];
+
+            if (name.Contains('/')) {
+                return IsExecutableFile(name);
+            }
+
+            foreach (string dir in (path ?? "/bin:/usr/bin").Split(':')) {
+                if (IsExecutableFile(Path.Combine(dir.Length == 0 ? "." : dir, name))) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static bool IsExecutableFile(string file) {
+            if (!File.Exists(file)) {
+                return false;
+            }
+
+            if (OperatingSystem.IsWindows()) {
+                return true;
+            }
+
+            const UnixFileMode Execute = UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute;
+
+            try {
+                return (File.GetUnixFileMode(file) & Execute) != 0;
+            } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) {
+                // gone or replaced meanwhile, e.g. while its package is upgraded
+                return false;
+            }
+        }
 
         /// <summary>
         /// Tests only: makes <see cref="Instance"/>, which every INDIDevice talks to, return this client.
@@ -347,6 +404,29 @@ namespace NINA.INDI {
             if (alreadyLoaded) {
                 // Do nothing
                 return true;
+            }
+
+            // indiserver can't start a driver that is not installed: without this the connect failed after the wait below
+            // and the driver stayed tracked as loaded, so after the user installed it no rescan ever started it
+            if (!DriverIsInstalled(driverName)) {
+                Logger.Error(driverName.Contains('/')
+                    ? $"INDI driver '{driverName}' is not installed: no executable file there"
+                    : $"INDI driver '{driverName}' is not installed: no executable of that name on the PATH");
+
+                bool notify;
+                lock (_driverLock) {
+                    notify = _notInstalledNotified.Add(driverName);
+                }
+
+                if (notify) {
+                    Notification.ShowError($"The INDI driver {driverName} is not installed. Install its package, then connect again.");
+                }
+
+                return false;
+            }
+
+            lock (_driverLock) {
+                _notInstalledNotified.Remove(driverName);
             }
 
             try {

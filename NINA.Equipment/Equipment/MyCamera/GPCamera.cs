@@ -157,38 +157,52 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         private bool canGetTemperature = true;
+        private double lastTemperature = double.NaN;
+
         public double Temperature {
             get {
-                var temp = double.NaN;
-                var value = string.Empty;
-                if (canGetTemperature) {
-                    if (GetProperty("sensortemperature", out value) == GP_ERROR_CODE.GP_OK) {
-                        if (double.TryParse(value, out temp)) {
-                            return temp;
-                        }
-                    } else if (GetProperty("sensor-temperature", out value) == GP_ERROR_CODE.GP_OK) {
-                        if (double.TryParse(value, out temp)) {
-                            return temp;
-                        }
-                    } else if (GetProperty("temp", out value) == GP_ERROR_CODE.GP_OK) {
-                        if (double.TryParse(value, out temp)) {
-                            return temp;
-                        }
-                    } else if (GetProperty("temperature", out value) == GP_ERROR_CODE.GP_OK) {
-                        if (double.TryParse(value, out temp)) {
-                            return temp;
-                        }
-                    } else if (GetProperty("cameracontrolmode", out value) == GP_ERROR_CODE.GP_OK) {
-                        if (double.TryParse(value, out temp)) {
-                            return temp;
-                        }
-                    }
-                    Logger.Error("Cannot read temperature property");
-                    canGetTemperature = false;
+                // the camera-info poll reads this every few seconds: no config reads in the middle of an exposure (they
+                // can disturb a bulb or wait for a timed capture), and a failure then does not switch the reads off
+                if (ExposureInProgress) {
+                    return lastTemperature;
                 }
 
-                return double.NaN;
+                double temp = ReadTemperature();
+                lastTemperature = temp;
+                return temp;
             }
+        }
+
+        private double ReadTemperature() {
+            var temp = double.NaN;
+            var value = string.Empty;
+            if (canGetTemperature) {
+                if (GetProperty("sensortemperature", out value) == GP_ERROR_CODE.GP_OK) {
+                    if (double.TryParse(value, out temp)) {
+                        return temp;
+                    }
+                } else if (GetProperty("sensor-temperature", out value) == GP_ERROR_CODE.GP_OK) {
+                    if (double.TryParse(value, out temp)) {
+                        return temp;
+                    }
+                } else if (GetProperty("temp", out value) == GP_ERROR_CODE.GP_OK) {
+                    if (double.TryParse(value, out temp)) {
+                        return temp;
+                    }
+                } else if (GetProperty("temperature", out value) == GP_ERROR_CODE.GP_OK) {
+                    if (double.TryParse(value, out temp)) {
+                        return temp;
+                    }
+                } else if (GetProperty("cameracontrolmode", out value) == GP_ERROR_CODE.GP_OK) {
+                    if (double.TryParse(value, out temp)) {
+                        return temp;
+                    }
+                }
+                Logger.Error("Cannot read temperature property");
+                canGetTemperature = false;
+            }
+
+            return double.NaN;
         }
 
         public double TemperatureSetPoint {
@@ -1130,8 +1144,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
         private CancellationTokenSource bulbCompletionCTS = null;
         private bool _currentExposureIsBulb = false;
         // Guards against releasing the bulb shutter more than once per exposure (the completion
-        // timer, StopExposure and an abort can all reach ReleaseShutter). Reset when pressed.
-        private bool _shutterReleased = true;
+        // timer, StopExposure and an abort can all reach ReleaseShutter, also at the same time):
+        // 1 = released, 0 = pressed. Reset when pressed; taken with Interlocked.Exchange.
+        private int _shutterReleased = 1;
 
         public void StartExposure(CaptureSequence sequence) {
             var exposureTime = sequence.ExposureTime;
@@ -1337,7 +1352,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
             }
 
             activeBulbExposureControl = BulbExposureControl.BulbToggle;
-            _shutterReleased = false;
+            Volatile.Write(ref _shutterReleased, 0);
             Logger.Debug("libgphoto2: Bulb toggle opened shutter");
             return true;
         }
@@ -1361,7 +1376,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
             }
 
             activeBulbExposureControl = BulbExposureControl.EosRemoteRelease;
-            _shutterReleased = false;
+            Volatile.Write(ref _shutterReleased, 0);
             Logger.Debug("libgphoto2: eosremoterelease opened shutter");
             return true;
         }
@@ -1390,11 +1405,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         private bool ReleaseShutter() {
-            if (_shutterReleased) {
+            if (Interlocked.Exchange(ref _shutterReleased, 1) != 0) {
                 Logger.Debug("libgphoto2: Shutter already released, skipping");
                 return true;
             }
-            _shutterReleased = true;
 
             // Release through the same control path that opened the shutter; fall back if
             // state was lost during abort/stop races.
@@ -1769,6 +1783,9 @@ namespace NINA.Equipment.Equipment.MyCamera {
         }
 
         public async Task<bool> Connect(CancellationToken token) {
+            // no value of the previous session for an exposure that starts before the first poll
+            lastTemperature = double.NaN;
+
             return await Task.Run(() => {
                 try {
                     lock (_gpLock) {

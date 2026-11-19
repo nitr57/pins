@@ -281,4 +281,72 @@ public class GuidingLogTests
         GuidingLog.StarLostStatus(StarFindResult.Error).Should().Be("No star found");
         GuidingLog.ErrorCode(StarFindResult.TooNearEdge).Should().Be(6);
     }
+
+    [Test]
+    public void A_write_failure_is_thrown_once_and_then_nothing_more_is_written()
+    {
+        var clock = new VirtualClock(Epoch);
+        var writer = new FailingWriter();
+        var log = new GuidingLog(writer, clock, new GuidingLogOptions { TimeZone = TimeZoneInfo.Utc });
+        log.EnableLogging();
+        writer.Fail = true;
+
+        // a full or read-only disk
+        var first = () => log.StartCalibration(Header());
+        first.Should().Throw<IOException>();
+        int attempts = writer.Attempts;
+
+        log.Invoking(l => l.StartCalibration(Header())).Should().NotThrow();
+        log.Invoking(l => l.Close()).Should().NotThrow("the summary is not written after a failure");
+        log.HasFailed.Should().BeTrue();
+        writer.Attempts.Should().Be(attempts, "a failed log does not try to write again");
+    }
+
+    [Test]
+    public void A_writer_closed_by_its_owner_stops_the_log_without_a_fault()
+    {
+        var clock = new VirtualClock(Epoch);
+        var text = new StringWriter();
+        var log = new GuidingLog(text, clock, new GuidingLogOptions { TimeZone = TimeZoneInfo.Utc });
+        log.EnableLogging();
+        text.Dispose();
+
+        log.Invoking(l => l.StartCalibration(Header())).Should().NotThrow();
+        log.HasFailed.Should().BeTrue();
+    }
+
+    /// <summary>Counts every write and flush; throws an <see cref="IOException"/> for each while <see cref="Fail"/> is set.</summary>
+    private sealed class FailingWriter : StringWriter
+    {
+        public bool Fail { get; set; }
+
+        public int Attempts { get; private set; }
+
+        public override void Write(string? value)
+        {
+            Attempt();
+            base.Write(value);
+        }
+
+        public override void Write(char value)
+        {
+            Attempt();
+            base.Write(value);
+        }
+
+        public override void Flush()
+        {
+            Attempt();
+            base.Flush();
+        }
+
+        private void Attempt()
+        {
+            Attempts++;
+            if (Fail)
+            {
+                throw new IOException("No space left on device");
+            }
+        }
+    }
 }

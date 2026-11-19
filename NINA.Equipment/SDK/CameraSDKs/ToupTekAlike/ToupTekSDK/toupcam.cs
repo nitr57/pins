@@ -1220,10 +1220,12 @@ namespace ToupTek {
             GC.SuppressFinalize(this);
         }
 
-        /* get the version of this dll/so, which is: 59.29331.20250824 */
+        /* get the version of this dll/so */
         public static string Version() {
-            // Workaround since touptek function seg faults
-            return "59.29331.20250824";
+            // read through IntPtr: a string return made the marshaller free the SDK's static buffer (the old segfault);
+            // a wide string only on Windows, on Linux UTF-8 (Ansi in .NET on Unix)
+            IntPtr version = Toupcam_Version();
+            return IsUnicode() ? Marshal.PtrToStringUni(version) : Marshal.PtrToStringAnsi(version);
         }
 
         private static DeviceV2[] Ptr2Device(IntPtr p, uint cnt) {
@@ -3755,8 +3757,7 @@ namespace ToupTek {
         };
 
         [DllImport(dll, ExactSpelling = true, CallingConvention = CallingConvention.Winapi)]
-        [return: MarshalAs(ut)]
-        private static extern string Toupcam_Version();
+        private static extern IntPtr Toupcam_Version();
         [DllImport(dll, ExactSpelling = true, CallingConvention = CallingConvention.Winapi), Obsolete]
         private static extern uint Toupcam_Enum(IntPtr ptr);
         [DllImport(dll, ExactSpelling = true, CallingConvention = CallingConvention.Winapi)]

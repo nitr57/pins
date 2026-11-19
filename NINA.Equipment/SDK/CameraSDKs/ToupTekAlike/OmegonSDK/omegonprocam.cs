@@ -654,7 +654,9 @@ namespace Omegon {
         /* get the version of this dll */
 
         public static string Version() {
-            return Marshal.PtrToStringUni(Omegonprocam_Version());
+            // a wide string only on Windows; on Linux the SDK returns UTF-8 (Ansi in .NET on Unix)
+            IntPtr version = Omegonprocam_Version();
+            return IsUnicode() ? Marshal.PtrToStringUni(version) : Marshal.PtrToStringAnsi(version);
         }
 
         /* enumerate Omegonprocam cameras that are currently connected to computer */

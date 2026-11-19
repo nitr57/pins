@@ -1155,7 +1155,9 @@ public class Nncam : IDisposable {
 
     /* get the version of this dll/so, which is: 57.27650.20250209 */
     public static string Version() {
-        return Marshal.PtrToStringUni(Nncam_Version());
+        // a wide string only on Windows; on Linux the SDK returns UTF-8 (Ansi in .NET on Unix)
+        IntPtr version = Nncam_Version();
+        return IsUnicode() ? Marshal.PtrToStringUni(version) : Marshal.PtrToStringAnsi(version);
     }
 
     private static DeviceV2[] Ptr2Device(IntPtr p, uint cnt) {

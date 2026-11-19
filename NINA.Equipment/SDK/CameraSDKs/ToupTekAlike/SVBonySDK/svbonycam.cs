@@ -1139,7 +1139,9 @@ public class Svbonycam : IDisposable {
 
     /* get the version of this dll/so, which is: 57.27022.20241119 */
     public static string Version() {
-        return Marshal.PtrToStringUni(Svbonycam_Version());
+        // a wide string only on Windows; on Linux the SDK returns UTF-8 (Ansi in .NET on Unix)
+        IntPtr version = Svbonycam_Version();
+        return IsUnicode() ? Marshal.PtrToStringUni(version) : Marshal.PtrToStringAnsi(version);
     }
 
     private static DeviceV2[] Ptr2Device(IntPtr p, uint cnt) {

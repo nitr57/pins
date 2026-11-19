@@ -171,6 +171,20 @@ namespace NINA.Test.INDI {
             }
         }
 
+        [Test]
+        public async Task MissingDriver_IsNotStarted_AndStartsOnceInstalled() {
+            bool installed = false;
+            client.DriverIsInstalled = _ => installed;
+
+            Assert.That(await ScanAsync("Camera", Asi), Is.Empty);
+            Assert.That(Commands(), Is.Empty, "no start for a driver indiserver can't run");
+
+            // the user installs it: the next scan starts it, it was not left tracked as loaded
+            installed = true;
+            Assert.That(await ScanAsync("Camera", Asi), Does.Contain(DeviceOf(Asi)));
+            Assert.That(Commands(), Is.EqualTo(new[] { $"start {Asi}" }));
+        }
+
         private async Task<List<string>> ScanAsync(string category, string driver) {
             var devices = await client.GetDevices(DeviceInterface.CCD_INTERFACE, driver, category);
             return devices.Select(d => d.Id).ToList();
