@@ -68,6 +68,7 @@ public sealed partial class Guider : IAsyncDisposable
     private GuidingStatistics stats;
     private RunawayDetector runaway;
     private MountResponseMonitor response;
+    private CorrectionEffectMonitor correctionEffect;
     private MountStateWatcher mountWatch;
     private CameraRetryPolicy cameraRetry;
     private ReacquirePolicy reacquire;
@@ -145,6 +146,7 @@ public sealed partial class Guider : IAsyncDisposable
         stats = new GuidingStatistics();
         runaway = new RunawayDetector(this.settings.Safety);
         response = new MountResponseMonitor(this.settings.Safety);
+        correctionEffect = new CorrectionEffectMonitor(this.settings.Safety);
         mountWatch = new MountStateWatcher(this.settings.Safety);
         cameraRetry = new CameraRetryPolicy(this.settings.Safety);
         reacquire = new ReacquirePolicy(this.settings.Safety);
@@ -946,6 +948,7 @@ public sealed partial class Guider : IAsyncDisposable
             if (pendingCorrection is { } applied && sent.Count > 0)
             {
                 corrector.CorrectionsApplied(raSent ? applied.RaPx : 0, decSent ? applied.DecPx : 0);
+                correctionEffect.CorrectionApplied(raSent ? applied.RaPx : 0);
                 if (decSent)
                 {
                     decDrift.CorrectionApplied(applied.DecPx);
@@ -1432,6 +1435,7 @@ public sealed partial class Guider : IAsyncDisposable
         secondariesLostFrames = 0;
         runaway.Reset();
         response.Reset();
+        correctionEffect.Restart();
         reacquire.Reset();
         recenter.Cancel();
         decFlip.Reset();
@@ -1488,6 +1492,7 @@ public sealed partial class Guider : IAsyncDisposable
             // skipped like a rejected jump (no pulse, the models skip the frame), and settling goes on below; a NaN kept
             // the averages NaN, so settling never succeeded and jumps were no longer rejected after the cause was gone
             response.NoPulse();
+            correctionEffect.Break();
             pulseModel.Interrupt(mountMoved: paused || measuring);
             tracker.Distances.NeedReset = true;
             ReportFault("Guider.NonFiniteOffset", new ArithmeticException(
@@ -1530,6 +1535,7 @@ public sealed partial class Guider : IAsyncDisposable
                 // guiding output is off: no corrections, statistics or safety monitors; the coach's test pulses move the
                 // mount unaccounted, so the open-loop Dec position continues in a new segment
                 decDrift.Break();
+                correctionEffect.Break();
                 pulseModelFrame = false;
                 pulseModel.Interrupt(mountMoved: true);
                 pulses = CoachMeasurementFrame(frame, r, t, mountOfs, snapshot, now, sw, raOnly);
@@ -1541,6 +1547,21 @@ public sealed partial class Guider : IAsyncDisposable
             {
                 Fail(GuideErrorCode.MountNotResponding);
                 return r;
+            }
+
+            if (paused)
+            {
+                // no corrections, and the mount may be moving: the next frame starts a new chain
+                correctionEffect.Break();
+            }
+            else
+            {
+                correctionEffect.Measured(frame.StartTime, now, frame.ExposureMs, mountOfs.X);
+                if (correctionEffect.Evaluate(now, out var effect))
+                {
+                    Alert(GuideErrorCode.CorrectionsWithoutEffect, FormattableString.Invariant(
+                        $"RA corrections of {Math.Abs(effect.ExpectedPx):F1} px in {effect.WindowSec:F0} s moved the star by {effect.Effect:F2} ± {effect.Sigma:F2} of the calibrated amount"));
+                }
             }
 
             if (!paused)
@@ -1704,11 +1725,13 @@ public sealed partial class Guider : IAsyncDisposable
         else if (r.Outcome == TrackerOutcome.JumpRejected)
         {
             response.NoPulse();
+            correctionEffect.Break();
             pulseModel.Interrupt(mountMoved: false);
         }
         else
         {
             response.NoPulse();
+            correctionEffect.Break();
             pulseModel.Interrupt(mountMoved: false);
             HandleStarLost(frame, r, now, paused, t, out pulses);
             if (!state.IsCapturing())
@@ -1947,6 +1970,7 @@ public sealed partial class Guider : IAsyncDisposable
         BeginDecBothWays();
         runaway.Reset();
         response.Reset();
+        correctionEffect.Reset();
         BeginSettle(op.Settle);
     }
 
@@ -2008,6 +2032,7 @@ public sealed partial class Guider : IAsyncDisposable
         tracker.Distances.NeedReset = true;
         runaway.Reset();
         response.Reset();
+        correctionEffect.Reset();
         SetState(GuiderState.Guiding);
         Emit(new ResumedEvent(now));
     }
@@ -2272,6 +2297,7 @@ public sealed partial class Guider : IAsyncDisposable
         {
             runaway = new RunawayDetector(s.Safety);
             response = new MountResponseMonitor(s.Safety);
+            correctionEffect = new CorrectionEffectMonitor(s.Safety);
             mountWatch = new MountStateWatcher(s.Safety);
             cameraRetry = new CameraRetryPolicy(s.Safety);
             reacquire = new ReacquirePolicy(s.Safety);
@@ -2357,6 +2383,9 @@ public sealed partial class Guider : IAsyncDisposable
         if (!lockPosition.IsValid || lockPosition.X != p.X || lockPosition.Y != p.Y)
         {
             lockPosition = p;
+
+            // the offsets jump with the lock position: the corrections' effect is judged anew
+            correctionEffect.Reset();
             Emit(new LockPositionSetEvent(clock.UtcNow, p.X, p.Y));
         }
     }

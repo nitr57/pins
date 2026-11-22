@@ -194,6 +194,64 @@ public class ClosedLoopTests
         (stop - faultAt!.Value).TotalSeconds.Should().BeLessThan(90);
     }
 
+    // The guide log of 2026-11-21: 120 mm guide scope at 6.45″/px with stars a few pixels wide, Dec 57.6°, guide rate 1×,
+    // 0.5 s exposures with frames that now and then come late. Nothing drifts; with pulses that have no effect the star
+    // stays put, as a guide "star" fixed on the sensor does, and Predictive RA takes the offset that never goes away for
+    // drift.
+    private static SimulatorScenario StillStar { get; } = SimulatorScenario.GoodMount with
+    {
+        Mount = new MountSimConfig { DeclinationDeg = 57.6, GuideRateRa = 1, GuideRateDec = 1 },
+        Sky = SimulatorScenario.GoodMount.Sky with { SeeingJitterArcsec = 0.05, FwhmArcsec = 16 },
+        Camera = SimulatorScenario.GoodMount.Camera with { FocalLengthMm = 120, PixelSizeUm = 3.75, DownloadJitterMs = 100 },
+    };
+
+    private static GuiderSettings FastPredictive(GuiderSettings s) => s with
+    {
+        ExposureMs = 500,
+        RaAlgorithm = new AlgorithmSettings(GuideAlgorithmKind.Predictive),
+        DecAlgorithm = new AlgorithmSettings(GuideAlgorithmKind.Predictive),
+    };
+
+    [Test]
+    public async Task Warns_when_the_corrections_have_no_visible_effect()
+    {
+        var h = new Harness(StillStar, FastPredictive);
+        DateTimeOffset? faultAt = null;
+        h.OnEvent = e =>
+        {
+            if (e is SettleDoneEvent && faultAt is null)
+            {
+                faultAt = e.Timestamp;
+                h.Sim.Mount.NotResponding = true;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(12));
+
+        var warning = h.Events.OfType<AlertEvent>().FirstOrDefault(a => a.Code == GuideErrorCode.CorrectionsWithoutEffect);
+        warning.Should().NotBeNull();
+        TestContext.Out.WriteLine($"warned {(warning!.Timestamp - faultAt!.Value).TotalSeconds:F0} s after the fault: {warning.Detail}");
+        warning.Severity.Should().Be(GuideErrorSeverity.Warning);
+        (warning.Timestamp - faultAt.Value).TotalMinutes.Should().BeLessThan(8);
+        h.Events.OfType<AlertEvent>().Where(a => a.Timestamp < warning.Timestamp).Should().NotContain(a => a.Severity == GuideErrorSeverity.Critical,
+            "none of the other checks sees pulses that should move the star by a few tenths of a pixel each");
+    }
+
+    [Test]
+    public async Task Corrections_that_cancel_a_large_drift_are_not_taken_for_no_effect()
+    {
+        // the star stays put just as well, but because the corrections, all in one direction, cancel 1.5″/s of RA drift
+        var h = new Harness(StillStar with { Mount = StillStar.Mount with { RaDriftArcsecPerMin = 90 } }, FastPredictive);
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(20));
+
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Severity == GuideErrorSeverity.Critical);
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.CorrectionsWithoutEffect);
+        h.Events.OfType<GuideStepEvent>().Where(s => s.RaDuration > 0).Select(s => s.RaDirection).Distinct().Should().ContainSingle(
+            "the corrections all go one way, as on the night of the guide log");
+    }
+
     [Test]
     public async Task Retries_transient_camera_failures_and_fails_on_persistent_ones()
     {
