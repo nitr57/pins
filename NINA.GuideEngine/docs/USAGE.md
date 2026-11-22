@@ -71,6 +71,10 @@ curl "$H/set-setting?settingName=InternalGuiderSetting&newValue=MinSnr=8"  # any
   press *Guide on this star* (`IAdvancedGuider.SelectGuideStar`, `POST /api/internal-guider/select-star`). The star
   nearest the tap becomes the primary on the next frame and the secondary stars are found around it; then press
   Guide. To change the star while guiding: Stop, Loop, tap, Guide (the calibration is kept).
+* **A new guide star after a stop**: when guiding or calibration stopped or failed, or the exposures stopped (NINA
+  stops the guider for slews), the next start selects a new star instead of searching at the old star's position,
+  where after a slew it could take whatever is there for the star. A star tapped after the stop is kept. If no star can
+  be selected, guiding starts on the previous one with a `NoStarFound` warning. The calibration is kept either way.
 * **Multi-star**: up to 9 stars (PHD2 algorithm). If the primary star drops out for a frame, its
   position is estimated from ≥3 agreeing secondaries instead of declaring the star lost. When the secondaries
   stay lost while the primary is found (the primary changed to a neighbouring star), they are found again around
