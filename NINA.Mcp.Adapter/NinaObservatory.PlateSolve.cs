@@ -26,7 +26,7 @@ public sealed partial class NinaObservatory {
         }
 
         if (camera.IsExposing) {
-            return new PlateSolveOutcome(false, "The camera is already exposing (another capture or the sequence uses it).", null);
+            return new PlateSolveOutcome(false, $"The camera is already exposing (another capture or the sequence uses it). {WaitDoNotStop}", null);
         }
 
         var mountConnected = telescopeMediator.GetInfo()?.Connected == true;
@@ -130,7 +130,7 @@ public sealed partial class NinaObservatory {
         }
 
         if (camera.IsExposing) {
-            return new PlateSolveOutcome(false, "The camera is already exposing (another capture or the sequence uses it).", null);
+            return new PlateSolveOutcome(false, $"The camera is already exposing (another capture or the sequence uses it). {WaitDoNotStop}", null);
         }
 
         if (!TryTakeCaptureBlock(out var holdsCaptureBlock)) {

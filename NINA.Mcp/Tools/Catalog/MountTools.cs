@@ -111,7 +111,8 @@ internal sealed class MountMotionTool : ObservatoryTool {
             "Park mount",
             "Moves the mount to its park position and stops tracking (end of session, bad weather). Moves the telescope; "
             + "guiding is stopped first. Runs as a background job holding the mount; refused while a guiding start job runs. "
-            + "Use unpark_mount before the next slew.",
+            + "A park or home already under way from Touch-N-Stars or the sequence is waited for (up to 5 minutes) before "
+            + "parking; a park under way is not sent a second time. Use unpark_mount before the next slew.",
             "Park mount",
             ParkRequiresIdle,
             (target, token) => target.ParkAsync(token));

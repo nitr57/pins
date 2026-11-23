@@ -163,17 +163,19 @@ namespace NINA.Equipment.Equipment.MyCamera {
             get {
                 // the camera-info poll reads this every few seconds: no config reads in the middle of an exposure (they
                 // can disturb a bulb or wait for a timed capture), and a failure then does not switch the reads off
+                int startsBefore = Volatile.Read(ref exposureStarts);
+
                 if (ExposureInProgress) {
                     return lastTemperature;
                 }
 
-                double temp = ReadTemperature();
+                double temp = ReadTemperature(startsBefore);
                 lastTemperature = temp;
                 return temp;
             }
         }
 
-        private double ReadTemperature() {
+        private double ReadTemperature(int exposureStartsBefore) {
             var temp = double.NaN;
             var value = string.Empty;
             if (canGetTemperature) {
@@ -198,6 +200,13 @@ namespace NINA.Equipment.Equipment.MyCamera {
                         return temp;
                     }
                 }
+
+                // An exposure that began after the getter's check (and may be over again by now) makes the camera refuse the
+                // reads above: that is no camera without a temperature, so the reads stay on and the last value stands.
+                if (ExposureInProgress || Volatile.Read(ref exposureStarts) != exposureStartsBefore) {
+                    return lastTemperature;
+                }
+
                 Logger.Error("Cannot read temperature property");
                 canGetTemperature = false;
             }
@@ -317,6 +326,10 @@ namespace NINA.Equipment.Equipment.MyCamera {
         // From StartExposure until the image is downloaded or the exposure is aborted. downloadExposure completes as
         // soon as the image is on the camera, before its download.
         private volatile bool _exposureBusy;
+
+        // Counts the exposures started, raised after _exposureBusy is set: a reader that took the count before it saw
+        // _exposureBusy false can tell afterwards whether an exposure began in between, also one that has ended again.
+        private int exposureStarts;
 
         private bool ExposureInProgress => _exposureBusy;
 
@@ -1172,6 +1185,7 @@ namespace NINA.Equipment.Equipment.MyCamera {
                 useBulb = ShouldUseBulbExposure(exposureTime);
                 _currentExposureIsBulb = useBulb;
                 _exposureBusy = true;
+                Interlocked.Increment(ref exposureStarts);
             }
 
             // Set exposure time first if not using bulb mode

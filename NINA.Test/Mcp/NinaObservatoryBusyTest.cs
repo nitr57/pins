@@ -92,6 +92,50 @@ namespace NINA.Test.Mcp {
             Assert.That(result.Success, Is.True, result.Message);
             Assert.That(result.Message, Does.Contain("already under way"));
             harness.Telescope.Verify(mediator => mediator.ParkTelescope(It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Never);
+            harness.Guider.Verify(mediator => mediator.StopGuiding(It.IsAny<CancellationToken>()), Times.Once, "guiding is stopped also when the park was already under way");
+        }
+
+        [Test]
+        public async Task Park_WhenAParkElsewhereStartsWhileGuidingStops_WaitsForIt_AndDoesNotParkAgain() {
+            var info = new TelescopeInfo { Connected = true, CanFindHome = true };
+            harness.Telescope.Setup(mediator => mediator.GetInfo()).Returns(info);
+            telescope.SetupGet(device => device.AtPark).Returns(() => info.AtPark);
+            harness.Guider
+                .Setup(mediator => mediator.StopGuiding(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => {
+                    // Touch-N-Stars parks the mount while the guider stops.
+                    harness.ParkOrHomeFlag.Value = true;
+                    info.AtPark = true;
+
+                    return true;
+                });
+
+            var result = await harness.Observatory.ParkAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.That(result.Success, Is.True, result.Message);
+            Assert.That(result.Message, Does.Contain("already under way"));
+            harness.Telescope.Verify(mediator => mediator.ParkTelescope(It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        [Test]
+        public async Task Park_WhenAParkElsewhereEndsWhileGuidingStops_DoesNotParkAgain() {
+            // NINA dropped its flag again when that park ended, and the info from before the guiding stop is stale.
+            var info = new TelescopeInfo { Connected = true, CanFindHome = true };
+            harness.Telescope.Setup(mediator => mediator.GetInfo()).Returns(info);
+            telescope.SetupGet(device => device.AtPark).Returns(() => info.AtPark);
+            harness.Guider
+                .Setup(mediator => mediator.StopGuiding(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => {
+                    info.AtPark = true;
+
+                    return true;
+                });
+
+            var result = await harness.Observatory.ParkAsync(CancellationToken.None);
+
+            Assert.That(result.Success, Is.True, result.Message);
+            Assert.That(result.Message, Is.EqualTo("Mount is already parked."));
+            harness.Telescope.Verify(mediator => mediator.ParkTelescope(It.IsAny<IProgress<ApplicationStatus>>(), It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Test]
@@ -341,7 +385,20 @@ namespace NINA.Test.Mcp {
             var result = await harness.Observatory.RunAutofocusAsync(CancellationToken.None);
 
             Assert.That(result.Success, Is.False);
-            Assert.That(result.Message, Does.Contain("already exposing"));
+            Assert.That(result.Message, Does.Contain("already exposing").And.Contain("do not stop it unless the user asks"));
+        }
+
+        [Test]
+        public async Task Center_WhileSlewing_IsRefusedWithoutMovingOrStoppingGuiding() {
+            MountSlewsLive();
+            harness.Camera.Setup(mediator => mediator.GetInfo()).Returns(new CameraInfo { Connected = true });
+
+            var result = await harness.Observatory.CenterAsync(5.5, 20, CancellationToken.None);
+
+            Assert.That(result.Success, Is.False);
+            Assert.That(result.Message, Does.Contain("driver reports slewing").And.Contain("do not stop it unless the user asks"));
+            harness.Telescope.Verify(mediator => mediator.SlewToCoordinatesAsync(It.IsAny<Coordinates>(), It.IsAny<CancellationToken>()), Times.Never);
+            harness.Guider.Verify(mediator => mediator.StopGuiding(It.IsAny<CancellationToken>()), Times.Never);
         }
 
         [Test]
@@ -366,6 +423,42 @@ namespace NINA.Test.Mcp {
             Assert.That(result.Success, Is.False);
             Assert.That(result.Message, Does.Contain("do not move or reopen the dome unless the user asks"));
             harness.Dome.Verify(mediator => mediator.OpenShutter(It.IsAny<CancellationToken>()), Times.Never);
+        }
+
+        [Test]
+        public async Task DomeClose_WhileTheShutterCloses_IsNotRefused() {
+            // secure_observatory closes the dome whatever else is closing it already.
+            var info = new DomeInfo { Connected = true, CanSetShutter = true, ShutterStatus = ShutterState.ShutterClosing };
+            var dome = new Mock<IDome>();
+            dome.SetupGet(device => device.ShutterStatus).Returns(() => info.ShutterStatus);
+            harness.Dome.Setup(mediator => mediator.GetDevice()).Returns(dome.Object);
+            harness.Dome.Setup(mediator => mediator.GetInfo()).Returns(info);
+            harness.Dome
+                .Setup(mediator => mediator.CloseShutter(It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => {
+                    info.ShutterStatus = ShutterState.ShutterClosed;
+
+                    return true;
+                });
+
+            var result = await harness.Observatory.ControlDomeAsync(DomeAction.CloseShutter, null, CancellationToken.None);
+
+            Assert.That(result.Success, Is.True, result.Message);
+            harness.Dome.Verify(mediator => mediator.CloseShutter(It.IsAny<CancellationToken>()), Times.Once);
+        }
+
+        [Test]
+        public async Task DomeStopFollowing_WhileTheShutterCloses_IsNotRefused() {
+            var dome = new Mock<IDome>();
+            dome.SetupGet(device => device.ShutterStatus).Returns(ShutterState.ShutterClosing);
+            harness.Dome.Setup(mediator => mediator.GetDevice()).Returns(dome.Object);
+            harness.Dome.Setup(mediator => mediator.GetInfo()).Returns(new DomeInfo { Connected = true, CanSetShutter = true, ShutterStatus = ShutterState.ShutterClosing });
+            harness.Dome.Setup(mediator => mediator.DisableFollowing(It.IsAny<CancellationToken>())).ReturnsAsync(true);
+
+            var result = await harness.Observatory.ControlDomeAsync(DomeAction.StopFollowing, null, CancellationToken.None);
+
+            Assert.That(result.Success, Is.True, result.Message);
+            harness.Dome.Verify(mediator => mediator.DisableFollowing(It.IsAny<CancellationToken>()), Times.Once);
         }
     }
 

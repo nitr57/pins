@@ -64,6 +64,8 @@ Use the solution-root [`.runsettings`](../../../../.runsettings) for Visual Stud
 | MGEN command protocol | `NINA.Test.MGEN.Commands` | guider sequence items/triggers and equipment guider adapter checks |
 | Internal guider device (`NINA.Equipment/Equipment/MyGuider/Internal`) | `NINA.Test.Equipment.MyGuider.Internal` | the engine tests below, `NINA.Test.Plugin` (MEF export) and `NINA.Test.Mediator.CameraMediatorTest` (capture block) |
 | Internal guider engine (`NINA.GuideEngine`) | separate project: `dotnet test NINA.GuideEngine.Test --filter "TestCategory!=Slow&TestCategory!=Benchmark&TestCategory!=Performance"` | the `Slow` category (closed-loop simulator nights, several minutes); `Parity` after building `NINA.GuideEngine/tools/phd2-parity` |
+| INDI client and device adapters (`NINA.INDI`) | `NINA.Test.INDI` | the `NINA.Equipment` wrapper's fixtures (`NINA.Test.Equipment`, `NINA.Test.Rotator`, `NINA.Test.Dome`, `NINA.Test.FlatDevice`) when the wrapper changed too |
+| MCP adapter (`NINA.Mcp.Adapter`) | `NINA.Test.Mcp` | separate project for the protocol, jobs and tool catalog: `dotnet test NINA.Mcp.Test` |
 | Plugin versions/message broker | `NINA.Test.Plugin` | profile plugin settings, plugin-loader composition, sequencer serialization/discovery if extension surfaces changed |
 | Sequencer engine/container strategies | `NINA.Test.Sequencer.SequencerTest`, `NINA.Test.Sequencer.Container`, `NINA.Test.Sequencer.Container.ExecutionStrategy` | sequence item/condition/trigger tests and serialization |
 | Sequencer conditions | `NINA.Test.Sequencer.Conditions` | expression contract tests and astrometry/nighttime tests; run compiled-template cases in the WPF group below |

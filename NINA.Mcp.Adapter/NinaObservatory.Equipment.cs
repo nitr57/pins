@@ -258,14 +258,21 @@ public sealed partial class NinaObservatory {
         }
 
         try {
+            // Before the wait, not after it: stopping the guider takes seconds, and a park started elsewhere in that time
+            // would get a second park, as NINA's flag was read before it. A park that was already under way also ends with
+            // guiding stopped that way.
+            await StopGuidingBeforeMountMotionAsync(cancellationToken);
+
             // Never refused (secure_observatory parks before it closes the dome): while NINA's park/home flag is set, a motion
             // is waited for (a park or home started elsewhere, or with a flag NINA left set any slew), and the mount parked
             // when that was no park; without the flag, a slew under way is NINA's park's to handle.
-            if (await WaitForParkOrHomeElsewhereAsync(cancellationToken) && LiveMountAtPark()) {
-                return OperationResult.Ok("Mount parked (by a park that was already under way).");
-            }
+            var flagWasSet = await WaitForParkOrHomeElsewhereAsync(cancellationToken);
 
-            await StopGuidingBeforeMountMotionAsync(cancellationToken);
+            // Read from the device, also without the flag: a park elsewhere that ended while the guider stopped has dropped
+            // the flag again, and a second park would make NINA report the mount parked twice.
+            if (LiveMountAtPark()) {
+                return OperationResult.Ok(flagWasSet ? "Mount parked (by a park that was already under way)." : "Mount is already parked.");
+            }
 
             var success = await RunMountMotionAsync(
                 () => telescopeMediator.ParkTelescope(CreateProgress(), cancellationToken),
@@ -545,7 +552,7 @@ public sealed partial class NinaObservatory {
         }
 
         if (info.IsExposing) {
-            return new CaptureResult(false, "The camera is already exposing (another capture or the sequence uses it).", null);
+            return new CaptureResult(false, $"The camera is already exposing (another capture or the sequence uses it). {WaitDoNotStop}", null);
         }
 
         FilterInfo? filter = null;
@@ -833,7 +840,7 @@ public sealed partial class NinaObservatory {
         }
 
         if (cameraMediator.GetInfo()?.IsExposing == true) {
-            return new AutofocusResult(false, "The camera is already exposing (another capture or the sequence uses it).", null, null, null, null);
+            return new AutofocusResult(false, $"The camera is already exposing (another capture or the sequence uses it). {WaitDoNotStop}", null, null, null, null);
         }
 
         if (focuserMediator.GetInfo()?.IsMoving == true) {

@@ -22,9 +22,10 @@ public sealed partial class NinaObservatory {
             return OperationResult.Fail("Rotator is not connected.");
         }
 
-        // A second move replaces the first one's cancellation, and the first one then never reaches its target.
+        // A second move replaces the first one's cancellation, and the first one then never reaches its target. NINA keeps
+        // reporting a move that was cancelled as moving until its next poll, so the move need not be someone else's.
         if (info.IsMoving) {
-            return OperationResult.Fail($"The rotator is moving (a move started outside this MCP request, e.g. from Touch-N-Stars or the sequence). {WaitDoNotStop}");
+            return OperationResult.Fail($"The rotator is still moving (a move from Touch-N-Stars or the sequence, or one that was just cancelled). {WaitDoNotStop}");
         }
 
         // RotatorVM.GetTargetPosition throws for sky angles until a plate solve synced the rotator.

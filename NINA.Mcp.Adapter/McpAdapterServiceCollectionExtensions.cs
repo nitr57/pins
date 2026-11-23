@@ -36,6 +36,10 @@ public static class McpAdapterServiceCollectionExtensions {
         services.AddSingleton(provider => {
             var telescopeVM = provider.GetService<ITelescopeVM>() as TelescopeVM;
 
+            if (telescopeVM == null) {
+                NINA.Core.Utility.Logger.Warning("MCP: NINA's TelescopeVM is not available, so a park or home started outside MCP is only seen once the driver reports the motion");
+            }
+
             return new MountParkOrHomeWatch(telescopeVM, () => telescopeVM?.IsParkingOrHoming == true, TimeProvider.System);
         });
         services.AddSingleton<IPinsObservatory, NinaObservatory>();
