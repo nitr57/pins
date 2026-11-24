@@ -8,6 +8,7 @@ using NINA.GuideEngine.Coach;
 using NINA.GuideEngine.Core;
 using NINA.GuideEngine.Imaging;
 using NINA.GuideEngine.MultiStar;
+using NINA.GuideEngine.Simulation;
 using NINA.GuideEngine.Stars;
 using NINA.GuideEngine.Stats;
 
@@ -69,6 +70,11 @@ public sealed partial class Guider : IAsyncDisposable
     private RunawayDetector runaway;
     private MountResponseMonitor response;
     private CorrectionEffectMonitor correctionEffect;
+
+    // when the frame being processed was requested and arrived, in seconds of the monotonic clock (frame timing for the
+    // CorrectionEffectMonitor, which a step of the system clock must not reach)
+    private double frameRequestedSec;
+    private double frameArrivedSec;
     private MountStateWatcher mountWatch;
     private CameraRetryPolicy cameraRetry;
     private ReacquirePolicy reacquire;
@@ -732,11 +738,14 @@ public sealed partial class Guider : IAsyncDisposable
 
                 GuideFrame raw;
                 cycleTimer.CaptureStarting(clock.UtcNow, settings.ExposureMs);
+                double requestedSec = clock.NowSeconds();
                 try
                 {
                     raw = await camera.CaptureAsync(new CaptureRequest(settings.ExposureMs, settings.Binning, default, settings.Gain, settings.Offset), ct)
                         .ConfigureAwait(false);
                     cycleTimer.FrameReady(clock.UtcNow);
+                    frameRequestedSec = requestedSec;
+                    frameArrivedSec = clock.NowSeconds();
                     cameraRetry.Success();
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -1556,8 +1565,8 @@ public sealed partial class Guider : IAsyncDisposable
             }
             else
             {
-                correctionEffect.Measured(frame.StartTime, now, frame.ExposureMs, mountOfs.X);
-                if (correctionEffect.Evaluate(now, out var effect))
+                correctionEffect.Measured(frameRequestedSec, frameArrivedSec, frame.ExposureMs, mountOfs.X);
+                if (correctionEffect.Evaluate(frameArrivedSec, out var effect))
                 {
                     Alert(GuideErrorCode.CorrectionsWithoutEffect, FormattableString.Invariant(
                         $"RA corrections of {Math.Abs(effect.ExpectedPx):F1} px in {effect.WindowSec:F0} s moved the star by {effect.Effect:F2} ± {effect.Sigma:F2} of the calibrated amount"));

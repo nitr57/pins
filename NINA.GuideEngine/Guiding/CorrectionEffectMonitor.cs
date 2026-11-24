@@ -24,41 +24,58 @@ public readonly record struct CorrectionEffect(double Effect, double Sigma, doub
 /// the effect is g = (d·T − ΔP) / ΣC with ΔP the star's net move and ΣC the sum of the corrections (mount px as
 /// calibrated). The regression also takes the correction before each frame, since pulses delay the next exposure, and
 /// the change of the time between the capture request and the frame's arrival, since the camera may start the
-/// exposure late (then the request times alone would underestimate the drift). Without timing jitter or with a noisy
-/// star the effect is not measured precisely enough and nothing is judged; the check is made for a still "star" with
-/// pulses that keep growing. RA only, like <see cref="MountResponseMonitor"/>: Dec pulses may be absorbed by backlash.
+/// exposure late (then the request times alone would underestimate the drift).
+/// <para>
+/// Each correction follows the measured offset and so carries that frame's measurement noise, which the next move
+/// carries with the opposite sign. Plain least squares then biases the correction's coefficient and, through its
+/// correlation with the timing (a late start moves the star before it is measured), the drift: the effect came out
+/// 20 % too high with 0.015 px of noise and late starts. So the coefficients come from two-stage least squares, with
+/// instruments that this noise doesn't reach: the overhead of the earlier frame (the request interval without the
+/// pulses and the processing), the change of the overhead, and the correction and request interval of the pair
+/// before.
+/// </para>
+/// Times are seconds of a monotonic clock: a step of the system clock would be taken for a long interval with no move.
+/// Without timing jitter or with a noisy star the effect is not measured precisely enough and nothing is judged; the
+/// check is made for a still "star" with pulses that keep growing. RA only, like <see cref="MountResponseMonitor"/>: Dec
+/// pulses may be absorbed by backlash.
 /// </remarks>
 public sealed class CorrectionEffectMonitor(SafetySettings settings)
 {
-    // a pair longer than this (a stall, a clock step) breaks the chain
+    // a pair longer than this (a stall) breaks the chain
     private const double MaxPairSec = 60;
 
     // timing columns that vary less than this (s) carry no information
     private const double MinTimingSigmaSec = 1e-4;
 
+    // columns of the cross-product matrix: regressors, instruments, and the move
+    private const int Interval = 0, OverheadChange = 1, Correction = 2, OverheadBefore = 3, CorrectionBefore = 4, IntervalBefore = 5, Move = 6, Columns = 7;
+
     private readonly Queue<Pair> pairs = new();
     private Measurement? last;
+    private Pair? lastPair;
     private double correctionSinceLast;
-    private DateTimeOffset? lastWarning;
-    private DateTimeOffset? belowSince;
+    private double? lastWarningSec;
+    private double? belowSinceSec;
 
-    private readonly record struct Measurement(DateTimeOffset Start, double OverheadSec, double PositionPx);
+    private readonly record struct Measurement(double RequestSec, double OverheadSec, double PositionPx);
 
-    // between two measurements: the request interval, the change of the overhead, the correction sent and the star's move
-    private readonly record struct Pair(DateTimeOffset End, double IntervalSec, double OverheadChangeSec, double CorrectionPx, double MovePx);
+    // between two measurements: the request interval, the change of the overhead, the correction sent and the star's
+    // move, with the overhead of the earlier frame and the correction and interval of the pair before as instruments
+    private readonly record struct Pair(double EndSec, double IntervalSec, double OverheadChangeSec, double CorrectionPx, double MovePx,
+        double OverheadBeforeSec, double CorrectionBeforePx, double IntervalBeforeSec);
 
     /// <summary>Forgets the window and the time of the last warning (guiding started).</summary>
     public void Restart()
     {
         Reset();
-        lastWarning = null;
+        lastWarningSec = null;
     }
 
     /// <summary>Forgets the window (lock position moved, resume after a pause).</summary>
     public void Reset()
     {
         pairs.Clear();
-        belowSince = null;
+        belowSinceSec = null;
         Break();
     }
 
@@ -66,41 +83,50 @@ public sealed class CorrectionEffectMonitor(SafetySettings settings)
     public void Break()
     {
         last = null;
+        lastPair = null;
         correctionSinceLast = 0;
     }
 
     /// <summary>
-    /// A guide frame's RA offset (mount px). <paramref name="start"/> is when the exposure was requested (default when
-    /// unknown), <paramref name="arrival"/> when the frame arrived.
+    /// A guide frame's RA offset (mount px). <paramref name="requestSec"/> is when the exposure was requested,
+    /// <paramref name="arrivalSec"/> when the frame arrived, both in seconds of a monotonic clock.
     /// </summary>
-    public void Measured(DateTimeOffset start, DateTimeOffset arrival, double exposureMs, double raOffsetPx)
+    public void Measured(double requestSec, double arrivalSec, double exposureMs, double raOffsetPx)
     {
-        if (!double.IsFinite(raOffsetPx))
+        double overhead = arrivalSec - requestSec - exposureMs / 1000.0;
+        if (!double.IsFinite(raOffsetPx) || !double.IsFinite(overhead))
         {
             Break();
             return;
         }
 
-        // without a start time the arrival stands in for it (and the overhead column drops out)
-        var s = start == default ? arrival : start;
-        double overhead = start == default ? 0 : (arrival - start).TotalSeconds - exposureMs / 1000.0;
-        var m = new Measurement(s, overhead, raOffsetPx);
+        var m = new Measurement(requestSec, overhead, raOffsetPx);
         if (last is { } p)
         {
-            double dt = (m.Start - p.Start).TotalSeconds;
-            if (dt > 0 && dt <= MaxPairSec && double.IsFinite(overhead))
+            double dt = m.RequestSec - p.RequestSec;
+            if (dt > 0 && dt <= MaxPairSec)
             {
-                pairs.Enqueue(new Pair(m.Start, dt, m.OverheadSec - p.OverheadSec, correctionSinceLast, m.PositionPx - p.PositionPx));
+                var pair = new Pair(m.RequestSec, dt, m.OverheadSec - p.OverheadSec, correctionSinceLast, m.PositionPx - p.PositionPx,
+                    p.OverheadSec, lastPair?.CorrectionPx ?? 0, lastPair?.IntervalSec ?? 0);
+
+                // the first pair of a chain has no pair before it to take the instruments from
+                if (lastPair is not null)
+                {
+                    pairs.Enqueue(pair);
+                }
+
+                lastPair = pair;
             }
             else
             {
                 pairs.Clear();
+                lastPair = null;
             }
         }
 
         last = m;
         correctionSinceLast = 0;
-        while (pairs.Count > 0 && (m.Start - pairs.Peek().End).TotalSeconds > settings.NoEffectWindowSec)
+        while (pairs.Count > 0 && m.RequestSec - pairs.Peek().EndSec > settings.NoEffectWindowSec)
         {
             pairs.Dequeue();
         }
@@ -119,66 +145,60 @@ public sealed class CorrectionEffectMonitor(SafetySettings settings)
     public CorrectionEffect? Estimate()
     {
         int n = pairs.Count;
-        if (n < Math.Max(settings.NoEffectMinFrames, 6))
+        if (n < Math.Max(settings.NoEffectMinFrames, 8))
         {
             return null;
         }
 
-        double sumT = 0, sumO = 0, sumC = 0, sumY = 0;
+        Span<double> sum = stackalloc double[Columns];
         foreach (var p in pairs)
         {
-            sumT += p.IntervalSec;
-            sumO += p.OverheadChangeSec;
-            sumC += p.CorrectionPx;
-            sumY += p.MovePx;
+            Fill(p, sum, add: true);
         }
 
-        if (sumT < settings.NoEffectWindowSec / 2)
+        double sumT = sum[Interval], sumC = sum[Correction], sumY = sum[Move];
+        if (sumT < settings.NoEffectWindowSec / 2 || Math.Abs(sumC) < 1e-9)
         {
             return null;
         }
 
-        // centred cross products of the columns (request interval, change of the overhead, correction) and the move
-        double mT = sumT / n, mO = sumO / n, mC = sumC / n, mY = sumY / n;
-        var xx = new double[3, 3];
-        var xy = new double[3];
-        double yy = 0;
-        Span<double> x = stackalloc double[3];
+        // centred cross products of all columns
+        Span<double> mean = stackalloc double[Columns];
+        for (int i = 0; i < Columns; i++)
+        {
+            mean[i] = sum[i] / n;
+        }
+
+        var s = new double[Columns, Columns];
+        Span<double> v = stackalloc double[Columns];
         foreach (var p in pairs)
         {
-            x[0] = p.IntervalSec - mT;
-            x[1] = p.OverheadChangeSec - mO;
-            x[2] = p.CorrectionPx - mC;
-            double y = p.MovePx - mY;
-            for (int i = 0; i < 3; i++)
+            Fill(p, v, add: false);
+            for (int i = 0; i < Columns; i++)
             {
-                xy[i] += x[i] * y;
-                for (int j = 0; j < 3; j++)
-                {
-                    xx[i, j] += x[i] * x[j];
-                }
+                v[i] -= mean[i];
             }
 
-            yy += y * y;
+            for (int i = 0; i < Columns; i++)
+            {
+                for (int j = 0; j < Columns; j++)
+                {
+                    s[i, j] += v[i] * v[j];
+                }
+            }
         }
 
-        if (Math.Sqrt(xx[0, 0] / n) < MinTimingSigmaSec)
+        if (Math.Sqrt(s[Interval, Interval] / n) < MinTimingSigmaSec || s[Correction, Correction] <= 0)
         {
             return null;
         }
 
-        // The request interval always, the overhead when it varies, the correction whenever it varies. The correction is
-        // never left out to make the system solvable: without timing jitter the intervals vary only with the pulses that
-        // delay the next exposure, and the interval alone would then take the pulses' effect for drift.
-        bool useOverhead = Math.Sqrt(xx[1, 1] / n) >= MinTimingSigmaSec;
-        bool useCorrection = xx[2, 2] > 0;
-        if (!TrySolve(xx, xy, yy, n, useOverhead, useCorrection, out double drift, out double driftVar, out double residualVar)
-            && !(useOverhead && TrySolve(xx, xy, yy, n, false, useCorrection, out drift, out driftVar, out residualVar)))
-        {
-            return null;
-        }
-
-        if (Math.Abs(sumC) < 1e-9)
+        // The overhead columns when the overhead varies. The correction is always a regressor: without timing jitter the
+        // intervals vary only with the pulses that delay the next exposure, and the interval alone would then take the
+        // pulses' effect for drift.
+        bool useOverhead = Math.Sqrt(s[OverheadChange, OverheadChange] / n) >= MinTimingSigmaSec;
+        if (!TrySolve(s, n, useOverhead, out double drift, out double driftVar, out double residualVar)
+            && !(useOverhead && TrySolve(s, n, false, out drift, out driftVar, out residualVar)))
         {
             return null;
         }
@@ -194,13 +214,14 @@ public sealed class CorrectionEffectMonitor(SafetySettings settings)
     /// their measured effect has stayed clearly below <see cref="SafetySettings.NoEffectMaxFraction"/> for
     /// <see cref="SafetySettings.NoEffectHoldSec"/> (the window is judged every frame, so a single unlucky one would come
     /// up now and then over a night), and no warning came within <see cref="SafetySettings.NoEffectRepeatSec"/>.
+    /// <paramref name="nowSec"/> is on the monotonic clock of <see cref="Measured"/>.
     /// </summary>
-    public bool Evaluate(DateTimeOffset now, out CorrectionEffect effect)
+    public bool Evaluate(double nowSec, out CorrectionEffect effect)
     {
         effect = default;
         if (Estimate() is not { } e)
         {
-            belowSince = null;
+            belowSinceSec = null;
             return false;
         }
 
@@ -210,54 +231,133 @@ public sealed class CorrectionEffectMonitor(SafetySettings settings)
             && e.Effect + settings.NoEffectSigmas * e.Sigma < settings.NoEffectMaxFraction;
         if (!noEffect)
         {
-            belowSince = null;
+            belowSinceSec = null;
             return false;
         }
 
-        belowSince ??= now;
-        if ((now - belowSince.Value).TotalSeconds < settings.NoEffectHoldSec
-            || (lastWarning is { } w && (now - w).TotalSeconds < settings.NoEffectRepeatSec))
+        belowSinceSec ??= nowSec;
+        if (nowSec - belowSinceSec.Value < settings.NoEffectHoldSec
+            || (lastWarningSec is { } w && nowSec - w < settings.NoEffectRepeatSec))
         {
             return false;
         }
 
-        lastWarning = now;
+        lastWarningSec = nowSec;
         return true;
     }
 
+    private static void Fill(Pair p, Span<double> v, bool add)
+    {
+        Span<double> x = [p.IntervalSec, p.OverheadChangeSec, p.CorrectionPx, p.OverheadBeforeSec, p.CorrectionBeforePx, p.IntervalBeforeSec, p.MovePx];
+        for (int i = 0; i < Columns; i++)
+        {
+            v[i] = add ? v[i] + x[i] : x[i];
+        }
+    }
+
     /// <summary>
-    /// Least squares of the move on the chosen centred columns (column 0, the request interval, always). The drift is the
-    /// coefficient of column 0; false when the system is singular or has too few degrees of freedom.
+    /// Two-stage least squares of the move on the regressors (request interval, change of the overhead, correction) with
+    /// the instruments (overhead of the earlier frame, change of the overhead, correction and interval of the pair before),
+    /// from the centred cross products <paramref name="s"/>. Without <paramref name="useOverhead"/> the two overhead
+    /// columns drop out. The drift is the coefficient of the request interval; false when the system is singular or has
+    /// too few degrees of freedom.
     /// </summary>
-    private static bool TrySolve(double[,] xx, double[] xy, double yy, int n, bool useOverhead, bool useCorrection,
-        out double drift, out double driftVar, out double residualVar)
+    private static bool TrySolve(double[,] s, int n, bool useOverhead, out double drift, out double driftVar, out double residualVar)
     {
         drift = driftVar = residualVar = 0;
-        var cols = new List<int> { 0 };
-        if (useOverhead)
-        {
-            cols.Add(1);
-        }
-
-        if (useCorrection)
-        {
-            cols.Add(2);
-        }
-
-        int k = cols.Count;
+        int[] x = useOverhead ? [Interval, OverheadChange, Correction] : [Interval, Correction];
+        int[] z = useOverhead ? [OverheadBefore, OverheadChange, CorrectionBefore, IntervalBefore] : [CorrectionBefore, IntervalBefore];
+        int k = x.Length, m = z.Length;
         int dof = n - k - 1;
         if (dof < 3)
         {
             return false;
         }
 
-        // Gauss-Jordan inverse of the k × k normal matrix
+        // A = Sxz Szz⁻¹ Szx, b = Sxz Szz⁻¹ Szy
+        var szz = new double[m, m];
+        for (int i = 0; i < m; i++)
+        {
+            for (int j = 0; j < m; j++)
+            {
+                szz[i, j] = s[z[i], z[j]];
+            }
+        }
+
+        if (!TryInvert(szz))
+        {
+            return false;
+        }
+
+        // W = Szz⁻¹ Szx (m × k)
+        var w = new double[m, k];
+        for (int i = 0; i < m; i++)
+        {
+            for (int j = 0; j < k; j++)
+            {
+                for (int l = 0; l < m; l++)
+                {
+                    w[i, j] += szz[i, l] * s[z[l], x[j]];
+                }
+            }
+        }
+
+        var a = new double[k, k];
+        var rhs = new double[k];
+        for (int i = 0; i < k; i++)
+        {
+            for (int l = 0; l < m; l++)
+            {
+                for (int j = 0; j < k; j++)
+                {
+                    a[i, j] += w[l, i] * s[z[l], x[j]];
+                }
+
+                rhs[i] += w[l, i] * s[z[l], Move];
+            }
+        }
+
+        if (!TryInvert(a))
+        {
+            return false;
+        }
+
+        var beta = new double[k];
+        for (int i = 0; i < k; i++)
+        {
+            for (int j = 0; j < k; j++)
+            {
+                beta[i] += a[i, j] * rhs[j];
+            }
+        }
+
+        // residuals of the move with the regressors themselves, not their first-stage fit
+        double rss = s[Move, Move];
+        for (int i = 0; i < k; i++)
+        {
+            rss -= 2 * beta[i] * s[x[i], Move];
+            for (int j = 0; j < k; j++)
+            {
+                rss += beta[i] * beta[j] * s[x[i], x[j]];
+            }
+        }
+
+        residualVar = Math.Max(rss, 0) / dof;
+        drift = beta[0];
+        driftVar = residualVar * a[0, 0];
+        return double.IsFinite(drift) && double.IsFinite(driftVar) && driftVar >= 0;
+    }
+
+    /// <summary>Gauss-Jordan inverse in place; false when the matrix is singular relative to its own diagonal.</summary>
+    private static bool TryInvert(double[,] matrix)
+    {
+        int k = matrix.GetLength(0);
         var a = new double[k, 2 * k];
         for (int i = 0; i < k; i++)
         {
             for (int j = 0; j < k; j++)
             {
-                a[i, j] = xx[cols[i], cols[j]];
+                a[i, j] = matrix[i, j];
             }
 
             a[i, k + i] = 1;
@@ -275,7 +375,7 @@ public sealed class CorrectionEffectMonitor(SafetySettings settings)
             }
 
             // relative to the column's own scale: collinear columns leave a pivot of rounding size
-            if (Math.Abs(a[pivot, c]) <= 1e-9 * xx[cols[c], cols[c]])
+            if (!(Math.Abs(a[pivot, c]) > 1e-9 * Math.Abs(matrix[c, c])))
             {
                 return false;
             }
@@ -309,24 +409,14 @@ public sealed class CorrectionEffectMonitor(SafetySettings settings)
             }
         }
 
-        var beta = new double[k];
         for (int i = 0; i < k; i++)
         {
             for (int j = 0; j < k; j++)
             {
-                beta[i] += a[i, k + j] * xy[cols[j]];
+                matrix[i, j] = a[i, k + j];
             }
         }
 
-        double rss = yy;
-        for (int i = 0; i < k; i++)
-        {
-            rss -= beta[i] * xy[cols[i]];
-        }
-
-        residualVar = Math.Max(rss, 0) / dof;
-        drift = beta[0];
-        driftVar = residualVar * a[0, k];
-        return double.IsFinite(drift) && double.IsFinite(driftVar) && driftVar >= 0;
+        return true;
     }
 }

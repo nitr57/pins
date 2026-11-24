@@ -9,8 +9,6 @@ namespace NINA.GuideEngine.Test.Guiding;
 [TestFixture]
 public class CorrectionEffectMonitorTests
 {
-    private static readonly DateTimeOffset T0 = new(2026, 11, 21, 18, 41, 25, TimeSpan.Zero);
-
     [Test]
     public void A_still_star_with_growing_corrections_warns_within_seven_minutes()
     {
@@ -38,16 +36,53 @@ public class CorrectionEffectMonitorTests
         e.ExpectedPx.Should().BeGreaterThan(20);
     }
 
-    [Test]
-    public void A_camera_that_starts_its_exposures_late_does_not_hide_the_effect()
+    [TestCase(0.0, 0.1)]
+    [TestCase(0.1, 0.0)]
+    [TestCase(0.1, 0.1)]
+    public void The_measured_effect_is_unbiased_whether_the_camera_starts_late_or_downloads_late(double startJitterSec, double downloadJitterSec)
     {
-        // all jitter between the capture request and the exposure: the request times alone would show no drift
-        var loop = new Loop { Effect = 1, DriftPxPerSec = 0.25, NoisePx = 0.015, StartJitterSec = 0.1 };
-        var warnings = loop.Run(TimeSpan.FromMinutes(30));
+        // Each correction carries its frame's measurement noise and the next move the same noise with the opposite sign.
+        // With late starts plain least squares took that for drift: 1.21 to 1.27 instead of 1 with 0.015 px of noise, 1.5
+        // with 0.03 px. Averaged over 20 runs of 30 minutes the effect must come out at 1 within a few hundredths.
+        foreach (double noise in new[] { 0.015, 0.03 })
+        {
+            var effects = Enumerable.Range(1, 20).Select(seed =>
+            {
+                var loop = new Loop { Seed = seed, Effect = 1, DriftPxPerSec = 0.25, NoisePx = noise, StartJitterSec = startJitterSec, DownloadJitterSec = downloadJitterSec };
+                loop.Run(TimeSpan.FromMinutes(30)).Should().BeEmpty();
+                return loop.Monitor.Estimate()!.Value.Effect;
+            }).ToList();
 
-        warnings.Should().BeEmpty();
-        var e = loop.Monitor.Estimate()!.Value;
-        e.Effect.Should().BeApproximately(1, 3 * e.Sigma + 0.05);
+            TestContext.Out.WriteLine(FormattableString.Invariant($"noise {noise} px: mean effect {effects.Average():F3}, lowest {effects.Min():F2}, highest {effects.Max():F2}"));
+            effects.Average().Should().BeApproximately(1, noise < 0.02 ? 0.04 : 0.08);
+        }
+    }
+
+    [Test]
+    public void A_mount_that_moves_a_third_of_the_calibrated_amount_reads_a_third_with_late_starts()
+    {
+        // plain least squares read a true effect of 0.3 at about 0.5 with late starts
+        var effects = Enumerable.Range(1, 20).Select(seed =>
+        {
+            var loop = new Loop { Seed = seed, Effect = 0.3, DriftPxPerSec = 0.25, NoisePx = 0.015, StartJitterSec = 0.1 };
+            loop.Run(TimeSpan.FromMinutes(30));
+            return loop.Monitor.Estimate()!.Value.Effect;
+        }).ToList();
+
+        TestContext.Out.WriteLine(FormattableString.Invariant($"mean effect {effects.Average():F3}, lowest {effects.Min():F2}, highest {effects.Max():F2}"));
+        effects.Average().Should().BeApproximately(0.3, 0.05);
+    }
+
+    [Test]
+    public void A_still_star_warns_with_late_starts_as_well()
+    {
+        int warned = Enumerable.Range(1, 10).Count(seed =>
+        {
+            var loop = new Loop { Seed = seed, Effect = 0, DriftPxPerSec = 0, OffsetPx = 0.01, NoisePx = 0.015, StartJitterSec = 0.1 };
+            return loop.Run(TimeSpan.FromMinutes(8)).Count > 0;
+        });
+
+        warned.Should().Be(10);
     }
 
     [Test]
@@ -170,9 +205,8 @@ public class CorrectionEffectMonitorTests
 
                 double measured = (Effect == 0 ? OffsetPx : x) + NoisePx * Gaussian();
                 double arrivalSec = startSec + ExposureSec + DownloadSec + Exponential(DownloadJitterSec);
-                var arrival = T0.AddSeconds(arrivalSec);
-                Monitor.Measured(T0.AddSeconds(requestSec), arrival, ExposureSec * 1000, measured);
-                if (Monitor.Evaluate(arrival, out var effect))
+                Monitor.Measured(requestSec, arrivalSec, ExposureSec * 1000, measured);
+                if (Monitor.Evaluate(arrivalSec, out var effect))
                 {
                     warnings.Add((arrivalSec, effect));
                 }

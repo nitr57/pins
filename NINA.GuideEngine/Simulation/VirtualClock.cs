@@ -49,6 +49,7 @@ public sealed class VirtualClock : IClock
     private readonly object gate = new();
     private readonly List<(long DeadlineTicks, CancellationTokenSource Cts)> deadlines = [];
     private long elapsedTicks;
+    private long wallStepTicks;
     private long delayCount;
 
     public VirtualClock(DateTimeOffset? epoch = null)
@@ -65,7 +66,13 @@ public sealed class VirtualClock : IClock
     /// <summary>Virtual time elapsed since construction in seconds (full tick resolution).</summary>
     public double ElapsedSeconds => Interlocked.Read(ref elapsedTicks) / (double)TimeSpan.TicksPerSecond;
 
-    public DateTimeOffset UtcNow => Epoch + Elapsed;
+    public DateTimeOffset UtcNow => Epoch + Elapsed + TimeSpan.FromTicks(Interlocked.Read(ref wallStepTicks));
+
+    /// <summary>
+    /// Steps the wall clock (<see cref="UtcNow"/>) by <paramref name="step"/> without moving the monotonic time, as when
+    /// timesyncd or chrony sets the system clock.
+    /// </summary>
+    public void StepWallClock(TimeSpan step) => Interlocked.Add(ref wallStepTicks, step.Ticks);
 
     public long ElapsedMs => Interlocked.Read(ref elapsedTicks) / TimeSpan.TicksPerMillisecond;
 
