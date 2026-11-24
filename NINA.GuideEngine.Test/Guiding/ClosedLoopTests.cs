@@ -1769,10 +1769,26 @@ public class ClosedLoopTests
         var cal = h.Guider.Calibration!;
         h.Guider.LoadCalibration(cal with { XRate = cal.XRate * raFactor, YRate = cal.YRate * decFactor });
 
+        // the loop ended with the calibration run: the star is chosen again by hand, so that both runs guide on the star
+        // they calibrated on (a start after a stop would select a new one)
+        var star = h.Events.OfType<GuideStepEvent>().Last().StarPosition;
+        bool chosen = false;
+        Task<SettleResult>? guide = null;
+        double start = 0;
         int framesSinceSettle = -1;
         h.OnEvent = e =>
         {
-            if (e is SettleDoneEvent)
+            if (e is LoopingExposuresEvent && !chosen)
+            {
+                chosen = true;
+                _ = h.Guider.SelectStarAsync(star);
+            }
+            else if (e is StarSelectedEvent && guide is null)
+            {
+                start = h.Clock.Elapsed.TotalSeconds;
+                guide = h.Guider.StartGuidingAsync(Settle);
+            }
+            else if (e is SettleDoneEvent)
             {
                 framesSinceSettle = 0;
             }
@@ -1783,10 +1799,8 @@ public class ClosedLoopTests
             }
         };
 
-        double start = h.Clock.Elapsed.TotalSeconds;
-        var guide = h.Guider.StartGuidingAsync(Settle);
         await h.RunFor(TimeSpan.FromMinutes(60));
-        (await guide).Success.Should().BeTrue();
+        (await guide!).Success.Should().BeTrue();
         h.Alerts(GuideErrorSeverity.Critical).Should().BeEmpty();
 
         // each stretch between dithers about its own mean: the dithers move the pointing on purpose (in event order: the step
