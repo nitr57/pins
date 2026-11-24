@@ -325,7 +325,7 @@ public sealed partial class Guider
     {
         if (!IsLoopRunning)
         {
-            Post(MarkKeptStarStale);
+            Post(() => MarkKeptStarStale(loopStopped: true));
             DrainCommands();
         }
     }

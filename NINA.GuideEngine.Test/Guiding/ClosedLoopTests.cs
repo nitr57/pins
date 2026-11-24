@@ -1624,17 +1624,22 @@ public class ClosedLoopTests
         restart.OfType<GuideStepEvent>().Last().StarPosition.X.Should().BeApproximately(faint.X, 3);
     }
 
-    [Test]
-    public async Task Guiding_starts_on_the_kept_star_when_no_other_can_be_selected()
+    // a single star 55 px from the left edge: a choice by hand takes it, the automatic selection keeps the search region
+    // and a calibration distance (60 px) from the edges while not calibrated and finds nothing
+    private static SimulatorScenario StarNearTheEdge { get; } = SimulatorScenario.GoodMount with
     {
-        // a single star 55 px from the left edge: a choice by hand takes it, the automatic selection keeps the search
-        // region and a calibration distance (60 px) from the edges while not calibrated and finds nothing
-        var scenario = SimulatorScenario.GoodMount with
-        {
-            Camera = SimulatorScenario.GoodMount.Camera with { CameraAngleDeg = 0 },
-            Sky = SimulatorScenario.GoodMount.Sky with { Stars = [new(-913 * 1.511, 0, 9.0)] },
-        };
-        var h = new Harness(scenario, s => s with { AutoCalibrationStep = false, Calibration = s.Calibration with { DistancePx = 60 } });
+        Camera = SimulatorScenario.GoodMount.Camera with { CameraAngleDeg = 0 },
+        Sky = SimulatorScenario.GoodMount.Sky with { Stars = [new(-913 * 1.511, 0, 9.0)] },
+    };
+
+    private static GuiderSettings NoAutoCalibrationStep(GuiderSettings s) => s with { AutoCalibrationStep = false, Calibration = s.Calibration with { DistancePx = 60 } };
+
+    [Test]
+    public async Task A_start_after_the_exposures_stopped_fails_when_no_star_can_be_selected()
+    {
+        // the loop stopped (as NINA stops the guider for a slew): no frames showed where the star went, so the start
+        // doesn't search at its old position, which after a slew takes whatever is there, but fails as in PHD2
+        var h = new Harness(StarNearTheEdge, NoAutoCalibrationStep);
         StarTruth? star = null;
         h.OnEvent = e =>
         {
@@ -1651,12 +1656,49 @@ public class ClosedLoopTests
         int before = h.Events.Count;
 
         h.OnEvent = null;
-        _ = h.Guider.StartGuidingAsync(Settle);
+        var again = h.Guider.StartGuidingAsync(Settle);
         await h.RunFor(TimeSpan.FromSeconds(30));
 
+        again.IsCompleted.Should().BeTrue();
+        (await again).Success.Should().BeFalse();
+        (await again).Code.Should().Be(GuideErrorCode.NoStarFound);
         var restart = h.Events.Skip(before).ToList();
-        restart.OfType<AlertEvent>().Should().Contain(a => a.Code == GuideErrorCode.NoStarFound && a.Detail == "guiding starts on the previous guide star");
-        restart.OfType<StartCalibrationEvent>().Should().ContainSingle("guiding went on with the star chosen by hand");
+        restart.OfType<AlertEvent>().Should().Contain(a => a.Code == GuideErrorCode.NoStarFound && a.Detail == "the guide star from before the exposures stopped is not used again");
+        restart.OfType<StartCalibrationEvent>().Should().BeEmpty();
+    }
+
+    [Test]
+    public async Task Guiding_starts_on_the_kept_star_when_no_other_can_be_selected_while_the_exposures_went_on()
+    {
+        // stopped while the loop went on (the engine's StopGuiding): the frames followed the star chosen by hand
+        var h = new Harness(StarNearTheEdge, NoAutoCalibrationStep);
+        StarTruth? star = null;
+        int calibrations = 0;
+        Task<SettleResult>? again = null;
+        h.OnEvent = e =>
+        {
+            if (e is LoopingExposuresEvent && star is null && h.Sim.Camera.LastFrameTruth is { } truth)
+            {
+                star = truth.Stars.Single(s => s.InFrame);
+                _ = h.Guider.SelectStarAsync(new GuidePoint(star.X, star.Y));
+            }
+            else if (e is StarSelectedEvent && calibrations == 0)
+            {
+                _ = h.Guider.StartGuidingAsync(Settle);
+            }
+            else if (e is StartCalibrationEvent && ++calibrations == 1)
+            {
+                h.Guider.StopGuiding();
+                again = h.Guider.StartGuidingAsync(Settle);
+            }
+        };
+
+        await h.RunFor(TimeSpan.FromSeconds(60));
+
+        again.Should().NotBeNull();
+        h.Events.OfType<StarSelectedEvent>().Should().ContainSingle("only the choice made by hand");
+        h.Events.OfType<AlertEvent>().Should().Contain(a => a.Code == GuideErrorCode.NoStarFound && a.Detail == "guiding starts on the previous guide star");
+        calibrations.Should().Be(2, "guiding went on with the star chosen by hand");
     }
 
     [Test]
