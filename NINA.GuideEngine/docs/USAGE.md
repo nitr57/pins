@@ -190,6 +190,7 @@ curl "$H/set-setting?settingName=InternalGuiderSetting&newValue=MinSnr=8"  # any
 | Star lost (clouds, obstruction) | no corrections; searches near the last position, then full frame (only accepting a star near the old position); after 60 s (`ReacquireTimeoutSec`) a critical notification, then it **keeps searching** and resumes by itself when the star returns (`StopOnLostStarTimeout` in the engine stops instead) |
 | Corrections make the error grow / excessive pulse duty | **Runaway** → stops guiding, notification |
 | Large pulses without star movement | **Mount not responding** → stops, notification |
+| The RA corrections of the last minutes add up to several pixels, but the star shows no sign of them (a guide "star" that stays put on the sensor, a mount that ignores pulses while nothing drifts) | **Corrections have no visible effect** → warning, guiding goes on |
 | Mount slewing / parked / tracking off | pauses corrections, resumes afterwards; after a large move it waits for an explicit resume / restart |
 | Guide camera errors | retries 2×, reconnects once, then stops with a notification |
 | Calibration looks wrong (non-orthogonal, odd rates, few steps) | warning, guiding continues |

@@ -194,6 +194,132 @@ public class ClosedLoopTests
         (stop - faultAt!.Value).TotalSeconds.Should().BeLessThan(90);
     }
 
+    // The guide log of 2026-11-21: 120 mm guide scope at 6.45″/px with stars a few pixels wide, Dec 57.6°, guide rate 1×,
+    // 0.5 s exposures with frames that now and then come late. Nothing drifts; with pulses that have no effect the star
+    // stays put, as a guide "star" fixed on the sensor does, and Predictive RA takes the offset that never goes away for
+    // drift.
+    private static SimulatorScenario StillStar { get; } = SimulatorScenario.GoodMount with
+    {
+        Mount = new MountSimConfig { DeclinationDeg = 57.6, GuideRateRa = 1, GuideRateDec = 1 },
+        Sky = SimulatorScenario.GoodMount.Sky with { SeeingJitterArcsec = 0.05, FwhmArcsec = 16 },
+        Camera = SimulatorScenario.GoodMount.Camera with { FocalLengthMm = 120, PixelSizeUm = 3.75, DownloadJitterMs = 100 },
+    };
+
+    private static GuiderSettings FastPredictive(GuiderSettings s) => s with
+    {
+        ExposureMs = 500,
+        RaAlgorithm = new AlgorithmSettings(GuideAlgorithmKind.Predictive),
+        DecAlgorithm = new AlgorithmSettings(GuideAlgorithmKind.Predictive),
+    };
+
+    // the frames come late after the exposure (download) or the exposure starts late after the request
+    private static SimulatorScenario WithJitter(SimulatorScenario scenario, double downloadJitterMs, double startDelayJitterMs) => scenario with
+    {
+        Camera = scenario.Camera with { DownloadJitterMs = downloadJitterMs, StartDelayJitterMs = startDelayJitterMs },
+    };
+
+    [TestCase(100, 0)]
+    [TestCase(0, 100, Category = "Slow")]
+    public async Task Warns_when_the_corrections_have_no_visible_effect(double downloadJitterMs, double startDelayJitterMs)
+    {
+        var h = new Harness(WithJitter(StillStar, downloadJitterMs, startDelayJitterMs), FastPredictive);
+        DateTimeOffset? faultAt = null;
+        h.OnEvent = e =>
+        {
+            if (e is SettleDoneEvent && faultAt is null)
+            {
+                faultAt = e.Timestamp;
+                h.Sim.Mount.NotResponding = true;
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(12));
+
+        var warning = h.Events.OfType<AlertEvent>().FirstOrDefault(a => a.Code == GuideErrorCode.CorrectionsWithoutEffect);
+        warning.Should().NotBeNull();
+        TestContext.Out.WriteLine($"warned {(warning!.Timestamp - faultAt!.Value).TotalSeconds:F0} s after the fault: {warning.Detail}");
+        warning.Severity.Should().Be(GuideErrorSeverity.Warning);
+        (warning.Timestamp - faultAt.Value).TotalMinutes.Should().BeLessThan(8);
+        h.Events.OfType<AlertEvent>().Where(a => a.Timestamp < warning.Timestamp).Should().NotContain(a => a.Severity == GuideErrorSeverity.Critical,
+            "none of the other checks sees pulses that should move the star by a few tenths of a pixel each");
+    }
+
+    // Slow: the CI filter runs the same corrections in Dithers_a_pause_and_a_step_of_the_system_clock_…
+    [TestCase(100, 0, Category = "Slow")]
+    [TestCase(0, 100, Category = "Slow")]
+    public async Task Corrections_that_cancel_a_large_drift_are_not_taken_for_no_effect(double downloadJitterMs, double startDelayJitterMs)
+    {
+        // the star stays put just as well, but because the corrections, all in one direction, cancel 1.5″/s of RA drift
+        var h = new Harness(WithJitter(StillStar with { Mount = StillStar.Mount with { RaDriftArcsecPerMin = 90 } }, downloadJitterMs, startDelayJitterMs), FastPredictive);
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(20));
+
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Severity == GuideErrorSeverity.Critical);
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.CorrectionsWithoutEffect);
+        h.Events.OfType<GuideStepEvent>().Where(s => s.RaDuration > 0).Select(s => s.RaDirection).Distinct().Should().ContainSingle(
+            "the corrections all go one way, as on the night of the guide log");
+    }
+
+    [Test]
+    public async Task Dithers_a_pause_and_a_step_of_the_system_clock_are_not_taken_for_corrections_without_effect()
+    {
+        // Corrections that cancel 1.5″/s of RA drift, through what moves the star without them: dithers (the lock position
+        // moves), a pause of a minute (the star drifts away) and a recenter after it. A step of the system clock by 30 s,
+        // as timesyncd or chrony make, must not count as a long interval in which the drift had no effect.
+        var h = new Harness(WithJitter(StillStar with { Mount = StillStar.Mount with { RaDriftArcsecPerMin = 90 } }, 100, 50), FastPredictive);
+        TimeSpan? settledAt = null;
+        int step = 0;
+        h.OnEvent = e =>
+        {
+            if (e is SettleDoneEvent && settledAt is null)
+            {
+                settledAt = h.Clock.Elapsed;
+            }
+
+            if (settledAt is not { } t0 || e is not GuideStepEvent)
+            {
+                return;
+            }
+
+            var since = h.Clock.Elapsed - t0;
+            if (step == 0 && since > TimeSpan.FromMinutes(4))
+            {
+                step++;
+                _ = h.Guider.DitherAsync(5, false, Settle);
+            }
+            else if (step == 1 && since > TimeSpan.FromMinutes(8))
+            {
+                step++;
+                _ = h.Guider.DitherAsync(5, true, Settle);
+            }
+            else if (step == 2 && since > TimeSpan.FromMinutes(11))
+            {
+                step++;
+                h.Guider.Pause();
+            }
+            else if (step == 3 && since > TimeSpan.FromMinutes(12))
+            {
+                step++;
+                h.Guider.Resume();
+            }
+            else if (step == 4 && since > TimeSpan.FromMinutes(15))
+            {
+                step++;
+                h.Clock.StepWallClock(TimeSpan.FromSeconds(30));
+            }
+        };
+
+        _ = h.Guider.StartGuidingAsync(Settle);
+        await h.RunFor(TimeSpan.FromMinutes(22));
+
+        step.Should().Be(5);
+        h.Events.OfType<GuidingDitheredEvent>().Should().HaveCount(2);
+        h.Events.OfType<ResumedEvent>().Should().NotBeEmpty();
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Code == GuideErrorCode.CorrectionsWithoutEffect);
+        h.Events.OfType<AlertEvent>().Should().NotContain(a => a.Severity == GuideErrorSeverity.Critical);
+    }
+
     [Test]
     public async Task Retries_transient_camera_failures_and_fails_on_persistent_ones()
     {

@@ -289,6 +289,7 @@ public sealed partial class Guider
         corrector.Backlash.ResetState();
         runaway.Reset();
         response.Reset();
+        correctionEffect.Reset();
         tracker.Distances.NeedReset = true;
     }
 

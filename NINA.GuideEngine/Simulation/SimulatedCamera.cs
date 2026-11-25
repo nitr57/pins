@@ -173,8 +173,13 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
         int gain = request.Gain is { } g ? ClampGain(g) : Volatile.Read(ref currentGain);
         Volatile.Write(ref currentGain, gain);
         long frameNo = Interlocked.Increment(ref frameCounter);
-        double t0 = clock.NowSeconds();
         var startTime = clock.UtcNow;
+        if (Config.StartDelayJitterMs > 0)
+        {
+            await clock.Delay(TimeSpan.FromMilliseconds(Jitter(frameNo, 0x57A7UL, Config.StartDelayJitterMs)), ct).ConfigureAwait(false);
+        }
+
+        double t0 = clock.NowSeconds();
         double expMs = Math.Max(0, request.ExposureMs);
         var fault = NextFault(frameNo);
 
@@ -198,7 +203,8 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
 
             var frame = Render(t0, expMs, bin, request.Subframe, frameNo, request.Offset, gain);
             frame.StartTime = startTime;
-            await clock.Delay(TimeSpan.FromMilliseconds(Config.DownloadMs), cts.Token).ConfigureAwait(false);
+            double downloadMs = Config.DownloadMs + (Config.DownloadJitterMs > 0 ? Jitter(frameNo, 0xD0A1UL, Config.DownloadJitterMs) : 0);
+            await clock.Delay(TimeSpan.FromMilliseconds(downloadMs), cts.Token).ConfigureAwait(false);
             return frame;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -335,6 +341,10 @@ public sealed class SimulatedCamera : ICameraSource, IGainRange
         if (u < pf + pt) return CaptureFault.Timeout;
         return null;
     }
+
+    // a delay of this frame drawn from its own stream: the same frame gets the same delay in every run
+    private double Jitter(long frameNo, ulong stream, double meanMs) =>
+        new SimRng((ulong)Config.NoiseSeed, stream, (ulong)frameNo).NextExponential(meanMs);
 
     private FrameTruth RenderStars(double t0, double exposureMs, int b, int wb, int hb, IntRect roi, long frameNumber)
     {
