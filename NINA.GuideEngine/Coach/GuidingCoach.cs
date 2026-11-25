@@ -2051,7 +2051,7 @@ public sealed class GuidingCoach
                 if (verdict.InterruptReason is { } reason)
                 {
                     OnInterrupt(reason);
-                    guider.DetachCoach();
+                    guider.DetachInterruptedCoach();
                     cts.Token.ThrowIfCancellationRequested();
                 }
 

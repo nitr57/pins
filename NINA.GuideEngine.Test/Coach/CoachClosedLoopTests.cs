@@ -879,6 +879,73 @@ public class CoachClosedLoopTests
     }
 
     /// <summary>Wires simulator, guider, coach and an event recorder; runs sessions in virtual time.</summary>
+    // How the session ends during its camera check, while the check has the loop stopped: "stop" = a host stop
+    // (StopCaptureAsync, as NINA stops the guider for a slew), "slew" = the mount moves during the check.
+    [TestCase("stop")]
+    [TestCase("slew")]
+    public async Task A_start_after_a_camera_check_interrupted_with_the_loop_stopped_selects_a_new_star(string how)
+    {
+        var h = new Harness(SimulatorScenario.GoodMount);
+        bool coachStarted = false, acted = false;
+        var settled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.OnEvent = e =>
+        {
+            if (e is SettleDoneEvent)
+            {
+                settled.TrySetResult();
+            }
+
+            if (coachStarted && e is CoachStatusEvent { Status.Phase: not (CoachPhases.Running or CoachPhases.Idle) })
+            {
+                finished.TrySetResult();
+            }
+
+            if (!coachStarted && settled.Task.IsCompleted && e is GuideStepEvent)
+            {
+                coachStarted = true;
+                h.Coach.Start(new CoachOptions { Steps = [CoachStepNames.CameraCheck], ExposureSeconds = [1, 2], Gains = [0], FramesPerCombination = 30 })
+                    .Accepted.Should().BeTrue();
+            }
+
+            if (coachStarted && !acted && e is CoachStatusEvent { Status.Step: CoachStepNames.CameraCheck } && !h.Guider.IsLoopRunning)
+            {
+                acted = true;
+                if (how == "stop")
+                {
+                    _ = Task.Run(() => h.Guider.StopCaptureAsync());
+                }
+                else
+                {
+                    h.Sim.Mount.StartSlew(new SkyOffset(3600, 0), TimeSpan.FromSeconds(2));
+                }
+            }
+        };
+
+        var deadline = h.Clock.CancelAt(h.Clock.Elapsed + TimeSpan.FromMinutes(120));
+        h.Coach.LoopToken = deadline;
+        _ = h.Guider.StartGuidingAsync(Settle);
+        h.Guider.StartLooping(deadline);
+        (await Task.WhenAny(finished.Task, Task.Delay(TimeSpan.FromMinutes(3)))).Should().BeSameAs(finished.Task);
+        (await Task.WhenAny(h.Coach.Completion, Task.Delay(TimeSpan.FromMinutes(1)))).Should().BeSameAs(h.Coach.Completion);
+        acted.Should().BeTrue();
+        if (h.Guider.IsLoopRunning)
+        {
+            await h.Guider.StopCaptureAsync();
+        }
+
+        int before = h.Events.Count;
+        h.OnEvent = null;
+        var again = h.Guider.StartGuidingAsync(Settle);
+        h.Guider.StartLooping(h.Clock.CancelAt(h.Clock.Elapsed + TimeSpan.FromMinutes(2)));
+        await h.Guider.WaitForLoopAsync().Within(TimeSpan.FromMinutes(2));
+
+        var restart = h.Events.Skip(before).ToList();
+        TestContext.Out.WriteLine($"restart: StarSelected {restart.OfType<StarSelectedEvent>().Count()}, guide steps {restart.OfType<GuideStepEvent>().Count()}, " +
+            $"alerts {string.Join(", ", restart.OfType<AlertEvent>().Select(a => $"{a.Code} {a.Detail}"))}, start {(again.IsCompleted ? again.Result.Success + " " + again.Result.Error : "pending")}");
+        restart.OfType<StarSelectedEvent>().Should().NotBeEmpty("the star kept through the interrupted session is not trusted");
+    }
+
     private sealed class Harness
     {
         private readonly object gate = new();

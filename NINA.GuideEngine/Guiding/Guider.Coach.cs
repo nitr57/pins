@@ -98,6 +98,16 @@ public sealed partial class Guider
     /// <summary>Detaches the session (no further interrupts). Does not restore state; see <see cref="ClearCoachStateAsync"/>.</summary>
     internal void DetachCoach() => Volatile.Write(ref coachInterrupt, null);
 
+    /// <summary>
+    /// Detaches a session that was interrupted outside the loop (the mount moved during the camera check), so that the
+    /// star kept from before it is not trusted (see <see cref="MarkStaleAfterInterruptIfIdle"/>).
+    /// </summary>
+    internal void DetachInterruptedCoach()
+    {
+        DetachCoach();
+        MarkStaleAfterInterruptIfIdle();
+    }
+
     /// <summary>Installs (or removes with null) the frame hook; completes when the loop applied it.</summary>
     internal Task SetCoachHookAsync(ICoachFrameHook? hook) => RunOnLoopAsync(() => SetCoachHookCore(hook));
 
@@ -303,12 +313,22 @@ public sealed partial class Guider
         }
 
         Post(ClearCoachStateCore);
+        MarkStaleAfterInterruptIfIdle();
+        SafeInvoke(cb, reason);
+    }
+
+    /// <summary>
+    /// A session that ends by an interrupt while the loop is stopped (the camera check stops it) leaves the kept star
+    /// without the loop end that marks it (<see cref="MarkKeptStarStale"/> skips it while the coach is attached). NINA stops
+    /// the guider for a slew this way, and the mount may move during the check: the next start selects a new star.
+    /// </summary>
+    private void MarkStaleAfterInterruptIfIdle()
+    {
         if (!IsLoopRunning)
         {
+            Post(() => MarkKeptStarStale(loopStopped: true));
             DrainCommands();
         }
-
-        SafeInvoke(cb, reason);
     }
 
     /// <summary>Interrupt detected on the loop (mount moved, loop ended, guiding failed).</summary>

@@ -99,6 +99,17 @@ public sealed partial class Guider : IAsyncDisposable
     private bool autoSelectRequested;
     private int autoSelectAttemptsLeft;
 
+    // The star kept from a run that ended (stopped, failed, or the loop stopped with it) is not trusted for the next start:
+    // the mount may have moved meanwhile, and whatever the tracker finds near the old position would be taken for it. Seen
+    // in a guide log of 2026-11-21: after a slew the guider locked onto something that stayed put on the sensor. The next
+    // start selects a new star; a star chosen since (by hand or automatically) clears it.
+    private bool keptStarStale;
+
+    // The loop stopped since the star was kept: no frames showed where it went. When no star can be selected then, the
+    // start fails (as in PHD2 after stop_capture) instead of searching at the old position, which after a slew takes
+    // whatever is there.
+    private bool keptStarAfterStoppedLoop;
+
     // manual star selection waiting for the next looping frame
     private (GuidePoint Position, TaskCompletionSource<StarSelectionResult> Completion)? manualSelect;
 
@@ -375,7 +386,7 @@ public sealed partial class Guider : IAsyncDisposable
                 SetState(GuiderState.Looping);
             }
 
-            if (!tracker.IsLocked && state == GuiderState.Looping)
+            if ((!tracker.IsLocked || keptStarStale) && state == GuiderState.Looping)
             {
                 autoSelectRequested = true;
                 autoSelectAttemptsLeft = Math.Max(1, settings.AutoSelectAttempts);
@@ -385,11 +396,22 @@ public sealed partial class Guider : IAsyncDisposable
         return op.Task;
     }
 
-    /// <summary>Stop guiding but keep looping with the star selected.</summary>
+    /// <summary>
+    /// Stop guiding but keep looping with the star selected. The next start selects a new star unless one is chosen
+    /// before it (see <see cref="SelectStarAsync"/>).
+    /// </summary>
     public void StopGuiding()
     {
         InterruptCoach(CoachInterruptReasons.Guiding);
-        Post(() => StopGuidingCore(GuiderState.Selected));
+        Post(() =>
+        {
+            bool running = state.IsGuidingActive() || state == GuiderState.Calibrating;
+            StopGuidingCore(GuiderState.Selected);
+            if (running)
+            {
+                MarkKeptStarStale();
+            }
+        });
     }
 
     /// <summary>Dither by up to <paramref name="amountPx"/> pixels (PHD2 dither); completes when settled.</summary>
@@ -493,6 +515,27 @@ public sealed partial class Guider : IAsyncDisposable
         userPaused = false;
         Emit(new GuidingStoppedEvent(clock.UtcNow));
         SetState(tracker.IsLocked ? GuiderState.Selected : GuiderState.Looping);
+    }
+
+    /// <summary>
+    /// The star kept now is not trusted for the next start (see <see cref="keptStarStale"/>), with
+    /// <paramref name="loopStopped"/> not even as a fallback (see <see cref="keptStarAfterStoppedLoop"/>). Not while the
+    /// Guiding Coach runs: it stops and restarts guiding on purpose and keeps its star.
+    /// </summary>
+    private void MarkKeptStarStale(bool loopStopped = false)
+    {
+        if (!IsCoachAttached)
+        {
+            keptStarStale = true;
+            keptStarAfterStoppedLoop |= loopStopped;
+        }
+    }
+
+    /// <summary>A star was chosen or guiding started on one: the kept star is trusted again.</summary>
+    private void TrustKeptStar()
+    {
+        keptStarStale = false;
+        keptStarAfterStoppedLoop = false;
     }
 
     /// <summary>Forget the calibration (PHD2 clear_calibration).</summary>
@@ -799,6 +842,8 @@ public sealed partial class Guider : IAsyncDisposable
                 SetState(GuiderState.Stopped);
             }
 
+            // no frames until the loop starts again: the field may move meanwhile (NINA stops the guider for slews)
+            MarkKeptStarStale(loopStopped: true);
             settle.Cancel();
             EndDecBothWays();
             recenter.Cancel();
@@ -1015,6 +1060,7 @@ public sealed partial class Guider : IAsyncDisposable
             if (sel.Success)
             {
                 autoSelectRequested = false;
+                TrustKeptStar();
                 NoteStarRotatorAngle(snapshot);
                 lastGoodMass = sel.Primary.Mass;
                 lastGoodSnr = sel.Primary.Snr;
@@ -1025,11 +1071,23 @@ public sealed partial class Guider : IAsyncDisposable
             else if (--autoSelectAttemptsLeft <= 0)
             {
                 autoSelectRequested = false;
-                Alert(GuideErrorCode.NoStarFound);
-                if (startGuidingRequested)
+                if (startGuidingRequested && keptStarStale && !keptStarAfterStoppedLoop && tracker.IsLocked)
                 {
-                    startGuidingRequested = false;
-                    CompletePending(SettleResult.Failed(GuideErrorCode.NoStarFound));
+                    // nothing to select (a faint star chosen by hand, say) and the exposures went on, so the star was
+                    // followed: guiding starts on it, as it used to
+                    TrustKeptStar();
+                    Alert(GuideErrorCode.NoStarFound, "guiding starts on the previous guide star");
+                }
+                else
+                {
+                    Alert(GuideErrorCode.NoStarFound, startGuidingRequested && keptStarAfterStoppedLoop && tracker.IsLocked
+                        ? "the guide star from before the exposures stopped is not used again"
+                        : null);
+                    if (startGuidingRequested)
+                    {
+                        startGuidingRequested = false;
+                        CompletePending(SettleResult.Failed(GuideErrorCode.NoStarFound));
+                    }
                 }
             }
 
@@ -1076,8 +1134,9 @@ public sealed partial class Guider : IAsyncDisposable
             return sel;
         }
 
-        // the explicit choice replaces a pending automatic selection
+        // the explicit choice replaces a pending automatic selection, also the new one asked for after a stop
         autoSelectRequested = false;
+        TrustKeptStar();
         secondariesLostFrames = 0;
         lastGoodMass = sel.Primary.Mass;
         lastGoodSnr = sel.Primary.Snr;
@@ -1156,6 +1215,7 @@ public sealed partial class Guider : IAsyncDisposable
 
     private void BeginGuiding(GuidePoint starPosition, MountSnapshot snapshot, DateTimeOffset now, out IReadOnlyList<PulseCommand> pulses)
     {
+        TrustKeptStar();
         NoteStarRotatorAngle(snapshot);
         rotatorWaitSince = null;
         BeginGuidingCore(starPosition, snapshot, now, out pulses);
@@ -2427,6 +2487,7 @@ public sealed partial class Guider : IAsyncDisposable
     {
         OnGuiderFailedForCoach(code);
         Alert(code, detail);
+        MarkKeptStarStale();
         if (state.IsGuidingActive() || state == GuiderState.Calibrating)
         {
             corrector.GuidingStopped();
