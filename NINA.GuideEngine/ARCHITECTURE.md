@@ -221,6 +221,7 @@ PHD2-compatible guide log format so PHD2LogViewer and similar tools can analyse 
 | Max pulse | Hard clamp per axis; repeated limit hits → alert |
 | Runaway (total correction per minute over limit) | Stop guiding + alert |
 | Mount not responding (≥ 3 consecutive large RA pulses, no star movement; Dec pulses are legitimately absorbed by backlash) | Stop guiding + alert |
+| Corrections without effect (`CorrectionEffectMonitor`: the RA corrections of the last 2 min add up to ≥ 3 px, and their effect, measured from the frame timing, stays below half the calibrated one by 3 σ for 30 s) | Warning `CorrectionsWithoutEffect`, at most every 5 min; guiding goes on |
 | Calibration sanity failure | Warning, user may override |
 | Pier side changed | Auto flip per rules + Dec self-check (see Calibration); option to force recalibration |
 | Mount slewing / parked / homing / tracking off | Auto-pause; resume after reacquire + settle; after large move only on sequencer request |

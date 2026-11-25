@@ -285,6 +285,18 @@ public sealed record CameraSimConfig
 
     public double DownloadMs { get; init; } = 100.0;
 
+    /// <summary>
+    /// Mean (ms) of an extra download delay per frame, exponentially distributed like the occasional slow USB transfer or
+    /// busy host; 0 = none (every frame takes <see cref="DownloadMs"/>).
+    /// </summary>
+    public double DownloadJitterMs { get; init; }
+
+    /// <summary>
+    /// Mean (ms) of a delay between the capture request and the start of the exposure, exponentially distributed like a
+    /// driver that starts late; 0 = none. The frame's start time stays the time of the request, as a real camera's does.
+    /// </summary>
+    public double StartDelayJitterMs { get; init; }
+
     /// <summary>Probability that an exposure fails (exception after the exposure time).</summary>
     public double ExposureFailureProbability { get; init; }
 

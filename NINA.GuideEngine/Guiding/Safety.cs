@@ -33,6 +33,33 @@ public sealed record SafetySettings
     /// <summary>Observed move below this fraction of the expected move counts as "no response".</summary>
     public double NotRespondingFraction { get; init; } = 0.25;
 
+    /// <summary>Seconds of guiding judged by the <see cref="CorrectionEffectMonitor"/>.</summary>
+    public double NoEffectWindowSec { get; init; } = 120;
+
+    /// <summary>Frame pairs the <see cref="CorrectionEffectMonitor"/> needs, which must also span half its window.</summary>
+    public int NoEffectMinFrames { get; init; } = 30;
+
+    /// <summary>The RA corrections of the window must add up to at least this move (px) before they are judged.</summary>
+    public double NoEffectMinExpectedPx { get; init; } = 3.0;
+
+    /// <summary>
+    /// Warn when the measured effect is below this share of the calibrated one by <see cref="NoEffectSigmas"/> standard
+    /// errors. Corrections that work give about 1; a still "star" about 0, measured to ±0.15 or so after a few minutes.
+    /// </summary>
+    public double NoEffectMaxFraction { get; init; } = 0.5;
+
+    /// <summary>Standard errors the measured effect must stay below <see cref="NoEffectMaxFraction"/>.</summary>
+    public double NoEffectSigmas { get; init; } = 3.0;
+
+    /// <summary>An effect measured less precisely than this standard error is not judged.</summary>
+    public double NoEffectMaxSigma { get; init; } = 0.25;
+
+    /// <summary>Seconds the effect must stay below <see cref="NoEffectMaxFraction"/> before the warning comes.</summary>
+    public double NoEffectHoldSec { get; init; } = 30;
+
+    /// <summary>Shortest time between two warnings <c>CorrectionsWithoutEffect</c> of one guiding run.</summary>
+    public double NoEffectRepeatSec { get; init; } = 300;
+
     /// <summary>Lost-star reacquire timeout: a critical alert is raised, then (see <see cref="StopOnLostStarTimeout"/>) guiding stops or keeps searching.</summary>
     public double ReacquireTimeoutSec { get; init; } = 60;
 

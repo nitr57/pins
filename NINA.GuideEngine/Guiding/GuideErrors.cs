@@ -58,6 +58,7 @@ public enum GuideErrorCode
     PulseOutputFailed = 307,
     PierSideUnknown = 308,
     PulseRejected = 309,
+    CorrectionsWithoutEffect = 310,
 
     // Camera 400-499
     CameraCaptureFailed = 400,
@@ -183,6 +184,9 @@ public static class GuideErrorCatalog
         E(GuideErrorCode.PulseRejected, GuideErrorSeverity.Warning, "Guide pulse rejected",
             "The mount driver reported that it did not carry out a guide pulse; the guider counts it as not sent.",
             "Check the driver log; a driver that rejects long pulses may need a smaller max pulse or backlash pulse."),
+        E(GuideErrorCode.CorrectionsWithoutEffect, GuideErrorSeverity.Warning, "Corrections have no visible effect",
+            "The RA corrections of the last minutes should have moved the guide star by several pixels, but the star shows no sign of them. Either the guide star is not a star but something that stays put on the sensor (a cluster of hot pixels, a glow, a reflection), or the mount ignores the guide pulses. Guiding goes on.",
+            "Look at the guide image. If the guide star sits on a spot that doesn't move with the sky, select a real star (a dark library keeps hot pixels out of the selection) and calibrate again. Otherwise check the guide output: the mount driver or ST4 cable, and that the mount accepts guide pulses."),
         E(GuideErrorCode.PierSideUnknown, GuideErrorSeverity.Warning, "Pier side unknown",
             "The mount does not report its pier side; meridian flips cannot be compensated automatically.",
             "Recalibrate after each meridian flip, or use a driver that reports pier side."),
